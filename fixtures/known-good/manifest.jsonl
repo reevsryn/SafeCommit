@@ -1,0 +1,6 @@
+# Tiny SYNTHETIC known-good fixture corpus (NOT real PRs). Purpose: prove the
+# scoring math offline. The real known-good corpus is mined in step 2 into
+# corpus/known-good/. Every case here is labeled "clean" -> any finding is noise.
+{"id": "kg-001", "diff": "diffs/kg-001.diff", "label": "clean", "source": {"note": "synthetic fixture"}}
+{"id": "kg-002", "diff": "diffs/kg-002.diff", "label": "clean", "source": {"note": "synthetic fixture"}}
+{"id": "kg-003", "diff": "diffs/kg-003.diff", "label": "clean", "source": {"note": "synthetic fixture"}}

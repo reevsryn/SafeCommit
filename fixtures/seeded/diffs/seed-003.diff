@@ -1,0 +1,11 @@
+diff --git a/svc/data.py b/svc/data.py
+index eeeeeee..fffffff 100644
+--- a/svc/data.py
++++ b/svc/data.py
+@@ -1,3 +1,6 @@
++import pandas as pd
++from pandas_helpers import clean_frame
++
+ def load(path):
+-    return pd.read_csv(path)
++    return clean_frame(pd.read_csv(path))

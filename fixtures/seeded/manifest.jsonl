@@ -1,0 +1,7 @@
+# Tiny SYNTHETIC seeded fixture corpus. Purpose: prove the scoring math offline.
+# Each case adds ONE real import (a distractor) + ONE fake import (the truth).
+# These names are illustrative only; the rigorous naming methodology for the
+# REAL seeded corpus (step 3) is documented in corpus/README.md.
+{"id": "seed-001", "diff": "diffs/seed-001.diff", "label": "hallucination", "truth": [{"name": "reqursts", "file": "svc/api.py", "kind": "import"}]}
+{"id": "seed-002", "diff": "diffs/seed-002.diff", "label": "hallucination", "truth": [{"name": "beautifulsuop", "file": "svc/scrape.py", "kind": "import"}]}
+{"id": "seed-003", "diff": "diffs/seed-003.diff", "label": "hallucination", "truth": [{"name": "pandas_helpers", "file": "svc/data.py", "kind": "import"}]}

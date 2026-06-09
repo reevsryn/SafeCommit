@@ -1,0 +1,11 @@
+diff --git a/app/stats.py b/app/stats.py
+index 4444444..5555555 100644
+--- a/app/stats.py
++++ b/app/stats.py
+@@ -1,2 +1,6 @@
++import numpy as np
++from collections import OrderedDict
++
+ def mean(xs):
+-    return sum(xs) / len(xs)
++    return float(np.mean(xs))

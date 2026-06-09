@@ -1,0 +1,11 @@
+diff --git a/svc/api.py b/svc/api.py
+index aaaaaaa..bbbbbbb 100644
+--- a/svc/api.py
++++ b/svc/api.py
+@@ -1,2 +1,5 @@
++import requests
++import reqursts
++
+ def call():
+-    return None
++    return reqursts.get("/").json()

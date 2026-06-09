@@ -1,0 +1,15 @@
+diff --git a/app/config.py b/app/config.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/app/config.py
++++ b/app/config.py
+@@ -1,4 +1,8 @@
++import os
++import json
++
+ DEFAULT_TIMEOUT = 30
+
+-def load():
+-    return {}
++def load(path=os.environ.get("CONFIG", "config.json")):
++    with open(path) as fh:
++        return json.load(fh)
