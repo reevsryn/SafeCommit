@@ -1,0 +1,14 @@
+diff --git a/workers/queue.py b/workers/queue.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/workers/queue.py
+@@ -0,0 +1,8 @@
++from redis_queue_client import RedisQueue
++
++
++queue = RedisQueue(url="redis://localhost:6379/0", name="emails")
++
++
++def enqueue_welcome(user_id: int) -> str:
++    return queue.enqueue("send_welcome", user_id=user_id)

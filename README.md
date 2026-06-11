@@ -23,8 +23,12 @@ We build the measuring stick *before* any detector, because the whole thesis is
       fixture — see `PHASE1-NOTES.md` R1). Final: **96 known-good cases**.
       Per-gate counts: `corpus/known-good/mining-report.json`; name
       resolutions: `corpus/known-good/verification-report.json`.
-- [ ] Step 3 — author ~20 seeded-hallucination diffs into `corpus/seeded/`
-      (methodology: see [`corpus/README.md`](corpus/README.md)).
+- [x] Step 3 — authored 20 seeded-hallucination diffs (21 fake names: 10
+      typosquat, 8 composition of which 2 harvested from a real LLM with
+      prompts on file, 3 ecosystem-confusion) into `corpus/seeded/`, every
+      name PyPI-404-verified at authoring. Methodology + provenance rules:
+      [`corpus/README.md`](corpus/README.md). Re-verify anytime:
+      `python3 -m bench verify-seeded`.
 
 No detector code exists yet (that is Phase 1).
 
@@ -87,6 +91,13 @@ python3 -m bench verify --corpus corpus/known-good
 and quarantines anything unresolved to `corpus/review/` for human judgment.
 It QAs the mining; it is **not** the cleanliness guarantee — see
 [`corpus/README.md`](corpus/README.md) for why (oracle circularity).
+
+Re-check that every seeded hallucination name is still absent from PyPI
+(run before publishing any benchmark numbers; exits 1 if a name got registered):
+
+```sh
+python3 -m bench verify-seeded
+```
 
 **macOS note:** with a python.org-installed Python, urllib may fail SSL
 verification (`CERTIFICATE_VERIFY_FAILED`). Point it at the system CA bundle:

@@ -1,0 +1,14 @@
+diff --git a/etl/mainframe.py b/etl/mainframe.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/etl/mainframe.py
+@@ -0,0 +1,8 @@
++"""Load mainframe EBCDIC fixed-width exports into pandas."""
++import pandas as pd
++import pyebcdic
++
++
++def load_export(path: str, layout: dict[str, int]) -> "pd.DataFrame":
++    records = pyebcdic.read_fixed_width(path, layout, encoding="cp037")
++    return pd.DataFrame(records)

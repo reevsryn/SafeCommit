@@ -149,10 +149,11 @@ class PyPIOracle:
         self.sleep = sleep
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def exists(self, name: str) -> tuple[bool, str]:
+    def exists(self, name: str, refresh: bool = False) -> tuple[bool, str]:
+        """refresh=True bypasses cache reads (verify-seeded distrusts stale 404s)."""
         norm = normalize_name(name)
         cache = self.cache_dir / f"{norm}.json"
-        if cache.exists():
+        if cache.exists() and not refresh:
             d = json.loads(cache.read_text(encoding="utf-8"))
             return d["exists"], f"PyPI {d['status']} (cached {d['checked']})"
         url = f"https://pypi.org/pypi/{urllib.parse.quote(norm)}/json"

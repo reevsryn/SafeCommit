@@ -1,0 +1,16 @@
+diff --git a/web/auth.py b/web/auth.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/web/auth.py
+@@ -0,0 +1,10 @@
++from flask import Flask, jsonify
++from flask_jwt_utils import token_required
++
++app = Flask(__name__)
++
++
++@app.get("/me")
++@token_required
++def me(current_user):
++    return jsonify(id=current_user.id, email=current_user.email)

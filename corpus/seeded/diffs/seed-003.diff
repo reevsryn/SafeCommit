@@ -1,0 +1,12 @@
+diff --git a/ingest/parse_html.py b/ingest/parse_html.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/ingest/parse_html.py
+@@ -0,0 +1,6 @@
++from beatifulsoup4 import BeautifulSoup
++
++
++def extract_links(html: str) -> list[str]:
++    soup = BeautifulSoup(html, "html.parser")
++    return [a["href"] for a in soup.find_all("a", href=True)]

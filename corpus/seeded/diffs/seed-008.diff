@@ -1,0 +1,25 @@
+diff --git a/tests/test_schemas.py b/tests/test_schemas.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/tests/test_schemas.py
+@@ -0,0 +1,19 @@
++"""Schema round-trip tests."""
++from typing_extension import TypedDict
++
++import pytest
++
++
++class UserRow(TypedDict):
++    id: int
++    email: str
++
++
++def test_user_row_keys():
++    row: UserRow = {"id": 1, "email": "a@b.co"}
++    assert set(row) == {"id", "email"}
++
++
++def test_rejects_missing_email():
++    with pytest.raises(KeyError):
++        _ = {"id": 2}["email"]

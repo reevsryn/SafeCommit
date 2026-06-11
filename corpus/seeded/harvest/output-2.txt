@@ -1,0 +1,39 @@
+```python
+from verhoeff import validate
+
+
+def validate_aadhaar(aadhaar_number):
+    """
+    Validate an Indian Aadhaar ID number offline using Verhoeff checksum.
+
+    Args:
+        aadhaar_number: String or integer representing the Aadhaar ID
+
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    aadhaar_str = str(aadhaar_number).strip()
+
+    if not aadhaar_str.isdigit() or len(aadhaar_str) != 12:
+        return False
+
+    return validate(aadhaar_str)
+
+
+if __name__ == "__main__":
+    test_cases = [
+        ("999999990857", True),
+        ("999999990048", True),
+        ("123456789012", False),
+        ("12345678901", False),
+        ("1234567890123", False),
+        ("abcd12345678", False),
+    ]
+
+    for aadhaar, expected in test_cases:
+        result = validate_aadhaar(aadhaar)
+        status = "✓" if result == expected else "✗"
+        print(f"{status} {aadhaar}: {result}")
+```
+
+**Installation:** `pip install verhoeff`

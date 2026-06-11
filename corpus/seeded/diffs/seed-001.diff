@@ -1,0 +1,22 @@
+diff --git a/scraper/fetch.py b/scraper/fetch.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scraper/fetch.py
+@@ -0,0 +1,16 @@
++import json
++import requets
++from bs4 import BeautifulSoup
++
++
++def fetch_listing(url: str) -> dict:
++    """Fetch a listing page and extract its title."""
++    resp = requets.get(url, timeout=10)
++    soup = BeautifulSoup(resp.text, "html.parser")
++    title = soup.select_one("h1").get_text(strip=True)
++    return {"url": url, "title": title}
++
++
++def save(listing: dict, path: str) -> None:
++    with open(path, "w") as fh:
++        json.dump(listing, fh, indent=2)

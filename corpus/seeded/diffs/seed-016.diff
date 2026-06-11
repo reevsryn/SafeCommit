@@ -1,0 +1,15 @@
+diff --git a/kyc/aadhaar.py b/kyc/aadhaar.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/kyc/aadhaar.py
+@@ -0,0 +1,9 @@
++"""Offline Aadhaar ID validation (Verhoeff checksum)."""
++import verhoeff
++
++
++def is_valid_aadhaar(number: str) -> bool:
++    digits = number.replace(" ", "")
++    if len(digits) != 12 or not digits.isdigit():
++        return False
++    return verhoeff.validate(digits)

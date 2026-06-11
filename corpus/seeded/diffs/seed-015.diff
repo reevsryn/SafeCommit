@@ -1,0 +1,14 @@
+diff --git a/db/migrate.py b/db/migrate.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/db/migrate.py
+@@ -0,0 +1,8 @@
++import sqlmodel_migrations
++from sqlmodel import SQLModel, create_engine
++
++
++def upgrade(url: str) -> None:
++    engine = create_engine(url)
++    SQLModel.metadata.create_all(engine)
++    sqlmodel_migrations.stamp(engine, "head")

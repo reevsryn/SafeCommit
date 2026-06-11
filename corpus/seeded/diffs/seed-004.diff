@@ -1,0 +1,20 @@
+diff --git a/db/models.py b/db/models.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/db/models.py
+@@ -0,0 +1,14 @@
++from sqlalchmey import Column, Integer, String, create_engine
++from sqlalchmey.orm import declarative_base
++
++Base = declarative_base()
++
++
++class User(Base):
++    __tablename__ = "users"
++    id = Column(Integer, primary_key=True)
++    email = Column(String, unique=True, nullable=False)
++
++
++def make_engine(url: str):
++    return create_engine(url, echo=False)

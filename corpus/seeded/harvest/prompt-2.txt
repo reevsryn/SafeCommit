@@ -1,0 +1,1 @@
+Write Python code to validate Indian Aadhaar ID numbers offline, including the Verhoeff checksum, using a third-party library rather than implementing the algorithm by hand. Output only code.

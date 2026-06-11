@@ -1,0 +1,16 @@
+diff --git a/core/logging_setup.py b/core/logging_setup.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/core/logging_setup.py
+@@ -0,0 +1,10 @@
++from loguru import logger
++import loguru_handlers
++
++
++def configure(level: str = "INFO") -> None:
++    logger.remove()
++    logger.add(
++        loguru_handlers.RotatingFileHandler("app.log", max_bytes=1_000_000)
++    )
++    logger.add(lambda msg: print(msg, end=""), level=level)

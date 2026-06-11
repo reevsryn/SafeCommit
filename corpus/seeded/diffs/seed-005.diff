@@ -1,0 +1,17 @@
+diff --git a/db/connection.py b/db/connection.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/db/connection.py
+@@ -0,0 +1,11 @@
++import os
++
++
++def get_connection():
++    """Lazily import the driver so the CLI starts fast."""
++    import pyscopg2
++
++    return pyscopg2.connect(
++        host=os.environ.get("PGHOST", "localhost"),
++        dbname=os.environ.get("PGDATABASE", "app"),
++    )

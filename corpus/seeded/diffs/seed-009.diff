@@ -1,0 +1,12 @@
+diff --git a/net/pool.py b/net/pool.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/net/pool.py
+@@ -0,0 +1,6 @@
++import urlib3
++
++
++def make_pool(retries: int = 3) -> "urlib3.PoolManager":
++    retry = urlib3.util.Retry(total=retries, backoff_factor=0.3)
++    return urlib3.PoolManager(retries=retry)

@@ -49,3 +49,37 @@ an executed test file as a tripwire against overbroad suppression.
 **Benchmark implication.** Keep both cases in the known-good set. They are the
 noise floor doing its job: they punish naive line-scanning tools and reward the
 parse-then-verify architecture — which is the product's whole bet.
+
+## R2 — File/line-aware finding↔truth matching (scoring refinement, pre-publication)
+*(discovered 2026-06-11, while authoring the seeded corpus)*
+
+**Requirement.** Phase 0 scoring matches findings to truths by **package name
+only** (PEP 503-normalized; a deliberate simplification documented in
+`bench/score.py`). That granularity cannot tell "flagged the right line" from
+"flagged the wrong line." Before publishing final benchmark numbers, tighten
+`match_case` to require file agreement (and line where available) between a
+finding and the truth it claims credit for. The plumbing already exists on both
+sides: truth entries record `file`/`kind`, and the tool contract carries
+`file`/`line` per finding.
+
+**Evidence.** `seed-019`: the code import `from dateutil import parser` is
+*legitimate* (the module exists once `python-dateutil` is installed); only the
+`dateutil>=2.9` pin in `requirements.txt` is the hallucination. Under
+name-only matching, a tool that wrongly flags the legitimate import line still
+scores a TP for the truth it didn't actually find.
+
+## R3 — Report recall per detection path: imports vs. dependency manifests
+*(discovered 2026-06-11, from the three-dummy check on the real corpora)*
+
+**Requirement.** Code-import truths and dependency-manifest truths exercise
+**different detector code paths** (AST/import extraction vs. manifest parsing).
+`bench` must break recall out by truth `kind` (`import` vs. `requirement`)
+whenever it reports, so a blended number cannot hide a detector that is strong
+on one path and broken on the other. The same breakdown applies to SafeCommit
+itself in Phase 1: diff→import extraction and `requirements.txt`/`pyproject.toml`
+parsing each get their own recall line.
+
+**Evidence.** `always_fire` (an import-line-only dummy) reports 90.5% blended
+recall while structurally catching **0 of 2** manifest-only truths
+(`python-requests`, `matplotlib-pyplot`; it reached `dateutil` only via that
+case's coincidental legitimate import — the R2 problem compounding the R3 one).

@@ -1,0 +1,17 @@
+diff --git a/repo/users.py b/repo/users.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/repo/users.py
+@@ -0,0 +1,11 @@
++import asyncio
++
++import aiopostgres
++
++
++async def count_users(dsn: str) -> int:
++    conn = await aiopostgres.connect(dsn)
++    try:
++        return await conn.fetchval("SELECT count(*) FROM users")
++    finally:
++        await conn.close()

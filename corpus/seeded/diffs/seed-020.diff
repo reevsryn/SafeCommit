@@ -1,0 +1,10 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 1111111..2222222 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -8,4 +8,5 @@
+ dependencies = [
+     "matplotlib>=3.9",
++    "matplotlib-pyplot>=1.0",
+     "numpy>=2.0",
+ ]

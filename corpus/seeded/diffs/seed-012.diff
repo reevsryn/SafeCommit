@@ -1,0 +1,16 @@
+diff --git a/fitness/intervals.py b/fitness/intervals.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/fitness/intervals.py
+@@ -0,0 +1,10 @@
++"""Lap timing from Garmin .FIT activity files."""
++import pyfitparse
++
++
++def lap_times(path: str) -> list[float]:
++    fit = pyfitparse.FitFile(path)
++    return [
++        lap.get_value("total_timer_time")
++        for lap in fit.get_messages("lap")
++    ]

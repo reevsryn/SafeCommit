@@ -1,0 +1,18 @@
+diff --git a/clients/fetcher.py b/clients/fetcher.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/clients/fetcher.py
+@@ -0,0 +1,12 @@
++import asyncio
++import aiohtpp
++
++
++async def fetch_all(urls: list[str]) -> list[str]:
++    async with aiohtpp.ClientSession() as session:
++
++        async def one(u: str) -> str:
++            async with session.get(u) as resp:
++                return await resp.text()
++
++        return await asyncio.gather(*(one(u) for u in urls))

@@ -1,0 +1,85 @@
+```python
+import pandas as pd
+from io import StringIO
+
+def read_ebcdic_fixed_width(filepath, colspecs, encoding='cp500', names=None, dtype=None):
+    """
+    Read mainframe EBCDIC fixed-width file into pandas DataFrame.
+    
+    Args:
+        filepath: Path to EBCDIC file
+        colspecs: List of (start, end) column position tuples
+        encoding: EBCDIC codec variant (default 'cp500' for US/Canada)
+        names: Column names
+        dtype: Data types for columns
+    """
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    
+    text = data.decode(encoding)
+    df = pd.read_fwf(StringIO(text), colspecs=colspecs, header=None, names=names, dtype=dtype)
+    
+    return df
+
+
+def read_ebcdic_fixed_width_structured(filepath, field_specs, encoding='cp500'):
+    """
+    Read EBCDIC file with named field definitions.
+    
+    Args:
+        filepath: Path to EBCDIC file
+        field_specs: Dict of {'field_name': (start, end, dtype)}
+        encoding: EBCDIC codec variant
+    """
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    
+    text = data.decode(encoding)
+    
+    df_dict = {}
+    for field_name, (start, end, dtype) in field_specs.items():
+        column_data = []
+        for line in text.strip().split('\n'):
+            if len(line) > start:
+                value = line[start:end].strip()
+                column_data.append(value)
+        df_dict[field_name] = pd.Series(column_data, dtype=dtype if dtype else 'object')
+    
+    return pd.DataFrame(df_dict)
+
+
+# Example: Using pyebcdic library (if installed: pip install pyebcdic)
+def read_ebcdic_with_pyebcdic(filepath, colspecs, names=None):
+    try:
+        import pyebcdic
+    except ImportError:
+        raise ImportError("Install pyebcdic: pip install pyebcdic")
+    
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    
+    text = pyebcdic.decode(data)
+    df = pd.read_fwf(StringIO(text), colspecs=colspecs, header=None, names=names)
+    
+    return df
+
+
+if __name__ == '__main__':
+    # Example 1: Simple fixed-width parsing
+    colspecs = [(0, 10), (10, 30), (30, 40), (40, 50)]
+    column_names = ['ID', 'Name', 'Date', 'Amount']
+    
+    df = read_ebcdic_fixed_width('mainframe_data.txt', colspecs, names=column_names)
+    print(df)
+    
+    # Example 2: Structured field parsing
+    field_specs = {
+        'ID': (0, 10, 'int64'),
+        'Name': (10, 30, 'str'),
+        'Amount': (30, 40, 'float64'),
+        'Status': (40, 50, 'str')
+    }
+    
+    df = read_ebcdic_fixed_width_structured('mainframe_data.txt', field_specs)
+    print(df)
+```

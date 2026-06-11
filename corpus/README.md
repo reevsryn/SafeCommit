@@ -104,9 +104,12 @@ like `faketestpkg123`. The rules below make that defensible.
 Author names in the proportions LLMs tend to produce, across these categories:
 
 - **Typosquats / near-misses of popular packages** — character swaps, omissions,
-  doubled or dropped letters, singular↔plural, and `-`↔`_` variants of real
-  distributions (e.g. a transposition of a well-known name). These mirror the
-  "slopsquat" surface.
+  doubled or dropped letters, singular↔plural variants of real distributions
+  (e.g. a transposition of a well-known name). These mirror the "slopsquat"
+  surface. *Caveat discovered during authoring:* `-`↔`_` swaps are **not**
+  registry typosquats — PEP 503 normalization makes `scikit_learn` and
+  `scikit-learn` the same PyPI name, so that pattern only matters at the
+  import/module level (Phase 3 territory), never for registry-existence checks.
 - **Plausible-but-nonexistent libraries** — names assembled from real tokens that
   *sound* like they should exist: `<domain>_utils`, `fast<thing>`, `py<thing>`,
   `<thing>2`, `<thing>-async`, `<thing>-client`. This is the classic "the model
@@ -115,19 +118,34 @@ Author names in the proportions LLMs tend to produce, across these categories:
   module but is **not** the installable distribution, or conflating two projects.
   Use sparingly and label clearly; these are subtler and easier to get wrong.
 
-### 2. Verify non-existence at authoring time
+### 2. Verify non-existence at authoring time — and re-verify on demand
 
 - Every seeded name **must** return 404 on PyPI when authored. Record the check
   and the date in the manifest (e.g. a `"verified_absent": "YYYY-MM-DD"` field).
 - Prefer names **unlikely to ever be registered**, so the corpus stays valid and
-  we never accidentally seed a real slopsquat target. Re-verify before publishing
-  the benchmark.
+  we never accidentally seed a real slopsquat target. This risk has a
+  **mechanism, not a reminder**: `python3 -m bench verify-seeded` re-checks
+  every seeded name fresh against PyPI (cache bypassed) and exits 1 if any got
+  registered — run it before publishing any benchmark numbers, and re-author
+  any case it fails.
+- Authoring evidence (2026-06-11): 8 of 31 hand-drafted "plausible" candidates
+  turned out to be real registered packages (`fastapy`, `panddas`,
+  `requests-retry`, `httpx-retry`, `boto3-utils`, `django-async-tasks`,
+  `yaml-validator`, `pandas-cleaner`) — verification at authoring time is not
+  optional.
 
 ### 3. Record provenance per name
 
 For each seeded case, note **why** the name is a realistic hallucination (which
 category above, and what real package it mimics or composes from). This is what
 turns "names that fail" into "documented, reproducible hallucination patterns."
+
+Each truth entry records `category`, `origin` (`hand-authored` or
+`llm-harvested`), `mimics` (the auditable lineage), and `verified_absent`.
+Harvested names additionally record the model ID and the verbatim prompt/output
+files (committed under `seeded/harvest/`) — these are names a real production
+model actually generated when asked for working code, the strongest provenance
+available given that Spracklen et al.'s name list is private.
 
 ### 4. Do not use any private master list
 

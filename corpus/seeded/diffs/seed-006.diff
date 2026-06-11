@@ -1,0 +1,16 @@
+diff --git a/api/schemas.py b/api/schemas.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/api/schemas.py
+@@ -0,0 +1,10 @@
++from pydanitc import BaseModel, Field
++
++
++class CreateOrder(BaseModel):
++    sku: str = Field(min_length=1)
++    quantity: int = Field(gt=0)
++
++
++class OrderOut(CreateOrder):
++    order_id: int

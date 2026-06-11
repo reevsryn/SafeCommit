@@ -1,9 +1,10 @@
 """`python3 -m bench <subcommand>` entry point.
 
 Subcommands:
-    eval    run a tool over one or more corpora and print precision/recall/noise
-    mine    (step 2) fetch real merged Python PRs into a known-good corpus
-    verify  (step 2) QA a mined corpus; quarantine unresolved cases for review
+    eval           run a tool over one or more corpora and print precision/recall/noise
+    mine           (step 2) fetch real merged Python PRs into a known-good corpus
+    verify         (step 2) QA a mined corpus; quarantine unresolved cases for review
+    verify-seeded  (step 3) re-check every seeded name is still absent from PyPI
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import sys
 
 from . import mine as mine_mod
 from . import verify as verify_mod
+from . import verify_seeded as verify_seeded_mod
 from .report import render_json, render_text
 from .runner import evaluate
 
@@ -61,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_mod.add_arguments(v)
     v.set_defaults(func=verify_mod.run_cli)
+
+    vs = sub.add_parser(
+        "verify-seeded",
+        help="(step 3) fresh-check that every seeded hallucination name is "
+        "still absent from PyPI; exit 1 if any got registered",
+    )
+    verify_seeded_mod.add_arguments(vs)
+    vs.set_defaults(func=verify_seeded_mod.run_cli)
 
     return p
 
