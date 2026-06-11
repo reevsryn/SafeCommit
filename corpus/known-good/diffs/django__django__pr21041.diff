@@ -1,0 +1,120 @@
+diff --git a/django/contrib/auth/__init__.py b/django/contrib/auth/__init__.py
+index 21e6dc43d633..aa56df9a3a14 100644
+--- a/django/contrib/auth/__init__.py
++++ b/django/contrib/auth/__init__.py
+@@ -391,3 +391,22 @@ async def aupdate_session_auth_hash(request, user):
+     await request.session.acycle_key()
+     if hasattr(user, "get_session_auth_hash") and await request.auser() == user:
+         await request.session.aset(HASH_SESSION_KEY, user.get_session_auth_hash())
++
++
++def check_password_with_timing_attack_mitigation(user, password):
++    """
++    Checks password against the user's hash if there is a user, otherwise runs
++    the default password hasher to prevent user enumeration attacks (#20760).
++    """
++    if user is None:
++        get_user_model()().set_password(password)
++    else:
++        return user.check_password(password)
++
++
++async def acheck_password_with_timing_attack_mitigation(user, password):
++    """See check_user_with_timing_attack_mitigation."""
++    if user is None:
++        get_user_model()().set_password(password)
++    else:
++        return await user.acheck_password(password)
+diff --git a/django/contrib/auth/backends.py b/django/contrib/auth/backends.py
+index e72a18981c57..24d6c6708d22 100644
+--- a/django/contrib/auth/backends.py
++++ b/django/contrib/auth/backends.py
+@@ -1,6 +1,10 @@
+ from asgiref.sync import sync_to_async
+ 
+-from django.contrib.auth import get_user_model
++from django.contrib.auth import (
++    acheck_password_with_timing_attack_mitigation,
++    check_password_with_timing_attack_mitigation,
++    get_user_model,
++)
+ from django.contrib.auth.models import Permission
+ from django.db.models import Exists, OuterRef, Q
+ 
+@@ -64,12 +68,12 @@ def authenticate(self, request, username=None, password=None, **kwargs):
+         try:
+             user = UserModel._default_manager.get_by_natural_key(username)
+         except UserModel.DoesNotExist:
+-            # Run the default password hasher once to reduce the timing
+-            # difference between an existing and a nonexistent user (#20760).
+-            UserModel().set_password(password)
+-        else:
+-            if user.check_password(password) and self.user_can_authenticate(user):
+-                return user
++            user = None
++
++        if check_password_with_timing_attack_mitigation(
++            user, password
++        ) and self.user_can_authenticate(user):
++            return user
+ 
+     async def aauthenticate(self, request, username=None, password=None, **kwargs):
+         if username is None:
+@@ -79,14 +83,12 @@ async def aauthenticate(self, request, username=None, password=None, **kwargs):
+         try:
+             user = await UserModel._default_manager.aget_by_natural_key(username)
+         except UserModel.DoesNotExist:
+-            # Run the default password hasher once to reduce the timing
+-            # difference between an existing and a nonexistent user (#20760).
+-            UserModel().set_password(password)
+-        else:
+-            if await user.acheck_password(password) and self.user_can_authenticate(
+-                user
+-            ):
+-                return user
++            user = None
++
++        if await acheck_password_with_timing_attack_mitigation(
++            user, password
++        ) and self.user_can_authenticate(user):
++            return user
+ 
+     def user_can_authenticate(self, user):
+         """
+diff --git a/django/contrib/auth/handlers/modwsgi.py b/django/contrib/auth/handlers/modwsgi.py
+index 086db89fc846..e19de0baffaa 100644
+--- a/django/contrib/auth/handlers/modwsgi.py
++++ b/django/contrib/auth/handlers/modwsgi.py
+@@ -8,8 +8,7 @@ def _get_user(username):
+     """
+     Return the UserModel instance for `username`.
+ 
+-    If no matching user exists, or if the user is inactive, return None, in
+-    which case the default password hasher is run to mitigate timing attacks.
++    If no matching user exists, or if the user is inactive, return None.
+     """
+     try:
+         user = UserModel._default_manager.get_by_natural_key(username)
+@@ -18,12 +17,6 @@ def _get_user(username):
+     else:
+         if not user.is_active:
+             user = None
+-
+-    if user is None:
+-        # Run the default password hasher once to reduce the timing difference
+-        # between existing/active and nonexistent/inactive users (#20760).
+-        UserModel().set_password("")
+-
+     return user
+ 
+ 
+@@ -43,8 +36,7 @@ def check_password(environ, username, password):
+     db.reset_queries()
+     try:
+         user = _get_user(username)
+-        if user:
+-            return user.check_password(password)
++        return auth.check_password_with_timing_attack_mitigation(user, password)
+     finally:
+         db.close_old_connections()
+ 

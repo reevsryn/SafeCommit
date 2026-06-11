@@ -1,0 +1,78 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 5bfd1c76e5d87..bd49a294e2487 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -350,6 +350,7 @@ I/O
+ - Bug in :meth:`DataFrame.to_string` where ``formatters`` dict was applied to wrong columns when output was horizontally truncated via ``max_cols`` (:issue:`35410`)
+ - Fixed :func:`read_json` with ``lines=True`` and ``nrows=0`` to return an empty DataFrame (:issue:`64025`)
+ - :meth:`DataFrame.to_hdf` now raises a clear :class:`NotImplementedError` when writing a column or :class:`Index` of an unsupported extension dtype (such as :class:`IntervalDtype`, :class:`SparseDtype`, or the nullable integer/float/boolean dtypes), instead of a low-level ``AttributeError`` or PyTables ``TypeError`` (:issue:`26144`, :issue:`38305`, :issue:`42070`)
++- :meth:`HDFStore.select` now raises an informative ``NotImplementedError`` when a ``where`` clause contains an arithmetic expression such as ``"(A % 3) == 0"``, instead of an opaque PyTables ``TypeError``; arithmetic in ``where`` filters is not supported (:issue:`41100`)
+ - Fixed ``MemoryError`` in :meth:`HDFStore.select` when iterating large tables with ``chunksize`` and no ``where`` filter (:issue:`15937`)
+ - Fixed bug in :func:`read_hdf` where the literal string ``"nan"`` in a string :class:`Index` was incorrectly converted to ``NaN`` on read, even when a custom ``nan_rep`` was supplied (:issue:`9604`)
+ - Fixed bug in :meth:`DataFrame.to_hdf` with ``format="table"`` where a :class:`TimedeltaIndex` was reconstructed as a :class:`PeriodIndex` (when ``freq`` was set) or an integer :class:`Index` (otherwise) on read-back (:issue:`21466`)
+diff --git a/pandas/core/computation/pytables.py b/pandas/core/computation/pytables.py
+index e78b28ed0b766..ce9b23e7fb1ec 100644
+--- a/pandas/core/computation/pytables.py
++++ b/pandas/core/computation/pytables.py
+@@ -35,7 +35,10 @@
+ )
+ from pandas.core.computation.common import ensure_decoded
+ from pandas.core.computation.expr import BaseExprVisitor
+-from pandas.core.computation.ops import is_term
++from pandas.core.computation.ops import (
++    ARITH_OPS_SYMS,
++    is_term,
++)
+ from pandas.core.construction import extract_array
+ from pandas.core.indexes.base import Index
+ 
+@@ -126,6 +129,17 @@ def _disallow_scalar_only_bool_ops(self) -> None:
+         pass
+ 
+     def prune(self, klass):
++        if self.op in ARITH_OPS_SYMS:
++            # GH#41100: arithmetic in a where-clause is not supported. PyTables
++            # support is in maintenance mode, so rather than grow the query
++            # grammar we raise with a pointer to a working alternative.
++            raise NotImplementedError(
++                "arithmetic operations are not supported inside an HDFStore "
++                "'where' filter; instead store a precomputed column as a "
++                "data_column and query that, or read the data and apply the "
++                "filter in pandas (e.g. df[df['A'] % 3 == 0])."
++            )
++
+         def pr(left, right):
+             """create and return a new specialized BinOp from myself"""
+             if left is None:
+diff --git a/pandas/tests/io/pytables/test_select.py b/pandas/tests/io/pytables/test_select.py
+index 904e7d2138d5d..2607292bf8edf 100644
+--- a/pandas/tests/io/pytables/test_select.py
++++ b/pandas/tests/io/pytables/test_select.py
+@@ -283,6 +283,27 @@ def test_select_dtypes_comparison_with_numpy_scalar(temp_hdfstore):
+     tm.assert_frame_equal(expected, result)
+ 
+ 
++@pytest.mark.parametrize(
++    "where",
++    [
++        "(A % 3) == 0",
++        "A % 3 == 0",
++        "(A * 2) > 10",
++        "(A + B) < 25",
++        "A + 1",
++    ],
++)
++def test_select_arithmetic_where_not_supported(temp_hdfstore, where):
++    # GH#41100 arithmetic operators inside a where clause are not supported;
++    # raise an informative error instead of an opaque PyTables one
++    df = DataFrame({"A": np.arange(0, 10), "B": np.arange(10, 20)})
++    temp_hdfstore.append("df", df, data_columns=["A", "B"])
++
++    msg = "arithmetic operations are not supported"
++    with pytest.raises(NotImplementedError, match=msg):
++        temp_hdfstore.select("df", where=[where])
++
++
+ def test_select_with_many_inputs(temp_hdfstore):
+     df = DataFrame(
+         {

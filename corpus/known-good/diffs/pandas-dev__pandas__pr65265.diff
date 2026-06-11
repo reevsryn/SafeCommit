@@ -1,0 +1,244 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 2cffcef2bae2c..5f6c1cea97bbf 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -293,7 +293,9 @@ Indexing
+ - Bug in :meth:`Index.get_loc` raising ``KeyError`` when looking up a tuple in an object-dtype :class:`Index` with duplicates (:issue:`37800`)
+ - Bug in :meth:`Index.insert` silently casting booleans to numeric when used with nullable numeric dtypes like ``Float64`` or ``Int64`` (:issue:`61709`)
+ - Bug in :meth:`Index.take` where ``fill_value`` was silently ignored and integer-dtype indexes raised ``ValueError`` instead of filling with the provided value. Passing ``fill_value=None`` now fills ``-1`` entries with the Index's NA value (matching the :class:`~pandas.api.extensions.ExtensionArray` convention); omit ``fill_value`` to retain the previous behavior where negative indices wrap (:issue:`65210`)
++- Bug in :meth:`Index.where` and :meth:`Index.putmask` preserving ``numpy.datetime64`` / ``numpy.timedelta64`` ``NaT`` scalars in the object-dtype result for mismatched-dtype inputs, instead of normalizing to :attr:`pandas.NaT` as :meth:`Series.where` does (:issue:`55174`)
+ - Bug in :meth:`MultiIndex.get_loc` returning a slice instead of an integer for a unique key when the :class:`MultiIndex` contained duplicates elsewhere, causing ``.loc`` to return a :class:`Series` instead of a scalar (:issue:`42102`)
++- Bug in :meth:`Series.where` and :meth:`Series.mask` raising ``ValueError`` when ``other`` is a tuple on object-dtype :class:`Series` (:issue:`37681`)
+ - Fixed bug in :meth:`DataFrame.loc` where assigning with duplicate column names and new columns corrupted unrelated columns (:issue:`58317`)
+ - Fixed segfault in :meth:`DataFrame.loc` when repeatedly adding new rows to an object-dtype-indexed :class:`DataFrame` (:issue:`21968`)
+ -
+diff --git a/pandas/core/indexes/base.py b/pandas/core/indexes/base.py
+index bf15c3106b621..fee428ca248f8 100644
+--- a/pandas/core/indexes/base.py
++++ b/pandas/core/indexes/base.py
+@@ -130,10 +130,7 @@
+ )
+ from pandas.core.accessor import Accessor
+ import pandas.core.algorithms as algos
+-from pandas.core.array_algos.putmask import (
+-    setitem_datetimelike_compat,
+-    validate_putmask,
+-)
++from pandas.core.array_algos.putmask import validate_putmask
+ from pandas.core.arrays import (
+     ArrowExtensionArray,
+     BaseMaskedArray,
+@@ -5456,7 +5453,22 @@ def where(self, cond: np.ndarray, other: object = None) -> Index:
+                 ".where is not supported for MultiIndex operations"
+             )
+         cond = np.asarray(cond, dtype=bool)
+-        return self.putmask(~cond, other)
++
++        from pandas import Series
++
++        ser = Series(self._values, copy=False)
++        try:
++            result_ser = ser.where(cond, other)
++        except (TypeError, ValueError):
++            # e.g. Categorical with a value not in categories;
++            # find a common dtype and retry
++            dtype = self._find_common_type_compat(other)
++            if dtype == self.dtype:
++                raise
++            return self.astype(dtype).where(cond, other)
++        return Index(
++            result_ser._values, dtype=result_ser.dtype, name=self.name, copy=False
++        )
+ 
+     # construction helpers
+     @final
+@@ -5748,45 +5760,7 @@ def putmask(self, mask: npt.NDArray[np.bool_], value: object) -> Index:
+         mask, noop = validate_putmask(self._values, mask)
+         if noop:
+             return self.copy()
+-
+-        if self.dtype != object and is_valid_na_for_dtype(value, self.dtype):
+-            # e.g. None -> np.nan, see also Block._standardize_fill_value
+-            value = self._na_value
+-
+-        try:
+-            converted = self._validate_fill_value(value)
+-        except (LossySetitemError, ValueError, TypeError) as err:
+-            if is_object_dtype(self.dtype):  # pragma: no cover
+-                raise err
+-
+-            # See also: Block.coerce_to_target_dtype
+-            dtype = self._find_common_type_compat(value)
+-            if dtype == self.dtype:
+-                # GH#56376 avoid RecursionError
+-                raise AssertionError(
+-                    "Something has gone wrong. Please report a bug at "
+-                    "github.com/pandas-dev/pandas"
+-                ) from err
+-            return self.astype(dtype).putmask(mask, value)
+-
+-        values = self._values.copy()
+-
+-        if isinstance(values, np.ndarray):
+-            converted = setitem_datetimelike_compat(values, mask.sum(), converted)
+-            if isinstance(converted, tuple):
+-                # GH#37681 np.putmask unpacks tuples, so wrap in an
+-                #  object array to ensure the tuple is treated as a scalar
+-                fill_arr = np.empty(1, dtype=object)
+-                fill_arr[0] = converted
+-                converted = fill_arr
+-            np.putmask(values, mask, converted)  # pyright: ignore[reportArgumentType]
+-
+-        else:
+-            # Note: we use the original value here, not converted, as
+-            #  _validate_fill_value is not idempotent
+-            values._putmask(mask, value)
+-
+-        return self._shallow_copy(values)
++        return self.where(~mask, value)
+ 
+     def equals(self, other: Any) -> bool:
+         """
+diff --git a/pandas/core/internals/blocks.py b/pandas/core/internals/blocks.py
+index 0a9610db69516..9e9ada6460c1e 100644
+--- a/pandas/core/internals/blocks.py
++++ b/pandas/core/internals/blocks.py
+@@ -1297,7 +1297,14 @@ def where(self, other, cond) -> list[Block]:
+         else:
+             other = casted
+             alt = setitem_datetimelike_compat(values, icond.sum(), other)
+-            if alt is not other:
++            if isinstance(other, tuple) and values.dtype == _dtype_obj:
++                # GH#37681 np.where/np.putmask unpack tuples, so wrap in an
++                #  object array to ensure the tuple is treated as a scalar.
++                fill_arr = np.empty(1, dtype=object)
++                fill_arr[0] = other
++                result = values.copy()
++                np.putmask(result, icond, fill_arr)
++            elif alt is not other:
+                 if is_list_like(other) and len(other) < len(values):
+                     # call np.where with other to get the appropriate ValueError
+                     np.where(~icond, values, other)
+diff --git a/pandas/tests/indexes/datetimes/test_indexing.py b/pandas/tests/indexes/datetimes/test_indexing.py
+index fe91f4ad25de5..e71becf99a0e2 100644
+--- a/pandas/tests/indexes/datetimes/test_indexing.py
++++ b/pandas/tests/indexes/datetimes/test_indexing.py
+@@ -167,7 +167,7 @@ def test_where_invalid_dtypes(self):
+ 
+         # passing tz-naive ndarray to tzaware DTI
+         result = dti.where(mask, i2.values)
+-        expected = Index([pd.NaT.asm8, pd.NaT.asm8, *tail], dtype=object)
++        expected = Index([pd.NaT, pd.NaT, *tail], dtype=object)
+         tm.assert_index_equal(result, expected)
+ 
+         # passing tz-aware DTI to tznaive DTI
+@@ -178,13 +178,12 @@ def test_where_invalid_dtypes(self):
+ 
+         pi = i2.tz_localize(None).to_period("D")
+         result = dti.where(mask, pi)
+-        expected = Index([pi[0], pi[1], *tail], dtype=object)
++        expected = Index([pd.NaT, pd.NaT, *tail], dtype=object)
+         tm.assert_index_equal(result, expected)
+ 
+         tda = i2.asi8.view("timedelta64[ns]")
+         result = dti.where(mask, tda)
+-        expected = Index([tda[0], tda[1], *tail], dtype=object)
+-        assert isinstance(expected[0], np.timedelta64)
++        expected = Index([pd.NaT, pd.NaT, *tail], dtype=object)
+         tm.assert_index_equal(result, expected)
+ 
+         result = dti.where(mask, i2.asi8)
+diff --git a/pandas/tests/indexes/period/test_indexing.py b/pandas/tests/indexes/period/test_indexing.py
+index 998393237e5a2..f0f1b67591dd6 100644
+--- a/pandas/tests/indexes/period/test_indexing.py
++++ b/pandas/tests/indexes/period/test_indexing.py
+@@ -574,8 +574,7 @@ def test_where_invalid_dtypes(self):
+         tm.assert_index_equal(result, expected)
+ 
+         tdi = i2.asi8.view("timedelta64[ns]")
+-        expected = pd.Index([tdi[0], tdi[1], *tail], dtype=object)
+-        assert isinstance(expected[0], np.timedelta64)
++        expected = pd.Index([NaT, NaT, *tail], dtype=object)
+         result = pi.where(mask, tdi)
+         tm.assert_index_equal(result, expected)
+ 
+diff --git a/pandas/tests/series/indexing/test_setitem.py b/pandas/tests/series/indexing/test_setitem.py
+index 70579a58c1370..196b00541ed26 100644
+--- a/pandas/tests/series/indexing/test_setitem.py
++++ b/pandas/tests/series/indexing/test_setitem.py
+@@ -853,16 +853,25 @@ def test_index_where(self, obj, key, expected, raises, val):
+         mask = np.zeros(obj.shape, dtype=bool)
+         mask[key] = True
+ 
++        if is_list_like(val) and len(val) < len(obj):
++            # see test_series_where
++            return
++
+         res = Index(obj).where(~mask, val)
+-        expected_idx = Index(expected, dtype=expected.dtype)
+-        tm.assert_index_equal(res, expected_idx)
++        ser_res = obj.where(~mask, val)
++        tm.assert_index_equal(res, Index(ser_res, dtype=ser_res.dtype))
+ 
+     def test_index_putmask(self, obj, key, expected, raises, val):
+         mask = np.zeros(obj.shape, dtype=bool)
+         mask[key] = True
+ 
++        if is_list_like(val) and len(val) < len(obj):
++            # see test_series_where
++            return
++
+         res = Index(obj).putmask(mask, val)
+-        tm.assert_index_equal(res, Index(expected, dtype=expected.dtype))
++        ser_res = obj.where(~mask, val)
++        tm.assert_index_equal(res, Index(ser_res, dtype=ser_res.dtype))
+ 
+ 
+ @pytest.mark.parametrize(
+@@ -1470,6 +1479,22 @@ def test_slice_key(self, obj, key, expected, raises, val, indexer_sli, is_inplac
+             # the xfail would xpass bc test_slice_key short-circuits
+             raise AssertionError("xfail not relevant for this test.")
+ 
++    def test_index_where(self, obj, key, expected, raises, val):
++        super().test_index_where(obj, key, expected, raises, val)
++
++        if isinstance(val, float) and not np_version_gt2:
++            # Index.where delegates to Series.where, so the comparison is
++            #  trivially satisfied and the xfail would xpass
++            raise AssertionError("xfail not relevant for this test.")
++
++    def test_index_putmask(self, obj, key, expected, raises, val):
++        super().test_index_putmask(obj, key, expected, raises, val)
++
++        if isinstance(val, float) and not np_version_gt2:
++            # Index.putmask delegates to Series.where, so the comparison is
++            #  trivially satisfied and the xfail would xpass
++            raise AssertionError("xfail not relevant for this test.")
++
+ 
+ @pytest.mark.parametrize(
+     "exp_dtype",
+diff --git a/pandas/tests/series/indexing/test_where.py b/pandas/tests/series/indexing/test_where.py
+index 307da36629fd3..2cfac6c3e0bd4 100644
+--- a/pandas/tests/series/indexing/test_where.py
++++ b/pandas/tests/series/indexing/test_where.py
+@@ -418,6 +418,19 @@ def test_where_categorical(frame_or_series):
+     tm.assert_equal(exp, res)
+ 
+ 
++def test_where_tuple_scalar_object_dtype():
++    # GH#37681 - np.where unpacks tuples; ensure tuple is treated as scalar
++    ser = Series([(0, 1), (1, 2), np.nan], dtype=object)
++    mask = np.array([True, True, False])
++
++    result = ser.where(mask, (9, 9))
++    expected = Series([(0, 1), (1, 2), (9, 9)], dtype=object)
++    tm.assert_series_equal(result, expected)
++
++    result = ser.mask(~mask, (9, 9))
++    tm.assert_series_equal(result, expected)
++
++
+ def test_where_datetimelike_categorical(tz_naive_fixture):
+     # GH#37682
+     tz = tz_naive_fixture

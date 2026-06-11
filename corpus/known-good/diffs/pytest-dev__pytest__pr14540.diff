@@ -1,0 +1,196 @@
+diff --git a/AUTHORS b/AUTHORS
+index 27c0b3ac408..972f39aa45e 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -334,6 +334,7 @@ Mike Fiedler (miketheman)
+ Mike Hoyle (hoylemd)
+ Mike Lundy
+ Milan Lesnek
++minbang930
+ Miro Hrončok
+ Mulat Mekonen
+ mrbean-bremen
+diff --git a/changelog/14533.breaking.rst b/changelog/14533.breaking.rst
+new file mode 100644
+index 00000000000..d63f4d3a852
+--- /dev/null
++++ b/changelog/14533.breaking.rst
+@@ -0,0 +1,8 @@
++When using :option:`--doctest-modules`, autouse fixtures with ``module``, ``package`` or ``session`` scope that are defined inline in Python test modules (not plugins or conftests) will now possibly execute twice.
++
++If this is undesirable, move the fixture definition to a ``conftest.py`` file if possible.
++
++Technical explanation for those interested:
++When using `--doctest-modules`, pytest possibly collects Python modules twice, once as :class:`pytest.Module` and once as a ``DoctestModule`` (depending on the configuration).
++Due to improvements in pytest's fixture implementation, if e.g. the ``DoctestModule`` collects a fixture, it is now visible to it only, and not to the ``Module``.
++This means that both need to register the fixtures independently.
+diff --git a/doc/en/how-to/doctest.rst b/doc/en/how-to/doctest.rst
+index 9bbe750bc4a..9375a279ea5 100644
+--- a/doc/en/how-to/doctest.rst
++++ b/doc/en/how-to/doctest.rst
+@@ -42,7 +42,7 @@ By default, pytest will collect ``test*.txt`` files looking for doctest directiv
+ can pass additional globs using the :option:`--doctest-glob` option (multi-allowed).
+ 
+ In addition to text files, you can also execute doctests directly from docstrings of your classes
+-and functions, including from test modules:
++and functions, including from test modules, using the :option:`--doctest-modules` option:
+ 
+ .. code-block:: python
+ 
+@@ -224,6 +224,9 @@ unless explicitly configured by :confval:`python_files`.
+ Also, the :ref:`usefixtures <usefixtures>` mark and fixtures marked as :ref:`autouse <autouse>` are supported
+ when executing text doctest files.
+ 
++Python doctest modules are collected independently from Python test files.
++Fixture scope is not shared between the two.
++
+ Doctests do not support fixtures that depend on parametrization, because doctest
+ collection does not perform the same test generation as normal test functions.
+ This includes parametrized autouse fixtures. If you need to run doctests against
+diff --git a/pyproject.toml b/pyproject.toml
+index cce08575ce1..d40a74cc78a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -377,6 +377,7 @@ testpaths = [
+ ]
+ norecursedirs = [
+     "testing/example_scripts",
++    "testing/plugins_integration",
+     ".*",
+     "build",
+     "dist",
+diff --git a/src/_pytest/doctest.py b/src/_pytest/doctest.py
+index cd255f5eeb6..b1f365109ba 100644
+--- a/src/_pytest/doctest.py
++++ b/src/_pytest/doctest.py
+@@ -552,8 +552,7 @@ def _from_module(self, module, object):
+             else:
+                 raise
+ 
+-        # While doctests currently don't support fixtures directly, we still
+-        # need to pick up autouse fixtures.
++        # doctests supports fixtures via `getfixture` and autouse.
+         self.session._fixturemanager.parsefactories(self)
+ 
+         # Uses internal doctest module parsing mechanism.
+diff --git a/src/_pytest/fixtures.py b/src/_pytest/fixtures.py
+index cbff9455e9d..e787b323362 100644
+--- a/src/_pytest/fixtures.py
++++ b/src/_pytest/fixtures.py
+@@ -1707,7 +1707,6 @@ def __init__(self, session: Session) -> None:
+         # TODO: The order of the FixtureDefs list of each arg is significant,
+         #       explain.
+         self._arg2fixturedefs: Final[dict[str, list[FixtureDef[Any]]]] = {}
+-        self._holderobjseen: Final[set[object]] = set()
+         # A mapping from a node to a list of autouse fixture names it defines.
+         # The Session entry holds global usefixtures from config.
+         self._node_autousenames: Final[dict[nodes.Node, list[str]]] = {
+@@ -2070,8 +2069,6 @@ def parsefactories(
+             assert isinstance(node_or_obj, nodes.Node)
+             holderobj = cast(object, node_or_obj.obj)  # type: ignore[attr-defined]
+             effective_node = node_or_obj
+-        if holderobj in self._holderobjseen:
+-            return
+ 
+         # Avoid accessing `@property` (and other descriptors) when iterating fixtures.
+         if not safe_isclass(holderobj) and not isinstance(holderobj, types.ModuleType):
+@@ -2079,7 +2076,6 @@ def parsefactories(
+         else:
+             holderobj_tp = holderobj
+ 
+-        self._holderobjseen.add(holderobj)
+         for name in dir(holderobj):
+             # The attribute can be an arbitrary descriptor, so the attribute
+             # access below can raise. safe_getattr() ignores such exceptions.
+diff --git a/testing/test_doctest.py b/testing/test_doctest.py
+index 8b71dabbc77..9c788d0fc41 100644
+--- a/testing/test_doctest.py
++++ b/testing/test_doctest.py
+@@ -600,6 +600,37 @@ def test_doctestmodule_with_fixtures(self, pytester: Pytester):
+         reprec = pytester.inline_run(p, "--doctest-modules")
+         reprec.assertoutcome(passed=1)
+ 
++    def test_module_fixture_available_to_normal_test_with_doctestmodules(
++        self, pytester: Pytester
++    ) -> None:
++        """Regression test for #14533.
++
++        Module-level fixtures collected with ``--doctest-modules`` are available
++        both to normal tests and doctests in the same file.
++        """
++        pytester.makepyfile(
++            """
++            import pytest
++
++            @pytest.fixture
++            def fix():
++                return "fix"
++
++            def test(fix):
++                assert fix == "fix"
++
++            def func():
++                '''My function.
++
++                >>> getfixture("fix")
++                'fix'
++                '''
++            """
++        )
++
++        result = pytester.runpytest("--doctest-modules")
++        result.assert_outcomes(passed=2)
++
+     def test_doctestmodule_three_tests(self, pytester: Pytester):
+         p = pytester.makepyfile(
+             """
+@@ -1302,6 +1333,37 @@ def bar():
+         result = pytester.runpytest("--doctest-modules")
+         result.stdout.fnmatch_lines(["*2 passed*"])
+ 
++    def test_doctest_and_python_fixtures_not_shared(self, pytester: Pytester) -> None:
++        """Fixture scopes are not shared between doctest and python modules.
++
++        This test is not meant as a hard behavioral test -- sharing scope is
++        also an acceptable behavior (see #14533). But this test ensures and
++        behavior change is done knowingly.
++        """
++        pytester.makepyfile(
++            r"""
++            import pytest
++
++            @pytest.fixture(scope="session", autouse=True)
++            def auto():
++                with open("out", "a", encoding="utf-8") as f:
++                    f.write("RUN\n")
++
++            def test():
++                pass
++
++            def func():
++                '''My function.
++
++                >>> 1 + 1
++                2
++                '''
++        """
++        )
++        result = pytester.runpytest("--doctest-modules")
++        result.assert_outcomes(passed=2)
++        assert Path("out").read_text("utf-8").split() == ["RUN"] * 2
++
+     @pytest.mark.parametrize("scope", SCOPES)
+     @pytest.mark.parametrize("enable_doctest", [True, False])
+     def test_fixture_scopes(self, pytester, scope, enable_doctest):
+diff --git a/tox.ini b/tox.ini
+index b37bdb6aa85..89faf448875 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -182,6 +182,7 @@ description =
+ pip_pre=true
+ changedir = testing/plugins_integration
+ deps = -rtesting/plugins_integration/requirements.txt
++allowlist_externals = pip
+ setenv =
+     PYTHONPATH=.
+ commands =

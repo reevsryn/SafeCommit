@@ -1,8 +1,9 @@
 """`python3 -m bench <subcommand>` entry point.
 
 Subcommands:
-    eval   run a tool over one or more corpora and print precision/recall/noise
-    mine   (step 2) fetch real merged Python PRs into a known-good corpus
+    eval    run a tool over one or more corpora and print precision/recall/noise
+    mine    (step 2) fetch real merged Python PRs into a known-good corpus
+    verify  (step 2) QA a mined corpus; quarantine unresolved cases for review
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import shlex
 import sys
 
 from . import mine as mine_mod
+from . import verify as verify_mod
 from .report import render_json, render_text
 from .runner import evaluate
 
@@ -51,6 +53,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mine_mod.add_arguments(m)
     m.set_defaults(func=mine_mod.run_cli)
+
+    v = sub.add_parser(
+        "verify",
+        help="(step 2) QA a mined corpus against stdlib/first-party/PyPI; "
+        "quarantine unresolved cases",
+    )
+    verify_mod.add_arguments(v)
+    v.set_defaults(func=verify_mod.run_cli)
 
     return p
 

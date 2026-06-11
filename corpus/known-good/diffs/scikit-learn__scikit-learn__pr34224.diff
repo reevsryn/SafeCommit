@@ -1,0 +1,50 @@
+diff --git a/doc/whats_new/upcoming_changes/metadata-routing/34224.fix.rst b/doc/whats_new/upcoming_changes/metadata-routing/34224.fix.rst
+new file mode 100644
+index 0000000000000..ed22123ed0190
+--- /dev/null
++++ b/doc/whats_new/upcoming_changes/metadata-routing/34224.fix.rst
+@@ -0,0 +1,4 @@
++- :class:`compose.TransformedTargetRegressor` now correctly routes metadata such as
++  ``sample_weight`` to its default regressor (:class:`~linear_model.LinearRegression`)
++  when metadata routing is enabled.
++  By :user:`Stefanie Senger <StefanieSenger>`.
+diff --git a/sklearn/compose/_target.py b/sklearn/compose/_target.py
+index 2303c363cf534..63a8d252c7075 100644
+--- a/sklearn/compose/_target.py
++++ b/sklearn/compose/_target.py
+@@ -393,7 +393,10 @@ def get_metadata_routing(self):
+ 
+     def _get_regressor(self, get_clone=False):
+         if self.regressor is None:
+-            return LinearRegression()
++            if _routing_enabled():
++                return LinearRegression().set_fit_request(sample_weight=True)
++            else:
++                return LinearRegression()
+ 
+         return clone(self.regressor) if get_clone else self.regressor
+ 
+diff --git a/sklearn/compose/tests/test_target.py b/sklearn/compose/tests/test_target.py
+index 19dcfb5dc7f03..13935a6e5d7f0 100644
+--- a/sklearn/compose/tests/test_target.py
++++ b/sklearn/compose/tests/test_target.py
+@@ -6,6 +6,7 @@
+ from sklearn import config_context, datasets
+ from sklearn.base import BaseEstimator, TransformerMixin, clone
+ from sklearn.compose import TransformedTargetRegressor
++from sklearn.datasets import make_regression
+ from sklearn.dummy import DummyRegressor
+ from sklearn.linear_model import LinearRegression, OrthogonalMatchingPursuit
+ from sklearn.pipeline import Pipeline
+@@ -437,3 +438,11 @@ def test_transform_target_regressor_preserves_input_shape(ndim):
+ 
+     regr = TransformedTargetRegressor(regressor=ValidateDimensionRegressor(ndim))
+     regr.fit(X, y)
++
++
++@config_context(enable_metadata_routing=True)
++def test_transform_target_regressor_metadata_routing_default_estimator():
++    """Test that metadata request is set on the default regressor"""
++    X, y = make_regression()
++    ttr = TransformedTargetRegressor()
++    ttr.fit(X, y, sample_weight=np.empty(shape=(X.shape[0],)))

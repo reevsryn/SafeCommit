@@ -1,0 +1,107 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 5c39ab7da25..dc826734695 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -40,10 +40,17 @@
+ 
+ <!-- Changes to Black's terminal output and error messages -->
+ 
++- Add `SourceASTParseError` to distinguish source parse failures from internal safety
++  errors, improving error reporting when Black's lenient parser accepts input that
++  `ast.parse()` rejects (#5080)
++
+ ### _Blackd_
+ 
+ <!-- Changes to blackd -->
+ 
++- Return HTTP 400 (Bad Request) for source parse failures instead of HTTP 500, keeping
++  HTTP 500 only for genuine internal safety errors (#5080)
++
+ ### Integrations
+ 
+ <!-- For example, Docker, GitHub Actions, pre-commit, editors -->
+diff --git a/src/black/__init__.py b/src/black/__init__.py
+index f9f1b51c6fa..eb5d6e40892 100644
+--- a/src/black/__init__.py
++++ b/src/black/__init__.py
+@@ -66,6 +66,7 @@
+ from black.parsing import (  # noqa F401
+     ASTSafetyError,
+     InvalidInput,
++    SourceASTParseError,
+     lib2to3_parse,
+     parse_ast,
+     stringify_ast,
+@@ -1086,6 +1087,8 @@ def check_stability_and_equivalence(
+     """
+     try:
+         assert_equivalent(src_contents, dst_contents)
++    except SourceASTParseError:
++        raise
+     except ASTSafetyError:
+         if _target_versions_exceed_runtime(mode.target_versions):
+             raise ASTSafetyError(
+@@ -1632,7 +1635,7 @@ def assert_equivalent(src: str, dst: str) -> None:
+     try:
+         src_ast = parse_ast(src)
+     except Exception as exc:
+-        raise ASTSafetyError(
++        raise SourceASTParseError(
+             "cannot use --safe with this file; failed to parse source file AST: "
+             f"{exc}\n"
+             "This could be caused by running Black with an older Python version "
+diff --git a/src/black/parsing.py b/src/black/parsing.py
+index cb4f715dcb3..5dc234c911a 100644
+--- a/src/black/parsing.py
++++ b/src/black/parsing.py
+@@ -106,6 +106,15 @@ class ASTSafetyError(Exception):
+     """Raised when Black's generated code is not equivalent to the old AST."""
+ 
+ 
++class SourceASTParseError(Exception):
++    """Raised when the source file cannot be parsed by ast.parse().
++
++    This is not a bug in Black — Black's lib2to3-based parser is more lenient
++    than Python's ast.parse(), so it may accept code that ast.parse() rejects.
++    In blackd, this should be reported as a 400 Bad Request.
++    """
++
++
+ def _parse_single_version(
+     src: str, version: tuple[int, int], *, type_comments: bool
+ ) -> ast.AST:
+diff --git a/src/blackd/__init__.py b/src/blackd/__init__.py
+index 4646e919735..5df160b6b7b 100644
+--- a/src/blackd/__init__.py
++++ b/src/blackd/__init__.py
+@@ -206,6 +206,8 @@ async def handle(
+         return web.Response(status=204, headers=headers)
+     except black.InvalidInput as e:
+         return web.Response(status=400, headers=headers, text=str(e))
++    except black.SourceASTParseError as e:
++        return web.Response(status=400, headers=headers, text=str(e))
+     except web.HTTPException:
+         raise
+     except Exception as e:
+diff --git a/tests/test_black.py b/tests/test_black.py
+index 862679feef4..5d6c65335da 100644
+--- a/tests/test_black.py
++++ b/tests/test_black.py
+@@ -38,7 +38,7 @@
+ from black.debug import DebugVisitor
+ from black.mode import Mode, Preview
+ from black.output import color_diff, diff
+-from black.parsing import ASTSafetyError
++from black.parsing import ASTSafetyError, SourceASTParseError
+ from black.report import Report
+ from black.strings import lines_with_leading_tabs_expanded
+ 
+@@ -3212,7 +3212,7 @@ def test_assert_equivalent_fstring(self) -> None:
+         )
+ 
+     def test_equivalency_ast_parse_failure_includes_error(self) -> None:
+-        with pytest.raises(ASTSafetyError) as err:
++        with pytest.raises(SourceASTParseError) as err:
+             black.assert_equivalent("a«»a  = 1", "a«»a  = 1")
+ 
+         err.match("--safe")

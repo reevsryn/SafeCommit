@@ -1,0 +1,78 @@
+diff --git a/pandas/tests/plotting/test_boxplot_method.py b/pandas/tests/plotting/test_boxplot_method.py
+index 3554f1549e488..748153b63f0d5 100644
+--- a/pandas/tests/plotting/test_boxplot_method.py
++++ b/pandas/tests/plotting/test_boxplot_method.py
+@@ -297,7 +297,7 @@ def test_colors_in_theme(self, scheme, expected):
+         plt.style.use(scheme)
+         result = df.plot.box(return_type="dict")
+         for k, v in expected.items():
+-            assert result[k][0].get_color() == v
++            assert mpl.colors.same_color(result[k][0].get_color(), v)
+ 
+     @pytest.mark.parametrize(
+         "dict_colors, msg",
+diff --git a/pandas/tests/plotting/test_series.py b/pandas/tests/plotting/test_series.py
+index 6b572ae65c264..b744c0136526b 100644
+--- a/pandas/tests/plotting/test_series.py
++++ b/pandas/tests/plotting/test_series.py
+@@ -30,6 +30,7 @@
+     _unpack_cycler,
+     get_y_axis,
+ )
++from pandas.util.version import Version
+ 
+ from pandas.tseries.offsets import CustomBusinessDay
+ 
+@@ -434,7 +435,11 @@ def test_pie_series_autopct_and_fontsize(self):
+             series.plot.pie, colors=color_args, autopct="%.2f", fontsize=7
+         )
+         pcts = [f"{s * 100:.2f}" for s in series.values / series.sum()]
+-        expected_texts = list(chain.from_iterable(zip(series.index, pcts, strict=True)))
++        expected_texts = (
++            list(chain.from_iterable(zip(series.index, pcts, strict=True)))
++            if Version(mpl.__version__) < Version("3.11.0rc1")
++            else list(chain.from_iterable((series.index, pcts)))
++        )
+         _check_text_labels(ax.texts, expected_texts)
+         for t in ax.texts:
+             assert t.get_fontsize() == 7
+diff --git a/pandas/tests/plotting/test_style.py b/pandas/tests/plotting/test_style.py
+index f9c89e0a7893f..04dbf75e06004 100644
+--- a/pandas/tests/plotting/test_style.py
++++ b/pandas/tests/plotting/test_style.py
+@@ -24,7 +24,7 @@ def test_default_colors_named_from_prop_cycle(self, num_colors, expected):
+         }
+         with mpl.rc_context(rc=mpl_params):
+             result = get_standard_colors(num_colors=num_colors)
+-            assert result == expected
++            assert mpl.colors.same_color(result, expected)
+ 
+     @pytest.mark.parametrize(
+         "num_colors, expected",
+@@ -42,10 +42,10 @@ def test_default_colors_named_from_prop_cycle_string(self, num_colors, expected)
+         }
+         with mpl.rc_context(rc=mpl_params):
+             result = get_standard_colors(num_colors=num_colors)
+-            assert result == expected
++            assert mpl.colors.same_color(result, expected)
+ 
+     @pytest.mark.parametrize(
+-        "num_colors, expected_name",
++        "num_colors, expected",
+         [
+             (1, ["C0"]),
+             (3, ["C0", "C1", "C2"]),
+@@ -68,11 +68,10 @@ def test_default_colors_named_from_prop_cycle_string(self, num_colors, expected)
+             ),
+         ],
+     )
+-    def test_default_colors_named_undefined_prop_cycle(self, num_colors, expected_name):
++    def test_default_colors_named_undefined_prop_cycle(self, num_colors, expected):
+         with mpl.rc_context(rc={}):
+-            expected = [mpl.colors.to_hex(x) for x in expected_name]
+             result = get_standard_colors(num_colors=num_colors)
+-            assert result == expected
++            assert mpl.colors.same_color(result, expected)
+ 
+     @pytest.mark.parametrize(
+         "num_colors, expected",

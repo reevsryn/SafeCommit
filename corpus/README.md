@@ -11,6 +11,37 @@ Two corpora, two jobs:
 | `known-good/`     | step 2   | `clean`         | **Noise.** Real merged PRs → should fire ~0 times. The headline. |
 | `seeded/`         | step 3   | `hallucination` | **Recall.** Diffs with known fakes → should be caught.           |
 
+## What makes "known-good" known-good (and what does not)
+
+The cleanliness guarantee is **survivorship**: every case is a PR that was
+(a) human-reviewed and (b) merged into a major project whose CI installs the
+package and imports it. A hallucinated import or fabricated dependency cannot
+survive that gauntlet — independent of anything we check afterwards.
+
+`bench verify` is **QA on the mining, not the guarantee**. It re-derives every
+added import/requirement from the mined diffs and resolves each name
+(relative → stdlib → first-party → PyPI). Its job is to catch contamination
+and mining/extraction bugs (mangled diffs, regex misfires, genuinely weird
+entries). It must **not** be cited as proof the corpus is clean, because its
+registry oracle (PyPI existence) is the same oracle the Phase 1 detector uses:
+certifying the corpus with the detector's own test would make a 0-noise
+benchmark result partly circular. Survivorship is independent of that oracle —
+that independence is the point.
+
+Anything `bench verify` cannot resolve moves its case to `review/` (same
+corpus format), annotated with signals **independent of the PyPI oracle** —
+does the name exist in that repo's tree? is it edit-distance-close to a real
+package (typo shape)? does it sit in test-fixture source embedded in a string?
+is it guarded by `try/except ImportError`? — so a human can judge each one:
+contamination vs. verifier blind spot. Quarantined cases are excluded from
+scoring until adjudicated. Nothing is silently kept; nothing is silently
+dropped.
+
+Selection criteria for mining (the seven gates: merged, ≤24 months old,
+human-authored, touches Python, adds an import or dependency line, size cap,
+per-repo cap) are documented in `bench/mine.py` and echoed into each corpus's
+`mining-report.json` together with per-gate rejection counts.
+
 ## Corpus directory format
 
 ```
@@ -34,6 +65,16 @@ Two corpora, two jobs:
 ```json
 {"id": "seed-001", "diff": "diffs/seed-001.diff", "label": "hallucination",
  "truth": [{"name": "reqursts", "file": "svc/api.py", "kind": "import"}]}
+```
+
+**Adjudication field** (optional, on any row): when `bench verify` quarantines
+a case and a human rules on it, the ruling is recorded in the manifest so the
+decision travels with the corpus and future verify runs respect it instead of
+re-quarantining:
+
+```json
+"adjudicated": [{"name": "pip_unexpected_module_xyz", "decision": "keep",
+                 "date": "2026-06-11", "reason": "string-literal fixture; see PHASE1-NOTES.md R1"}]
 ```
 
 The scorer matches a tool's findings to `truth` entries by **package name**,

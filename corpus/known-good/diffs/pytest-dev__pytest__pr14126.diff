@@ -1,0 +1,366 @@
+diff --git a/changelog/1764.deprecation.rst b/changelog/1764.deprecation.rst
+new file mode 100644
+index 00000000000..7e57c17b62a
+--- /dev/null
++++ b/changelog/1764.deprecation.rst
+@@ -0,0 +1,2 @@
++:func:`pytest.console_main` is now deprecated and will be removed in pytest 10.
++It was never intended for programmatic use; use :func:`pytest.main` instead.
+diff --git a/changelog/1764.improvement.rst b/changelog/1764.improvement.rst
+new file mode 100644
+index 00000000000..0a25f39faf9
+--- /dev/null
++++ b/changelog/1764.improvement.rst
+@@ -0,0 +1 @@
++Improved argparse program name to show ``pytest``, ``python -m pytest``, or ``pytest.main()`` based on how pytest was invoked, making help and error messages clearer.
+diff --git a/doc/en/conf.py b/doc/en/conf.py
+index 84b1c99e181..04ba1cfc616 100644
+--- a/doc/en/conf.py
++++ b/doc/en/conf.py
+@@ -117,6 +117,8 @@
+     ("py:class", "ScopeName"),
+     ("py:class", "BaseExcT_1"),
+     ("py:class", "ExcT_1"),
++    # Deprecated, intentionally not added to reference docs.
++    ("py:func", "pytest.console_main"),
+ ]
+ 
+ add_module_names = False
+diff --git a/doc/en/deprecations.rst b/doc/en/deprecations.rst
+index 21464a6939e..6668e7393f3 100644
+--- a/doc/en/deprecations.rst
++++ b/doc/en/deprecations.rst
+@@ -42,6 +42,31 @@ node-based matching instead of fragile string prefix matching.
+ In pytest 10, the ``baseid`` and ``nodeid`` string parameters will be removed.
+ 
+ 
++.. _console-main:
++
++``pytest.console_main()``
++~~~~~~~~~~~~~~~~~~~~~~~~~
++
++.. deprecated:: 9.1
++
++:func:`pytest.console_main` is deprecated and will be removed in pytest 10.
++
++This function is the CLI entry point used internally by the ``pytest`` console script
++and ``python -m pytest``. It was never intended for programmatic use, and exposing it
++in the public API led to confusion with :func:`pytest.main`, which is the correct way
++to invoke pytest from Python code.
++
++If you are calling ``pytest.console_main()`` in your code, replace it with :func:`pytest.main`:
++
++.. code-block:: python
++
++    # Deprecated
++    pytest.console_main()
++
++    # Use this instead
++    exit_code = pytest.main()
++
++
+ .. _pastebin-deprecated:
+ 
+ The ``--pastebin`` option
+diff --git a/pyproject.toml b/pyproject.toml
+index 83d367d7024..886c968e8ee 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -69,8 +69,8 @@ urls.Funding = "https://docs.pytest.org/en/stable/sponsor.html"
+ urls.Homepage = "https://docs.pytest.org/en/latest/"
+ urls.Source = "https://github.com/pytest-dev/pytest"
+ urls.Tracker = "https://github.com/pytest-dev/pytest/issues"
+-scripts."py.test" = "pytest:console_main"
+-scripts.pytest = "pytest:console_main"
++scripts."py.test" = "_pytest.config:_console_main"
++scripts.pytest = "_pytest.config:_console_main"
+ 
+ [tool.setuptools.package-data]
+ "_pytest" = [
+diff --git a/src/_pytest/config/__init__.py b/src/_pytest/config/__init__.py
+index 44d606b00a4..bc75c1e16fc 100644
+--- a/src/_pytest/config/__init__.py
++++ b/src/_pytest/config/__init__.py
+@@ -172,6 +172,19 @@ def print_usage_error(e: UsageError, file: TextIO) -> None:
+         tw.line(f"ERROR: {msg}\n", red=True)
+ 
+ 
++def _get_prog_name(argv: Sequence[str]) -> str:
++    """Determine the CLI program name from the argument vector.
++
++    :param argv: The argument vector (typically ``sys.argv``).
++    :returns: ``"python -m pytest"`` when invoked via ``python -m``,
++              ``"pytest"`` otherwise.
++    """
++    argv0 = argv[0] if argv else ""
++    if os.path.basename(argv0) == "__main__.py":
++        return "python -m pytest"
++    return "pytest"
++
++
+ def main(
+     args: list[str] | os.PathLike[str] | None = None,
+     plugins: Sequence[str | _PluggyPlugin] | None = None,
+@@ -185,6 +198,15 @@ def main(
+ 
+     :returns: An exit code.
+     """
++    return _main(args=args, plugins=plugins, prog="pytest.main()")
++
++
++def _main(
++    *,
++    args: list[str] | os.PathLike[str] | None = None,
++    plugins: Sequence[str | _PluggyPlugin] | None = None,
++    prog: str,
++) -> int | ExitCode:
+     # Handle a single `--version`/`-V` argument early to avoid starting up the entire pytest infrastructure.
+     new_args = sys.argv[1:] if args is None else args
+     if (
+@@ -198,7 +220,7 @@ def main(
+     try:
+         os.environ["PYTEST_VERSION"] = __version__
+         try:
+-            config = _prepareconfig(new_args, plugins)
++            config = _prepareconfig(new_args, plugins, prog=prog)
+         except ConftestImportFailure as e:
+             print_conftest_import_error(e, file=sys.stderr)
+             return ExitCode.USAGE_ERROR
+@@ -221,14 +243,14 @@ def main(
+             os.environ["PYTEST_VERSION"] = old_pytest_version
+ 
+ 
+-def console_main() -> int:
+-    """The CLI entry point of pytest.
++def _console_main() -> int:
++    """The CLI entry point of pytest (internal).
+ 
+-    This function is not meant for programmable use; use `main()` instead.
++    This is the real implementation used by entry points and ``__main__.py``.
+     """
+     # https://docs.python.org/3/library/signal.html#note-on-sigpipe
+     try:
+-        code = main()
++        code = _main(prog=_get_prog_name(sys.argv))
+         sys.stdout.flush()
+         return code
+     except BrokenPipeError:
+@@ -239,6 +261,21 @@ def console_main() -> int:
+         return 1  # Python exits with error code 1 on EPIPE
+ 
+ 
++def console_main() -> int:
++    """The CLI entry point of pytest.
++
++    .. deprecated:: 9.1
++        This function is slated for removal in pytest 10.
++        It is not meant for programmable use; use :func:`pytest.main` instead.
++    """
++    import warnings
++
++    from _pytest.deprecated import CONSOLE_MAIN
++
++    warnings.warn(CONSOLE_MAIN, stacklevel=2)
++    return _console_main()
++
++
+ class cmdline:  # compatibility namespace
+     main = staticmethod(main)
+ 
+@@ -314,6 +351,8 @@ def directory_arg(path: str, optname: str) -> str:
+ def get_config(
+     args: Iterable[str] | None = None,
+     plugins: Sequence[str | _PluggyPlugin] | None = None,
++    *,
++    prog: str | None = None,
+ ) -> Config:
+     # Subsequent calls to main will create a fresh instance.
+     pluginmanager = PytestPluginManager()
+@@ -322,7 +361,7 @@ def get_config(
+         plugins=plugins,
+         dir=pathlib.Path.cwd(),
+     )
+-    config = Config(pluginmanager, invocation_params=invocation_params)
++    config = Config(pluginmanager, invocation_params=invocation_params, prog=prog)
+ 
+     if invocation_params.args:
+         # Handle any "-p no:plugin" args.
+@@ -348,6 +387,8 @@ def get_plugin_manager() -> PytestPluginManager:
+ def _prepareconfig(
+     args: list[str] | os.PathLike[str],
+     plugins: Sequence[str | _PluggyPlugin] | None = None,
++    *,
++    prog: str | None = None,
+ ) -> Config:
+     if isinstance(args, os.PathLike):
+         args = [os.fspath(args)]
+@@ -357,7 +398,7 @@ def _prepareconfig(
+         )
+         raise TypeError(msg.format(args, type(args)))
+ 
+-    initial_config = get_config(args, plugins)
++    initial_config = get_config(args, plugins, prog=prog)
+     pluginmanager = initial_config.pluginmanager
+     try:
+         if plugins:
+@@ -1065,6 +1106,7 @@ def __init__(
+         pluginmanager: PytestPluginManager,
+         *,
+         invocation_params: InvocationParams | None = None,
++        prog: str | None = None,
+     ) -> None:
+         if invocation_params is None:
+             invocation_params = self.InvocationParams(
+@@ -1086,6 +1128,7 @@ def __init__(
+         self._parser = Parser(
+             usage=f"%(prog)s [options] [{FILE_OR_DIR}] [{FILE_OR_DIR}] [...]",
+             processopt=self._processopt,
++            prog=prog,
+             _ispytest=True,
+         )
+         self.pluginmanager = pluginmanager
+diff --git a/src/_pytest/config/argparsing.py b/src/_pytest/config/argparsing.py
+index f2ec53374af..f70e27614ef 100644
+--- a/src/_pytest/config/argparsing.py
++++ b/src/_pytest/config/argparsing.py
+@@ -34,6 +34,7 @@ def __init__(
+         usage: str | None = None,
+         processopt: Callable[[Argument], None] | None = None,
+         *,
++        prog: str | None = None,
+         _ispytest: bool = False,
+     ) -> None:
+         check_ispytest(_ispytest)
+@@ -42,7 +43,7 @@ def __init__(
+ 
+         self._processopt = processopt
+         self.extra_info: dict[str, Any] = {}
+-        self.optparser = PytestArgumentParser(usage, self.extra_info)
++        self.optparser = PytestArgumentParser(usage, self.extra_info, prog=prog)
+         anonymous_arggroup = self.optparser.add_argument_group("Custom options")
+         self._anonymous = OptionGroup(
+             anonymous_arggroup, "_anonymous", self, _ispytest=True
+@@ -383,9 +384,12 @@ def __init__(
+         self,
+         usage: str | None,
+         extra_info: dict[str, str],
++        *,
++        prog: str | None = None,
+     ) -> None:
+         super().__init__(
+             usage=usage,
++            prog=prog,
+             add_help=False,
+             formatter_class=DropShorterLongHelpFormatter,
+             allow_abbrev=False,
+diff --git a/src/_pytest/deprecated.py b/src/_pytest/deprecated.py
+index 8d57a74520b..70640f7efb1 100644
+--- a/src/_pytest/deprecated.py
++++ b/src/_pytest/deprecated.py
+@@ -70,6 +70,12 @@
+     "See https://docs.pytest.org/en/stable/deprecations.html#parametrize-iterators",
+ )
+ 
++CONSOLE_MAIN = PytestRemovedIn10Warning(
++    "pytest.console_main() is deprecated and will be removed in pytest 10.\n"
++    "It was never intended for programmatic use; use pytest.main() instead.\n"
++    "See https://docs.pytest.org/en/stable/deprecations.html#console-main"
++)
++
+ CONFIG_INICFG = PytestRemovedIn10Warning(
+     "config.inicfg is deprecated, use config.getini() to access configuration values instead.\n"
+     "See https://docs.pytest.org/en/stable/deprecations.html#config-inicfg"
+diff --git a/src/pytest/__main__.py b/src/pytest/__main__.py
+index cccab5d57b8..9912fa0b5ac 100644
+--- a/src/pytest/__main__.py
++++ b/src/pytest/__main__.py
+@@ -2,8 +2,8 @@
+ 
+ from __future__ import annotations
+ 
+-import pytest
++from _pytest.config import _console_main
+ 
+ 
+ if __name__ == "__main__":
+-    raise SystemExit(pytest.console_main())
++    raise SystemExit(_console_main())
+diff --git a/testing/test_config.py b/testing/test_config.py
+index 8026c108db0..7886610242d 100644
+--- a/testing/test_config.py
++++ b/testing/test_config.py
+@@ -14,10 +14,12 @@
+ 
+ import _pytest._code
+ from _pytest.config import _get_plugin_specs_as_list
++from _pytest.config import _get_prog_name
+ from _pytest.config import _iter_rewritable_modules
+ from _pytest.config import _strtobool
+ from _pytest.config import Config
+ from _pytest.config import ConftestImportFailure
++from _pytest.config import console_main
+ from _pytest.config import ExitCode
+ from _pytest.config import parse_warning_filter
+ from _pytest.config.argparsing import get_ini_default_for_type
+@@ -3082,3 +3084,61 @@ def test():
+ 
+         result = pytester.runpytest()
+         assert result.ret == 0
++
++
++class TestProgName:
++    """Test program name display in help and error messages (issue #1764)."""
++
++    def test_get_prog_name_direct_pytest(self) -> None:
++        """When argv[0] is a pytest entry point, prog should be 'pytest'."""
++        assert _get_prog_name(["/usr/bin/pytest", "--help"]) == "pytest"
++        assert _get_prog_name(["pytest", "-v"]) == "pytest"
++
++    def test_get_prog_name_python_m_pytest(self) -> None:
++        """When argv[0] is __main__.py, prog should be 'python -m pytest'."""
++        assert (
++            _get_prog_name(["/path/to/site-packages/pytest/__main__.py", "--help"])
++            == "python -m pytest"
++        )
++        assert _get_prog_name(["__main__.py", "-v"]) == "python -m pytest"
++
++    def test_get_prog_name_empty_argv(self) -> None:
++        """When argv is empty, should default to 'pytest'."""
++        assert _get_prog_name([]) == "pytest"
++
++    def test_prog_in_error_message_programmatic(self, pytester: Pytester) -> None:
++        """Error messages should show 'pytest.main()' when called programmatically.
++
++        runpytest_inprocess calls pytest.main() directly, so it should show
++        pytest.main() as the program name.
++        """
++        result = pytester.runpytest_inprocess("--invalid-option-xyz")
++        result.stderr.fnmatch_lines(["*pytest.main(): error:*invalid-option-xyz*"])
++
++    def test_prog_in_error_message_cli(self, pytester: Pytester) -> None:
++        """Error messages should show 'python -m pytest' when called from CLI subprocess.
++
++        runpytest_subprocess runs pytest via 'python -m pytest', so it should
++        show 'python -m pytest' as the program name.
++        """
++        result = pytester.runpytest_subprocess("--invalid-option-xyz")
++        result.stderr.fnmatch_lines(["*python -m pytest: error:*invalid-option-xyz*"])
++
++    def test_prog_in_usage_programmatic(self, pytester: Pytester) -> None:
++        """Usage line should show 'pytest.main()' when called programmatically."""
++        result = pytester.runpytest_inprocess("--help")
++        result.stdout.fnmatch_lines(["usage: pytest.main() *"])
++
++    def test_prog_in_usage_cli(self, pytester: Pytester) -> None:
++        """Usage line should show 'python -m pytest' when called from CLI subprocess."""
++        result = pytester.runpytest_subprocess("--help")
++        result.stdout.fnmatch_lines(["usage: python -m pytest *"])
++
++    def test_console_main_deprecated(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        """Calling pytest.console_main() should emit a deprecation warning."""
++        monkeypatch.setattr("_pytest.config._console_main", lambda: 0)
++        with pytest.warns(
++            pytest.PytestRemovedIn10Warning,
++            match="pytest.console_main.*is deprecated",
++        ):
++            console_main()

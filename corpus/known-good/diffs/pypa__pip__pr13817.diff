@@ -1,0 +1,1167 @@
+diff --git a/NEWS.rst b/NEWS.rst
+index cad4e825f30..b276c7477bb 100644
+--- a/NEWS.rst
++++ b/NEWS.rst
+@@ -920,8 +920,8 @@ Bug Fixes
+ - Correctly report ``requested_extras`` in the installation report when extras are
+   specified for a local directory installation. (`#11946 <https://github.com/pypa/pip/issues/11946>`_)
+ - When installing an archive from a direct URL or local file, populate
+-  ``download_info.info.hashes`` in the installation report, in addition to the legacy
+-  ``download_info.info.hash`` key. (`#11948 <https://github.com/pypa/pip/issues/11948>`_)
++  ``download_info.archive_info.hashes`` in the installation report, in addition to the legacy
++  ``download_info.archive_info.hash`` key. (`#11948 <https://github.com/pypa/pip/issues/11948>`_)
+ 
+ Vendored Libraries
+ ------------------
+diff --git a/news/13817.vendor.rst b/news/13817.vendor.rst
+new file mode 100644
+index 00000000000..d615be49d87
+--- /dev/null
++++ b/news/13817.vendor.rst
+@@ -0,0 +1,2 @@
++Use ``packaging.direct_url`` to manipulate ``direct_url.json``. Besides difference
++in validation error messages, there should be no user-visible change.
+diff --git a/src/pip/_internal/commands/inspect.py b/src/pip/_internal/commands/inspect.py
+index e262012ee4d..15ad165bad5 100644
+--- a/src/pip/_internal/commands/inspect.py
++++ b/src/pip/_internal/commands/inspect.py
+@@ -71,7 +71,7 @@ def _dist_to_dict(self, dist: BaseDistribution) -> dict[str, Any]:
+         # report) since it is not recorded in installed metadata.
+         direct_url = dist.direct_url
+         if direct_url is not None:
+-            res["direct_url"] = direct_url.to_dict()
++            res["direct_url"] = direct_url.to_dict_compat()
+         else:
+             # Emulate direct_url for legacy editable installs.
+             editable_project_location = dist.editable_project_location
+diff --git a/src/pip/_internal/models/direct_url.py b/src/pip/_internal/models/direct_url.py
+index aefc670cd51..a2dfb340abf 100644
+--- a/src/pip/_internal/models/direct_url.py
++++ b/src/pip/_internal/models/direct_url.py
+@@ -3,225 +3,40 @@
+ from __future__ import annotations
+ 
+ import json
+-import re
+-import urllib.parse
+-from collections.abc import Iterable
+-from dataclasses import dataclass
+-from typing import Any, ClassVar, TypeVar, Union
++from typing import Any
++
++from pip._vendor.packaging.direct_url import (
++    ArchiveInfo,
++    DirectUrlValidationError,
++    DirInfo,
++    VcsInfo,
++)
++from pip._vendor.packaging.direct_url import (
++    DirectUrl as PackagingDirectUrl,
++)
+ 
+ __all__ = [
++    "ArchiveInfo",
++    "DirInfo",
+     "DirectUrl",
+     "DirectUrlValidationError",
+-    "DirInfo",
+-    "ArchiveInfo",
++    "DIRECT_URL_METADATA_NAME",
+     "VcsInfo",
+ ]
+ 
+-T = TypeVar("T")
+-
+ DIRECT_URL_METADATA_NAME = "direct_url.json"
+-ENV_VAR_RE = re.compile(r"^\$\{[A-Za-z0-9-_]+\}(:\$\{[A-Za-z0-9-_]+\})?$")
+-
+-
+-class DirectUrlValidationError(Exception):
+-    pass
+-
+-
+-def _get(
+-    d: dict[str, Any], expected_type: type[T], key: str, default: T | None = None
+-) -> T | None:
+-    """Get value from dictionary and verify expected type."""
+-    if key not in d:
+-        return default
+-    value = d[key]
+-    if not isinstance(value, expected_type):
+-        raise DirectUrlValidationError(
+-            f"{value!r} has unexpected type for {key} (expected {expected_type})"
+-        )
+-    return value
+-
+-
+-def _get_required(
+-    d: dict[str, Any], expected_type: type[T], key: str, default: T | None = None
+-) -> T:
+-    value = _get(d, expected_type, key, default)
+-    if value is None:
+-        raise DirectUrlValidationError(f"{key} must have a value")
+-    return value
+-
+-
+-def _exactly_one_of(infos: Iterable[InfoType | None]) -> InfoType:
+-    infos = [info for info in infos if info is not None]
+-    if not infos:
+-        raise DirectUrlValidationError(
+-            "missing one of archive_info, dir_info, vcs_info"
+-        )
+-    if len(infos) > 1:
+-        raise DirectUrlValidationError(
+-            "more than one of archive_info, dir_info, vcs_info"
+-        )
+-    assert infos[0] is not None
+-    return infos[0]
+-
+-
+-def _filter_none(**kwargs: Any) -> dict[str, Any]:
+-    """Make dict excluding None values."""
+-    return {k: v for k, v in kwargs.items() if v is not None}
+-
+-
+-@dataclass
+-class VcsInfo:
+-    name: ClassVar = "vcs_info"
+-
+-    vcs: str
+-    commit_id: str
+-    requested_revision: str | None = None
+-
+-    @classmethod
+-    def _from_dict(cls, d: dict[str, Any] | None) -> VcsInfo | None:
+-        if d is None:
+-            return None
+-        return cls(
+-            vcs=_get_required(d, str, "vcs"),
+-            commit_id=_get_required(d, str, "commit_id"),
+-            requested_revision=_get(d, str, "requested_revision"),
+-        )
+-
+-    def _to_dict(self) -> dict[str, Any]:
+-        return _filter_none(
+-            vcs=self.vcs,
+-            requested_revision=self.requested_revision,
+-            commit_id=self.commit_id,
+-        )
+-
+ 
+-class ArchiveInfo:
+-    name = "archive_info"
+-
+-    def __init__(
+-        self,
+-        hash: str | None = None,
+-        hashes: dict[str, str] | None = None,
+-    ) -> None:
+-        # set hashes before hash, since the hash setter will further populate hashes
+-        self.hashes = hashes
+-        self.hash = hash
+-
+-    @property
+-    def hash(self) -> str | None:
+-        return self._hash
+-
+-    @hash.setter
+-    def hash(self, value: str | None) -> None:
+-        if value is not None:
+-            # Auto-populate the hashes key to upgrade to the new format automatically.
+-            # We don't back-populate the legacy hash key from hashes.
+-            try:
+-                hash_name, hash_value = value.split("=", 1)
+-            except ValueError:
+-                raise DirectUrlValidationError(
+-                    f"invalid archive_info.hash format: {value!r}"
+-                )
+-            if self.hashes is None:
+-                self.hashes = {hash_name: hash_value}
+-            elif hash_name not in self.hashes:
+-                self.hashes = self.hashes.copy()
+-                self.hashes[hash_name] = hash_value
+-        self._hash = value
+-
+-    @classmethod
+-    def _from_dict(cls, d: dict[str, Any] | None) -> ArchiveInfo | None:
+-        if d is None:
+-            return None
+-        return cls(hash=_get(d, str, "hash"), hashes=_get(d, dict, "hashes"))
+-
+-    def _to_dict(self) -> dict[str, Any]:
+-        return _filter_none(hash=self.hash, hashes=self.hashes)
+-
+-
+-@dataclass
+-class DirInfo:
+-    name: ClassVar = "dir_info"
+-
+-    editable: bool = False
+-
+-    @classmethod
+-    def _from_dict(cls, d: dict[str, Any] | None) -> DirInfo | None:
+-        if d is None:
+-            return None
+-        return cls(editable=_get_required(d, bool, "editable", default=False))
+-
+-    def _to_dict(self) -> dict[str, Any]:
+-        return _filter_none(editable=self.editable or None)
+-
+-
+-InfoType = Union[ArchiveInfo, DirInfo, VcsInfo]
+-
+-
+-@dataclass
+-class DirectUrl:
+-    url: str
+-    info: InfoType
+-    subdirectory: str | None = None
+-
+-    def _remove_auth_from_netloc(self, netloc: str) -> str:
+-        if "@" not in netloc:
+-            return netloc
+-        user_pass, netloc_no_user_pass = netloc.split("@", 1)
+-        if (
+-            isinstance(self.info, VcsInfo)
+-            and self.info.vcs == "git"
+-            and user_pass == "git"
+-        ):
+-            return netloc
+-        if ENV_VAR_RE.match(user_pass):
+-            return netloc
+-        return netloc_no_user_pass
+-
+-    @property
+-    def redacted_url(self) -> str:
+-        """url with user:password part removed unless it is formed with
+-        environment variables as specified in PEP 610, or it is ``git``
+-        in the case of a git URL.
+-        """
+-        purl = urllib.parse.urlsplit(self.url)
+-        netloc = self._remove_auth_from_netloc(purl.netloc)
+-        surl = urllib.parse.urlunsplit(
+-            (purl.scheme, netloc, purl.path, purl.query, purl.fragment)
+-        )
+-        return surl
+-
+-    def validate(self) -> None:
+-        self.from_dict(self.to_dict())
+-
+-    @classmethod
+-    def from_dict(cls, d: dict[str, Any]) -> DirectUrl:
+-        return DirectUrl(
+-            url=_get_required(d, str, "url"),
+-            subdirectory=_get(d, str, "subdirectory"),
+-            info=_exactly_one_of(
+-                [
+-                    ArchiveInfo._from_dict(_get(d, dict, "archive_info")),
+-                    DirInfo._from_dict(_get(d, dict, "dir_info")),
+-                    VcsInfo._from_dict(_get(d, dict, "vcs_info")),
+-                ]
+-            ),
+-        )
+ 
+-    def to_dict(self) -> dict[str, Any]:
+-        res = _filter_none(
+-            url=self.redacted_url,
+-            subdirectory=self.subdirectory,
+-        )
+-        res[self.info.name] = self.info._to_dict()
+-        return res
++class DirectUrl(PackagingDirectUrl):
++    def to_dict_compat(self) -> dict[str, Any]:
++        return dict(super().to_dict(generate_legacy_hash=True))
+ 
+     @classmethod
+     def from_json(cls, s: str) -> DirectUrl:
+         return cls.from_dict(json.loads(s))
+ 
+     def to_json(self) -> str:
+-        return json.dumps(self.to_dict(), sort_keys=True)
++        return json.dumps(self.to_dict_compat(), sort_keys=True)
+ 
+     def is_local_editable(self) -> bool:
+-        return isinstance(self.info, DirInfo) and self.info.editable
++        return bool(self.dir_info and self.dir_info.editable)
+diff --git a/src/pip/_internal/models/installation_report.py b/src/pip/_internal/models/installation_report.py
+index 3e8e9683bed..145e2cf8e57 100644
+--- a/src/pip/_internal/models/installation_report.py
++++ b/src/pip/_internal/models/installation_report.py
+@@ -19,7 +19,7 @@ def _install_req_to_dict(cls, ireq: InstallRequirement) -> dict[str, Any]:
+             # be absent when the requirement was installed from the wheel cache
+             # and the cache entry was populated by an older pip version that did not
+             # record origin.json.
+-            "download_info": ireq.download_info.to_dict(),
++            "download_info": ireq.download_info.to_dict_compat(),
+             # is_direct is true if the requirement was a direct URL reference (which
+             # includes editable requirements), and false if the requirement was
+             # downloaded from a PEP 503 index or --find-links.
+diff --git a/src/pip/_internal/operations/prepare.py b/src/pip/_internal/operations/prepare.py
+index 67f9ee95041..c640d5f120c 100644
+--- a/src/pip/_internal/operations/prepare.py
++++ b/src/pip/_internal/operations/prepare.py
+@@ -28,7 +28,7 @@
+ )
+ from pip._internal.index.package_finder import PackageFinder
+ from pip._internal.metadata import BaseDistribution, get_metadata_distribution
+-from pip._internal.models.direct_url import ArchiveInfo
++from pip._internal.models.direct_url import ArchiveInfo, DirectUrl
+ from pip._internal.models.link import Link
+ from pip._internal.models.wheel import Wheel
+ from pip._internal.network.download import Downloader
+@@ -586,9 +586,9 @@ def _prepare_linked_requirement(
+             # We need to verify hashes, and we have found the requirement in the cache
+             # of locally built wheels.
+             if (
+-                isinstance(req.download_info.info, ArchiveInfo)
+-                and req.download_info.info.hashes
+-                and hashes.has_one_of(req.download_info.info.hashes)
++                req.download_info.archive_info
++                and req.download_info.archive_info.hashes
++                and hashes.has_one_of(req.download_info.archive_info.hashes)
+             ):
+                 # At this point we know the requirement was built from a hashable source
+                 # artifact, and we verified that the cache entry's hash of the original
+@@ -640,14 +640,18 @@ def _prepare_linked_requirement(
+             # compute it from the downloaded file.
+             # FIXME: https://github.com/pypa/pip/issues/11943
+             if (
+-                isinstance(req.download_info.info, ArchiveInfo)
+-                and not req.download_info.info.hashes
++                req.download_info.archive_info
++                and not req.download_info.archive_info.hashes
+                 and local_file
+             ):
+                 hash = hash_file(local_file.path)[0].hexdigest()
+-                # We populate info.hash for backward compatibility.
+-                # This will automatically populate info.hashes.
+-                req.download_info.info.hash = f"sha256={hash}"
++                # We populate archive_info.hashes. For backward compatibility,
++                # the legacy hash field will be generated when converting to JSON.
++                req.download_info = DirectUrl(
++                    url=req.download_info.url,
++                    archive_info=ArchiveInfo(hashes={"sha256": hash}),
++                    subdirectory=req.download_info.subdirectory,
++                )
+ 
+         # For use in later processing,
+         # preserve the file path on the requirement.
+diff --git a/src/pip/_internal/utils/direct_url_helpers.py b/src/pip/_internal/utils/direct_url_helpers.py
+index 3cbc1e76344..f2d6e9037d5 100644
+--- a/src/pip/_internal/utils/direct_url_helpers.py
++++ b/src/pip/_internal/utils/direct_url_helpers.py
+@@ -11,16 +11,20 @@ def direct_url_as_pep440_direct_reference(direct_url: DirectUrl, name: str) -> s
+     direct_url.validate()  # if invalid, this is a pip bug
+     requirement = name + " @ "
+     fragments = []
+-    if isinstance(direct_url.info, VcsInfo):
++    if direct_url.vcs_info:
+         requirement += (
+-            f"{direct_url.info.vcs}+{direct_url.url}@{direct_url.info.commit_id}"
++            f"{direct_url.vcs_info.vcs}+{direct_url.url}"
++            f"@{direct_url.vcs_info.commit_id}"
+         )
+-    elif isinstance(direct_url.info, ArchiveInfo):
++    elif direct_url.archive_info:
+         requirement += direct_url.url
+-        if direct_url.info.hash:
+-            fragments.append(direct_url.info.hash)
++        if direct_url.archive_info.hashes:
++            hash_algorithm, hash_value = next(
++                iter(direct_url.archive_info.hashes.items())
++            )
++            fragments.append(f"{hash_algorithm}={hash_value}")
+     else:
+-        assert isinstance(direct_url.info, DirInfo)
++        assert direct_url.dir_info
+         requirement += direct_url.url
+     if direct_url.subdirectory:
+         fragments.append("subdirectory=" + direct_url.subdirectory)
+@@ -32,7 +36,7 @@ def direct_url_as_pep440_direct_reference(direct_url: DirectUrl, name: str) -> s
+ def direct_url_for_editable(source_dir: str) -> DirectUrl:
+     return DirectUrl(
+         url=path_to_url(source_dir),
+-        info=DirInfo(editable=True),
++        dir_info=DirInfo(editable=True),
+     )
+ 
+ 
+@@ -62,7 +66,7 @@ def direct_url_from_link(
+             commit_id = vcs_backend.get_revision(source_dir)
+         return DirectUrl(
+             url=url,
+-            info=VcsInfo(
++            vcs_info=VcsInfo(
+                 vcs=vcs_backend.name,
+                 commit_id=commit_id,
+                 requested_revision=requested_revision,
+@@ -72,16 +76,17 @@ def direct_url_from_link(
+     elif link.is_existing_dir():
+         return DirectUrl(
+             url=link.url_without_fragment,
+-            info=DirInfo(),
++            dir_info=DirInfo(),
+             subdirectory=link.subdirectory_fragment,
+         )
+     else:
+-        hash = None
+-        hash_name = link.hash_name
+-        if hash_name:
+-            hash = f"{hash_name}={link.hash}"
++        if link.hash_name:
++            assert link.hash
++            hashes = {link.hash_name: link.hash}
++        else:
++            hashes = None
+         return DirectUrl(
+             url=link.url_without_fragment,
+-            info=ArchiveInfo(hash=hash),
++            archive_info=ArchiveInfo(hashes=hashes),
+             subdirectory=link.subdirectory_fragment,
+         )
+diff --git a/src/pip/_internal/utils/hashes.py b/src/pip/_internal/utils/hashes.py
+index 3d8c125ada3..43f14cf2a3b 100644
+--- a/src/pip/_internal/utils/hashes.py
++++ b/src/pip/_internal/utils/hashes.py
+@@ -8,9 +8,9 @@
+ from pip._internal.utils.misc import read_chunks
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Mapping
+     from hashlib import _Hash
+ 
+-
+ # The recommended hash algo of the moment. Change this whenever the state of
+ # the art changes; it won't hurt backward compatibility.
+ FAVORITE_HASH = "sha256"
+@@ -104,7 +104,7 @@ def check_against_path(self, path: str) -> None:
+         with open(path, "rb") as file:
+             return self.check_against_file(file)
+ 
+-    def has_one_of(self, hashes: dict[str, str]) -> bool:
++    def has_one_of(self, hashes: Mapping[str, str]) -> bool:
+         """Return whether any of the given hashes are allowed."""
+         for hash_name, hex_digest in hashes.items():
+             if self.is_hash_allowed(hash_name, hex_digest):
+diff --git a/src/pip/_internal/utils/pylock.py b/src/pip/_internal/utils/pylock.py
+index 0f77835226d..94b1e6369c4 100644
+--- a/src/pip/_internal/utils/pylock.py
++++ b/src/pip/_internal/utils/pylock.py
+@@ -12,7 +12,6 @@
+ )
+ from pip._vendor.packaging.version import Version
+ 
+-from pip._internal.models.direct_url import ArchiveInfo, DirInfo, VcsInfo
+ from pip._internal.models.link import Link
+ from pip._internal.req.req_install import InstallRequirement
+ from pip._internal.utils.urls import url_to_path
+@@ -32,16 +31,16 @@ def _pylock_package_from_install_requirement(
+     package_sdist = None
+     package_wheels = None
+     if ireq.is_direct:
+-        if isinstance(download_info.info, VcsInfo):
++        if download_info.vcs_info:
+             package_vcs = PackageVcs(
+-                type=download_info.info.vcs,
++                type=download_info.vcs_info.vcs,
+                 url=download_info.url,
+                 path=None,
+-                requested_revision=download_info.info.requested_revision,
+-                commit_id=download_info.info.commit_id,
++                requested_revision=download_info.vcs_info.requested_revision,
++                commit_id=download_info.vcs_info.commit_id,
+                 subdirectory=download_info.subdirectory,
+             )
+-        elif isinstance(download_info.info, DirInfo):
++        elif download_info.dir_info:
+             package_directory = PackageDirectory(
+                 path=(
+                     Path(url_to_path(download_info.url))
+@@ -50,17 +49,19 @@ def _pylock_package_from_install_requirement(
+                     .as_posix()
+                 ),
+                 editable=(
+-                    download_info.info.editable if download_info.info.editable else None
++                    download_info.dir_info.editable
++                    if download_info.dir_info.editable
++                    else None
+                 ),
+                 subdirectory=download_info.subdirectory,
+             )
+-        elif isinstance(download_info.info, ArchiveInfo):
+-            if not download_info.info.hashes:
++        elif download_info.archive_info:
++            if not download_info.archive_info.hashes:
+                 raise NotImplementedError()
+             package_archive = PackageArchive(
+                 url=download_info.url,
+                 path=None,
+-                hashes=download_info.info.hashes,
++                hashes=download_info.archive_info.hashes,
+                 subdirectory=download_info.subdirectory,
+             )
+         else:
+@@ -68,8 +69,8 @@ def _pylock_package_from_install_requirement(
+             raise NotImplementedError()
+     else:
+         package_version = dist.version
+-        if isinstance(download_info.info, ArchiveInfo):
+-            if not download_info.info.hashes:
++        if download_info.archive_info:
++            if not download_info.archive_info.hashes:
+                 raise NotImplementedError()
+             link = Link(download_info.url)
+             if link.is_wheel:
+@@ -77,14 +78,14 @@ def _pylock_package_from_install_requirement(
+                     PackageWheel(
+                         name=link.filename,
+                         url=download_info.url,
+-                        hashes=download_info.info.hashes,
++                        hashes=download_info.archive_info.hashes,
+                     )
+                 ]
+             else:
+                 package_sdist = PackageSdist(
+                     name=link.filename,
+                     url=download_info.url,
+-                    hashes=download_info.info.hashes,
++                    hashes=download_info.archive_info.hashes,
+                 )
+         else:
+             # should never happen
+diff --git a/tests/functional/test_freeze.py b/tests/functional/test_freeze.py
+index b09da93beaa..4e9ae927f30 100644
+--- a/tests/functional/test_freeze.py
++++ b/tests/functional/test_freeze.py
+@@ -1,3 +1,4 @@
++import json
+ import os
+ import re
+ import sys
+@@ -9,8 +10,6 @@
+ 
+ from pip._vendor.packaging.utils import canonicalize_name
+ 
+-from pip._internal.models.direct_url import DirectUrl, DirInfo
+-
+ from tests.lib import (
+     PipTestEnvironment,
+     TestData,
+@@ -1023,7 +1022,7 @@ def test_freeze_include_work_dir_pkg(script: PipTestEnvironment) -> None:
+ def test_freeze_pep610_editable(script: PipTestEnvironment) -> None:
+     """
+     Test that a package installed with a direct_url.json with editable=true
+-    is correctly frozeon as editable.
++    is correctly frozen as editable.
+     """
+     pkg_path = _create_test_package(script.scratch_path, name="testpkg")
+     result = script.pip("install", "--no-build-isolation", pkg_path)
+@@ -1031,10 +1030,10 @@ def test_freeze_pep610_editable(script: PipTestEnvironment) -> None:
+     assert direct_url_path
+     # patch direct_url.json to simulate an editable install
+     with open(direct_url_path) as f:
+-        direct_url = DirectUrl.from_json(f.read())
+-    assert isinstance(direct_url.info, DirInfo)
+-    direct_url.info.editable = True
++        direct_url_dict = json.load(f)
++    assert "dir_info" in direct_url_dict
++    direct_url_dict["dir_info"]["editable"] = True
+     with open(direct_url_path, "w") as f:
+-        f.write(direct_url.to_json())
++        json.dump(direct_url_dict, f)
+     result = script.pip("freeze")
+     assert "# Editable Git install with no remote (testpkg==0.1)" in result.stdout
+diff --git a/tests/functional/test_install_direct_url.py b/tests/functional/test_install_direct_url.py
+index f67a8615b21..d295a0e9549 100644
+--- a/tests/functional/test_install_direct_url.py
++++ b/tests/functional/test_install_direct_url.py
+@@ -1,7 +1,5 @@
+ import pytest
+ 
+-from pip._internal.models.direct_url import VcsInfo
+-
+ from tests.lib import PipTestEnvironment, TestData, _create_test_package
+ 
+ 
+@@ -18,8 +16,8 @@ def test_install_vcs_non_editable_direct_url(script: PipTestEnvironment) -> None
+     direct_url = result.get_created_direct_url("testpkg")
+     assert direct_url
+     assert direct_url.url == url
+-    assert isinstance(direct_url.info, VcsInfo)
+-    assert direct_url.info.vcs == "git"
++    assert direct_url.vcs_info
++    assert direct_url.vcs_info.vcs == "git"
+ 
+ 
+ def test_install_archive_direct_url(script: PipTestEnvironment, data: TestData) -> None:
+diff --git a/tests/functional/test_list.py b/tests/functional/test_list.py
+index 9e6aec6aa88..b70be2dbb2d 100644
+--- a/tests/functional/test_list.py
++++ b/tests/functional/test_list.py
+@@ -4,8 +4,6 @@
+ 
+ import pytest
+ 
+-from pip._internal.models.direct_url import DirectUrl, DirInfo
+-
+ from tests.lib import (
+     PipTestEnvironment,
+     ScriptFactory,
+@@ -786,11 +784,11 @@ def test_list_pep610_editable(script: PipTestEnvironment) -> None:
+     assert direct_url_path
+     # patch direct_url.json to simulate an editable install
+     with open(direct_url_path) as f:
+-        direct_url = DirectUrl.from_json(f.read())
+-    assert isinstance(direct_url.info, DirInfo)
+-    direct_url.info.editable = True
++        direct_url_dict = json.load(f)
++    assert "dir_info" in direct_url_dict
++    direct_url_dict["dir_info"]["editable"] = True
+     with open(direct_url_path, "w") as f:
+-        f.write(direct_url.to_json())
++        json.dump(direct_url_dict, f)
+     result = script.pip("list", "--format=json")
+     for item in json.loads(result.stdout):
+         if item["name"] == "testpkg":
+diff --git a/tests/unit/metadata/test_metadata.py b/tests/unit/metadata/test_metadata.py
+index ae0901586a3..5e7e80fc740 100644
+--- a/tests/unit/metadata/test_metadata.py
++++ b/tests/unit/metadata/test_metadata.py
+@@ -15,7 +15,7 @@
+     get_wheel_distribution,
+ )
+ from pip._internal.metadata.base import FilesystemWheel
+-from pip._internal.models.direct_url import DIRECT_URL_METADATA_NAME, ArchiveInfo
++from pip._internal.models.direct_url import DIRECT_URL_METADATA_NAME
+ 
+ from tests.lib.wheel import make_wheel
+ 
+@@ -91,7 +91,7 @@ class FakeDistribution(BaseDistribution):
+     assert direct_url is not None
+     mock_read_text.assert_called_once_with(DIRECT_URL_METADATA_NAME)
+     assert direct_url.url == "https://e.c/p.tgz"
+-    assert isinstance(direct_url.info, ArchiveInfo)
++    assert direct_url.archive_info
+ 
+ 
+ def test_metadata_dict(tmp_path: Path) -> None:
+diff --git a/tests/unit/test_direct_url.py b/tests/unit/test_direct_url.py
+index 151e0a30f5b..3aebf277f1c 100644
+--- a/tests/unit/test_direct_url.py
++++ b/tests/unit/test_direct_url.py
+@@ -4,7 +4,6 @@
+     ArchiveInfo,
+     DirectUrl,
+     DirectUrlValidationError,
+-    DirInfo,
+     VcsInfo,
+ )
+ 
+@@ -13,14 +12,14 @@ def test_from_json() -> None:
+     json = '{"url": "file:///home/user/project", "dir_info": {}}'
+     direct_url = DirectUrl.from_json(json)
+     assert direct_url.url == "file:///home/user/project"
+-    assert isinstance(direct_url.info, DirInfo)
+-    assert direct_url.info.editable is False
++    assert direct_url.dir_info
++    assert not direct_url.dir_info.editable
+ 
+ 
+ def test_to_json() -> None:
+     direct_url = DirectUrl(
+         url="file:///home/user/archive.tgz",
+-        info=ArchiveInfo(),
++        archive_info=ArchiveInfo(),
+     )
+     direct_url.validate()
+     assert direct_url.to_json() == (
+@@ -34,16 +33,12 @@ def test_archive_info() -> None:
+         "archive_info": {"hash": "sha1=1b8c5bc61a86f377fea47b4276c8c8a5842d2220"},
+     }
+     direct_url = DirectUrl.from_dict(direct_url_dict)
+-    assert isinstance(direct_url.info, ArchiveInfo)
++    assert direct_url.archive_info
+     assert direct_url.url == direct_url_dict["url"]
+-    assert (
+-        direct_url.info.hash == direct_url_dict["archive_info"]["hash"]  # type: ignore
+-    )
+     # test we add the hashes key automatically
+-    direct_url_dict["archive_info"]["hashes"] = {  # type: ignore
++    assert direct_url.archive_info.hashes == {
+         "sha1": "1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
+     }
+-    assert direct_url.to_dict() == direct_url_dict
+ 
+ 
+ def test_dir_info() -> None:
+@@ -52,15 +47,15 @@ def test_dir_info() -> None:
+         "dir_info": {"editable": True},
+     }
+     direct_url = DirectUrl.from_dict(direct_url_dict)
+-    assert isinstance(direct_url.info, DirInfo)
++    assert direct_url.dir_info
+     assert direct_url.url == direct_url_dict["url"]
+-    assert direct_url.info.editable is True
+-    assert direct_url.to_dict() == direct_url_dict
++    assert direct_url.dir_info.editable is True
++    assert direct_url.to_dict_compat() == direct_url_dict
+     # test editable default to False
+     direct_url_dict = {"url": "file:///home/user/project", "dir_info": {}}
+     direct_url = DirectUrl.from_dict(direct_url_dict)
+-    assert isinstance(direct_url.info, DirInfo)
+-    assert direct_url.info.editable is False
++    assert direct_url.dir_info
++    assert not direct_url.dir_info.editable
+ 
+ 
+ def test_vcs_info() -> None:
+@@ -73,38 +68,54 @@ def test_vcs_info() -> None:
+         },
+     }
+     direct_url = DirectUrl.from_dict(direct_url_dict)
+-    assert isinstance(direct_url.info, VcsInfo)
++    assert direct_url.vcs_info
+     assert direct_url.url == direct_url_dict["url"]
+-    assert direct_url.info.vcs == "git"
+-    assert direct_url.info.requested_revision == "master"
+-    assert direct_url.info.commit_id == "1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
+-    assert direct_url.to_dict() == direct_url_dict
++    assert direct_url.vcs_info.vcs == "git"
++    assert direct_url.vcs_info.requested_revision == "master"
++    assert direct_url.vcs_info.commit_id == "1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
++    assert direct_url.to_dict_compat() == direct_url_dict
+ 
+ 
+ def test_parsing_validation() -> None:
+-    with pytest.raises(DirectUrlValidationError, match="url must have a value"):
++    with pytest.raises(
++        DirectUrlValidationError, match="Missing required value in 'url'"
++    ):
+         DirectUrl.from_dict({"dir_info": {}})
+     with pytest.raises(
+         DirectUrlValidationError,
+-        match="missing one of archive_info, dir_info, vcs_info",
++        match="Exactly one of vcs_info, archive_info, dir_info must be present",
+     ):
+         DirectUrl.from_dict({"url": "http://..."})
+-    with pytest.raises(DirectUrlValidationError, match="unexpected type for editable"):
++    with pytest.raises(
++        DirectUrlValidationError,
++        match=r"Unexpected type str \(expected bool\) in 'dir_info\.editable'",
++    ):
+         DirectUrl.from_dict({"url": "http://...", "dir_info": {"editable": "false"}})
+-    with pytest.raises(DirectUrlValidationError, match="unexpected type for hash"):
++    with pytest.raises(
++        DirectUrlValidationError,
++        match=r"Unexpected type int \(expected str\) in 'archive_info\.hash'",
++    ):
+         DirectUrl.from_dict({"url": "http://...", "archive_info": {"hash": 1}})
+-    with pytest.raises(DirectUrlValidationError, match="unexpected type for vcs"):
++    with pytest.raises(
++        DirectUrlValidationError, match=r"Missing required value in 'vcs_info\.vcs'"
++    ):
+         DirectUrl.from_dict({"url": "http://...", "vcs_info": {"vcs": None}})
+-    with pytest.raises(DirectUrlValidationError, match="commit_id must have a value"):
++    with pytest.raises(
++        DirectUrlValidationError,
++        match=r"Missing required value in 'vcs_info\.commit_id'",
++    ):
+         DirectUrl.from_dict({"url": "http://...", "vcs_info": {"vcs": "git"}})
+     with pytest.raises(
+         DirectUrlValidationError,
+-        match="more than one of archive_info, dir_info, vcs_info",
++        match="Exactly one of vcs_info, archive_info, dir_info must be present",
+     ):
+         DirectUrl.from_dict({"url": "http://...", "dir_info": {}, "archive_info": {}})
+     with pytest.raises(
+         DirectUrlValidationError,
+-        match="invalid archive_info.hash format",
++        match=(
++            r"Invalid hash format \(expected '<algorithm>=<hash>'\) "
++            r"in 'archive_info\.hash'"
++        ),
+     ):
+         DirectUrl.from_dict(
+             {"url": "http://...", "archive_info": {"hash": "sha256:aaa"}}
+@@ -115,16 +126,16 @@ def test_redact_url() -> None:
+     def _redact_git(url: str) -> str:
+         direct_url = DirectUrl(
+             url=url,
+-            info=VcsInfo(vcs="git", commit_id="1"),
++            vcs_info=VcsInfo(vcs="git", commit_id="1"),
+         )
+-        return direct_url.redacted_url
++        return direct_url.to_dict()["url"]
+ 
+     def _redact_archive(url: str) -> str:
+         direct_url = DirectUrl(
+             url=url,
+-            info=ArchiveInfo(),
++            archive_info=ArchiveInfo(),
+         )
+-        return direct_url.redacted_url
++        return direct_url.to_dict()["url"]
+ 
+     assert (
+         _redact_git("https://user:password@g.c/u/p.git@branch#egg=pkg")
+@@ -140,33 +151,3 @@ def _redact_archive(url: str) -> str:
+         == "https://${PIP_TOKEN}@g.c/u/p.git"
+     )
+     assert _redact_git("ssh://git@g.c/u/p.git") == "ssh://git@g.c/u/p.git"
+-
+-
+-def test_hash_to_hashes() -> None:
+-    direct_url = DirectUrl(url="https://e.c/archive.tar.gz", info=ArchiveInfo())
+-    assert isinstance(direct_url.info, ArchiveInfo)
+-    direct_url.info.hash = "sha256=abcdef"
+-    assert direct_url.info.hashes == {"sha256": "abcdef"}
+-
+-
+-def test_hash_to_hashes_constructor() -> None:
+-    direct_url = DirectUrl(
+-        url="https://e.c/archive.tar.gz", info=ArchiveInfo(hash="sha256=abcdef")
+-    )
+-    assert isinstance(direct_url.info, ArchiveInfo)
+-    assert direct_url.info.hashes == {"sha256": "abcdef"}
+-    direct_url = DirectUrl(
+-        url="https://e.c/archive.tar.gz",
+-        info=ArchiveInfo(hash="sha256=abcdef", hashes={"sha512": "123456"}),
+-    )
+-    assert isinstance(direct_url.info, ArchiveInfo)
+-    assert direct_url.info.hashes == {"sha256": "abcdef", "sha512": "123456"}
+-    # In case of conflict between hash and hashes, hashes wins.
+-    direct_url = DirectUrl(
+-        url="https://e.c/archive.tar.gz",
+-        info=ArchiveInfo(
+-            hash="sha256=abcdef", hashes={"sha256": "012345", "sha512": "123456"}
+-        ),
+-    )
+-    assert isinstance(direct_url.info, ArchiveInfo)
+-    assert direct_url.info.hashes == {"sha256": "012345", "sha512": "123456"}
+diff --git a/tests/unit/test_direct_url_helpers.py b/tests/unit/test_direct_url_helpers.py
+index 692ee299c02..eca7588cc8f 100644
+--- a/tests/unit/test_direct_url_helpers.py
++++ b/tests/unit/test_direct_url_helpers.py
+@@ -15,21 +15,31 @@
+ def test_as_pep440_requirement_archive() -> None:
+     direct_url = DirectUrl(
+         url="file:///home/user/archive.tgz",
+-        info=ArchiveInfo(),
++        archive_info=ArchiveInfo(),
+     )
+     direct_url.validate()
+     assert (
+         direct_url_as_pep440_direct_reference(direct_url, "pkg")
+         == "pkg @ file:///home/user/archive.tgz"
+     )
+-    direct_url.subdirectory = "subdir"
++    direct_url = DirectUrl(
++        url="file:///home/user/archive.tgz",
++        archive_info=ArchiveInfo(),
++        subdirectory="subdir",
++    )
+     direct_url.validate()
+     assert (
+         direct_url_as_pep440_direct_reference(direct_url, "pkg")
+         == "pkg @ file:///home/user/archive.tgz#subdirectory=subdir"
+     )
+-    assert isinstance(direct_url.info, ArchiveInfo)
+-    direct_url.info.hash = "sha1=1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
++    assert direct_url.archive_info
++    direct_url = DirectUrl(
++        url="file:///home/user/archive.tgz",
++        archive_info=ArchiveInfo(
++            hashes={"sha1": "1b8c5bc61a86f377fea47b4276c8c8a5842d2220"}
++        ),
++        subdirectory="subdir",
++    )
+     direct_url.validate()
+     assert (
+         direct_url_as_pep440_direct_reference(direct_url, "pkg")
+@@ -41,7 +51,7 @@ def test_as_pep440_requirement_archive() -> None:
+ def test_as_pep440_requirement_dir() -> None:
+     direct_url = DirectUrl(
+         url="file:///home/user/project",
+-        info=DirInfo(editable=False),
++        dir_info=DirInfo(editable=False),
+     )
+     direct_url.validate()
+     assert (
+@@ -56,7 +66,7 @@ def test_as_pep440_requirement_editable_dir() -> None:
+     # callers to render it as editable
+     direct_url = DirectUrl(
+         url="file:///home/user/project",
+-        info=DirInfo(editable=True),
++        dir_info=DirInfo(editable=True),
+     )
+     direct_url.validate()
+     assert (
+@@ -68,7 +78,9 @@ def test_as_pep440_requirement_editable_dir() -> None:
+ def test_as_pep440_requirement_vcs() -> None:
+     direct_url = DirectUrl(
+         url="https:///g.c/u/p.git",
+-        info=VcsInfo(vcs="git", commit_id="1b8c5bc61a86f377fea47b4276c8c8a5842d2220"),
++        vcs_info=VcsInfo(
++            vcs="git", commit_id="1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
++        ),
+     )
+     direct_url.validate()
+     assert (
+@@ -76,7 +88,9 @@ def test_as_pep440_requirement_vcs() -> None:
+         == "pkg @ git+https:///g.c/u/p.git"
+         "@1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
+     )
+-    direct_url.subdirectory = "subdir"
++    direct_url = DirectUrl(
++        url=direct_url.url, vcs_info=direct_url.vcs_info, subdirectory="subdir"
++    )
+     direct_url.validate()
+     assert (
+         direct_url_as_pep440_direct_reference(direct_url, "pkg")
+@@ -90,8 +104,8 @@ def test_from_link_vcs(mock_get_backend_for_scheme: mock.Mock) -> None:
+     _direct_url_from_link = partial(direct_url_from_link, source_dir="...")
+     direct_url = _direct_url_from_link(Link("git+https://g.c/u/p.git"))
+     assert direct_url.url == "https://g.c/u/p.git"
+-    assert isinstance(direct_url.info, VcsInfo)
+-    assert direct_url.info.vcs == "git"
++    assert direct_url.vcs_info
++    assert direct_url.vcs_info.vcs == "git"
+     direct_url = _direct_url_from_link(Link("git+https://g.c/u/p.git#egg=pkg"))
+     assert direct_url.url == "https://g.c/u/p.git"
+     direct_url = _direct_url_from_link(
+@@ -101,14 +115,14 @@ def test_from_link_vcs(mock_get_backend_for_scheme: mock.Mock) -> None:
+     assert direct_url.subdirectory == "subdir"
+     direct_url = _direct_url_from_link(Link("git+https://g.c/u/p.git@branch"))
+     assert direct_url.url == "https://g.c/u/p.git"
+-    assert isinstance(direct_url.info, VcsInfo)
+-    assert direct_url.info.requested_revision == "branch"
++    assert direct_url.vcs_info
++    assert direct_url.vcs_info.requested_revision == "branch"
+     direct_url = _direct_url_from_link(Link("git+https://g.c/u/p.git@branch#egg=pkg"))
+     assert direct_url.url == "https://g.c/u/p.git"
+-    assert isinstance(direct_url.info, VcsInfo)
+-    assert direct_url.info.requested_revision == "branch"
++    assert direct_url.vcs_info
++    assert direct_url.vcs_info.requested_revision == "branch"
+     direct_url = _direct_url_from_link(Link("git+https://token@g.c/u/p.git"))
+-    assert direct_url.to_dict()["url"] == "https://g.c/u/p.git"
++    assert direct_url.to_dict_compat()["url"] == "https://g.c/u/p.git"
+ 
+ 
+ def test_from_link_vcs_with_source_dir_obtains_commit_id(tmpdir: Path) -> None:
+@@ -124,8 +138,8 @@ def test_from_link_vcs_with_source_dir_obtains_commit_id(tmpdir: Path) -> None:
+         Link("git+https://g.c/u/p.git"), source_dir=repo_dir
+     )
+     assert direct_url.url == "https://g.c/u/p.git"
+-    assert isinstance(direct_url.info, VcsInfo)
+-    assert direct_url.info.commit_id == commit_id
++    assert direct_url.vcs_info
++    assert direct_url.vcs_info.commit_id == commit_id
+ 
+ 
+ def test_from_link_vcs_without_source_dir() -> None:
+@@ -133,21 +147,23 @@ def test_from_link_vcs_without_source_dir() -> None:
+         Link("git+https://g.c/u/p.git@1"), link_is_in_wheel_cache=True
+     )
+     assert direct_url.url == "https://g.c/u/p.git"
+-    assert isinstance(direct_url.info, VcsInfo)
+-    assert direct_url.info.commit_id == "1"
++    assert direct_url.vcs_info
++    assert direct_url.vcs_info.commit_id == "1"
+ 
+ 
+ def test_from_link_archive() -> None:
+     direct_url = direct_url_from_link(Link("https://g.c/archive.tgz"))
+     assert direct_url.url == "https://g.c/archive.tgz"
+-    assert isinstance(direct_url.info, ArchiveInfo)
++    assert direct_url.archive_info
+     direct_url = direct_url_from_link(
+         Link("https://g.c/archive.tgz#sha1=1b8c5bc61a86f377fea47b4276c8c8a5842d2220")
+     )
+-    assert isinstance(direct_url.info, ArchiveInfo)
+-    assert direct_url.info.hash == "sha1=1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
++    assert direct_url.archive_info
++    assert direct_url.archive_info.hashes == {
++        "sha1": "1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
++    }
+     # Test the hashes key has been automatically populated.
+-    assert direct_url.info.hashes == {
++    assert direct_url.archive_info.hashes == {
+         "sha1": "1b8c5bc61a86f377fea47b4276c8c8a5842d2220"
+     }
+ 
+@@ -156,7 +172,7 @@ def test_from_link_dir(tmpdir: Path) -> None:
+     dir_url = tmpdir.as_uri()
+     direct_url = direct_url_from_link(Link(dir_url))
+     assert direct_url.url == dir_url
+-    assert isinstance(direct_url.info, DirInfo)
++    assert direct_url.dir_info
+ 
+ 
+ def test_from_link_hide_user_password() -> None:
+@@ -166,9 +182,9 @@ def test_from_link_hide_user_password() -> None:
+         Link("git+https://user:password@g.c/u/p.git@branch#egg=pkg"),
+         link_is_in_wheel_cache=True,
+     )
+-    assert direct_url.to_dict()["url"] == "https://g.c/u/p.git"
++    assert direct_url.to_dict_compat()["url"] == "https://g.c/u/p.git"
+     direct_url = direct_url_from_link(
+         Link("git+ssh://git@g.c/u/p.git@branch#egg=pkg"),
+         link_is_in_wheel_cache=True,
+     )
+-    assert direct_url.to_dict()["url"] == "ssh://git@g.c/u/p.git"
++    assert direct_url.to_dict_compat()["url"] == "ssh://git@g.c/u/p.git"
+diff --git a/tests/unit/test_req.py b/tests/unit/test_req.py
+index 5ffd2315727..246fe306954 100644
+--- a/tests/unit/test_req.py
++++ b/tests/unit/test_req.py
+@@ -28,7 +28,7 @@
+     PreviousBuildDirError,
+ )
+ from pip._internal.index.package_finder import PackageFinder
+-from pip._internal.models.direct_url import ArchiveInfo, DirectUrl, DirInfo, VcsInfo
++from pip._internal.models.direct_url import ArchiveInfo, DirectUrl
+ from pip._internal.models.link import Link
+ from pip._internal.network.session import PipSession
+ from pip._internal.operations.build.build_tracker import get_build_tracker
+@@ -367,8 +367,8 @@ def test_download_info_find_links(self, data: TestData) -> None:
+             assert len(reqset.all_requirements) == 1
+             req = reqset.all_requirements[0]
+             assert req.download_info
+-            assert isinstance(req.download_info.info, ArchiveInfo)
+-            assert req.download_info.info.hash
++            assert req.download_info.archive_info
++            assert req.download_info.archive_info.hashes
+ 
+     @pytest.mark.network
+     def test_download_info_index_url(self) -> None:
+@@ -380,7 +380,7 @@ def test_download_info_index_url(self) -> None:
+             assert len(reqset.all_requirements) == 1
+             req = reqset.all_requirements[0]
+             assert req.download_info
+-            assert isinstance(req.download_info.info, ArchiveInfo)
++            assert req.download_info.archive_info
+ 
+     @pytest.mark.network
+     def test_download_info_web_archive(self) -> None:
+@@ -399,11 +399,12 @@ def test_download_info_web_archive(self) -> None:
+                 req.download_info.url
+                 == "https://github.com/pypa/pip-test-package/tarball/0.1.1"
+             )
+-            assert isinstance(req.download_info.info, ArchiveInfo)
+-            assert (
+-                req.download_info.info.hash == "sha256="
+-                "ad977496000576e1b6c41f6449a9897087ce9da6db4f15b603fe8372af4bf3c6"
+-            )
++            assert req.download_info.archive_info
++            assert req.download_info.archive_info.hashes == {
++                "sha256": (
++                    "ad977496000576e1b6c41f6449a9897087ce9da6db4f15b603fe8372af4bf3c6"
++                )
++            }
+ 
+     def test_download_info_archive_legacy_cache(
+         self, tmp_path: Path, shared_data: TestData
+@@ -424,8 +425,8 @@ def test_download_info_archive_legacy_cache(
+             assert req.cached_wheel_source_link
+             assert req.download_info
+             assert req.download_info.url == url
+-            assert isinstance(req.download_info.info, ArchiveInfo)
+-            assert not req.download_info.info.hash
++            assert req.download_info.archive_info
++            assert not req.download_info.archive_info.hashes
+ 
+     def test_download_info_archive_cache_with_origin(
+         self, tmp_path: Path, shared_data: TestData
+@@ -433,13 +434,15 @@ def test_download_info_archive_cache_with_origin(
+         """Test download_info hash is set for a web archive with cache entry
+         that has origin.json."""
+         url = shared_data.packages.joinpath("simple-1.0.tar.gz").as_uri()
+-        hash = "sha256=ad977496000576e1b6c41f6449a9897087ce9da6db4f15b603fe8372af4bf3c6"
++        hash = "ad977496000576e1b6c41f6449a9897087ce9da6db4f15b603fe8372af4bf3c6"
+         finder = make_test_finder()
+         wheel_cache = WheelCache(str(tmp_path / "cache"))
+         cache_entry_dir = wheel_cache.get_path_for_link(Link(url))
+         Path(cache_entry_dir).mkdir(parents=True)
+         Path(cache_entry_dir).joinpath("origin.json").write_text(
+-            DirectUrl(url, ArchiveInfo(hash=hash)).to_json()
++            DirectUrl(
++                url=url, archive_info=ArchiveInfo(hashes={"sha256": hash})
++            ).to_json()
+         )
+         wheel.make_wheel(name="simple", version="1.0").save_to_dir(cache_entry_dir)
+         with self._basic_resolver(finder, wheel_cache=wheel_cache) as resolver:
+@@ -451,8 +454,8 @@ def test_download_info_archive_cache_with_origin(
+             assert req.cached_wheel_source_link
+             assert req.download_info
+             assert req.download_info.url == url
+-            assert isinstance(req.download_info.info, ArchiveInfo)
+-            assert req.download_info.info.hash == hash
++            assert req.download_info.archive_info
++            assert req.download_info.archive_info.hashes == {"sha256": hash}
+ 
+     def test_download_info_archive_cache_with_invalid_origin(
+         self, tmp_path: Path, shared_data: TestData, caplog: pytest.LogCaptureFixture
+@@ -487,11 +490,12 @@ def test_download_info_local_wheel(self, data: TestData) -> None:
+             req = reqset.all_requirements[0]
+             assert req.download_info
+             assert req.download_info.url.startswith("file://")
+-            assert isinstance(req.download_info.info, ArchiveInfo)
+-            assert (
+-                req.download_info.info.hash == "sha256="
+-                "e63aa139caee941ec7f33f057a5b987708c2128238357cf905429846a2008718"
+-            )
++            assert req.download_info.archive_info
++            assert req.download_info.archive_info.hashes == {
++                "sha256": (
++                    "e63aa139caee941ec7f33f057a5b987708c2128238357cf905429846a2008718"
++                )
++            }
+ 
+     def test_download_info_local_dir(self, data: TestData) -> None:
+         """Test that download_info is set for requirements from a local dir."""
+@@ -504,7 +508,7 @@ def test_download_info_local_dir(self, data: TestData) -> None:
+             req = reqset.all_requirements[0]
+             assert req.download_info
+             assert req.download_info.url.startswith("file://")
+-            assert isinstance(req.download_info.info, DirInfo)
++            assert req.download_info.dir_info
+ 
+     def test_download_info_local_editable_dir(self, data: TestData) -> None:
+         """Test that download_info is set for requirements from a local editable dir."""
+@@ -517,8 +521,8 @@ def test_download_info_local_editable_dir(self, data: TestData) -> None:
+             req = reqset.all_requirements[0]
+             assert req.download_info
+             assert req.download_info.url.startswith("file://")
+-            assert isinstance(req.download_info.info, DirInfo)
+-            assert req.download_info.info.editable
++            assert req.download_info.dir_info
++            assert req.download_info.dir_info.editable
+ 
+     @pytest.mark.network
+     def test_download_info_vcs(self) -> None:
+@@ -532,9 +536,9 @@ def test_download_info_vcs(self) -> None:
+             assert len(reqset.all_requirements) == 1
+             req = reqset.all_requirements[0]
+             assert req.download_info
+-            assert isinstance(req.download_info.info, VcsInfo)
++            assert req.download_info.vcs_info
+             assert req.download_info.url == "https://github.com/pypa/pip-test-package"
+-            assert req.download_info.info.vcs == "git"
++            assert req.download_info.vcs_info.vcs == "git"
+ 
+ 
+ class TestInstallRequirement:
+diff --git a/tests/unit/test_wheel.py b/tests/unit/test_wheel.py
+index e0ac6497b78..3d78a97b988 100644
+--- a/tests/unit/test_wheel.py
++++ b/tests/unit/test_wheel.py
+@@ -364,7 +364,7 @@ def test_std_install_with_direct_url(self, data: TestData, tmpdir: Path) -> None
+         self.prep(data, tmpdir)
+         direct_url = DirectUrl(
+             url="file:///home/user/archive.tgz",
+-            info=ArchiveInfo(),
++            archive_info=ArchiveInfo(),
+         )
+         wheel.install_wheel(
+             self.name,

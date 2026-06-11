@@ -1,0 +1,199 @@
+diff --git a/AUTHORS b/AUTHORS
+index 25154e29ac53..510469182a87 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -326,6 +326,7 @@ answer newbie questions, and generally made Django that much better:
+     dusk@woofle.net
+     Dustyn Gibson <miigotu@gmail.com>
+     Ed Morley <https://github.com/edmorley>
++    eevelweezel <eevel.weezel@gmail.com>
+     Egidijus Macijauskas <e.macijauskas@outlook.com>
+     eibaan@gmail.com
+     elky <http://elky.me/>
+diff --git a/django/core/cache/backends/db.py b/django/core/cache/backends/db.py
+index 8245e4f22525..966312766935 100644
+--- a/django/core/cache/backends/db.py
++++ b/django/core/cache/backends/db.py
+@@ -2,6 +2,7 @@
+ 
+ import base64
+ import pickle
++import random
+ from datetime import UTC, datetime
+ 
+ from django.conf import settings
+@@ -33,6 +34,11 @@ class BaseDatabaseCache(BaseCache):
+     def __init__(self, table, params):
+         super().__init__(params)
+         self._table = table
++        options = params.get("OPTIONS", {})
++        try:
++            self._cull_probability = float(options.get("CULL_PROBABILITY", 0.1))
++        except (ValueError, TypeError):
++            self._cull_probability = 0.1
+ 
+         class CacheEntry:
+             _meta = Options(table)
+@@ -118,8 +124,6 @@ def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+         table = quote_name(self._table)
+ 
+         with connection.cursor() as cursor:
+-            cursor.execute("SELECT COUNT(*) FROM %s" % table)
+-            num = cursor.fetchone()[0]
+             now = tz_now()
+             now = now.replace(microsecond=0)
+             if timeout is None:
+@@ -128,8 +132,11 @@ def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+                 tz = UTC if settings.USE_TZ else None
+                 exp = datetime.fromtimestamp(timeout, tz=tz)
+             exp = exp.replace(microsecond=0)
+-            if num > self._max_entries:
+-                self._cull(db, cursor, now, num)
++            if self._cull_probability and random.random() <= self._cull_probability:
++                cursor.execute("SELECT COUNT(*) FROM %s" % table)
++                num = cursor.fetchone()[0]
++                if num > self._max_entries:
++                    self._cull(db, cursor, now, num)
+             pickled = pickle.dumps(value, self.pickle_protocol)
+             # The DB column is expecting a string, so make sure the value is a
+             # string, not bytes. Refs #19274.
+diff --git a/docs/releases/6.2.txt b/docs/releases/6.2.txt
+index f88beb6fa06a..09dab3a93db3 100644
+--- a/docs/releases/6.2.txt
++++ b/docs/releases/6.2.txt
+@@ -108,7 +108,10 @@ Asynchronous views
+ Cache
+ ~~~~~
+ 
+-* ...
++* Subclasses of ``BaseDatabaseCache`` now support :ref:`
++  culling <_database-caching>` on a percentage of writes as an optimization.
++  The default is 10%, and may be configured using the ``CULL_PROBABILITY``
++  option.
+ 
+ CSP
+ ~~~
+diff --git a/docs/topics/cache.txt b/docs/topics/cache.txt
+index 9af28a9324c4..587a91859e5f 100644
+--- a/docs/topics/cache.txt
++++ b/docs/topics/cache.txt
+@@ -254,7 +254,16 @@ In this example, the cache table's name is ``my_cache_table``::
+ 
+ Unlike other cache backends, the database cache does not support automatic
+ culling of expired entries at the database level. Instead, expired cache
+-entries are culled each time ``add()``, ``set()``, or ``touch()`` is called.
++entries are culled when an ``add()``, ``set()``, or ``touch()`` is called.
++
++Since the cull operation can be expensive for a large cache, you may control
++how often this check occurs by setting ``CULL_PROBABILITY`` to a value between
++0 and 1. This makes the cull probabilistic, occurring on that percentage of
++writes. The default is ``0.1`` (10%).
++
++.. versionadded:: 6.2
++
++    The ``CULL_PROBABILITY`` option was added.
+ 
+ .. _database-caching-creating-the-table:
+ 
+@@ -499,6 +508,14 @@ behavior. These arguments are provided as additional keys in the
+     On some backends (``database`` in particular) this makes culling *much*
+     faster at the expense of more cache misses.
+ 
++  * ``CULL_PROBABILITY``: The percentage of writes that will trigger a cull on
++    the database backend. This value should be between 0 and 1: the default is
++    ``0.1``.
++
++  .. versionadded:: 6.2
++
++    The ``CULL_PROBABILITY`` option was added.
++
+   The Memcached and Redis backends pass the contents of :setting:`OPTIONS
+   <CACHES-OPTIONS>` as keyword arguments to the client constructors, allowing
+   for more advanced control of client behavior. For example usage, see below.
+diff --git a/tests/cache/tests.py b/tests/cache/tests.py
+index c2167b8b3f10..96a1c5583b8b 100644
+--- a/tests/cache/tests.py
++++ b/tests/cache/tests.py
+@@ -300,8 +300,10 @@ def custom_key_func(key, key_prefix, version):
+     "v2": {"VERSION": 2},
+     "custom_key": {"KEY_FUNCTION": custom_key_func},
+     "custom_key2": {"KEY_FUNCTION": "cache.tests.custom_key_func"},
+-    "cull": {"OPTIONS": {"MAX_ENTRIES": 30}},
+-    "zero_cull": {"OPTIONS": {"CULL_FREQUENCY": 0, "MAX_ENTRIES": 30}},
++    "cull": {"OPTIONS": {"MAX_ENTRIES": 30, "CULL_PROBABILITY": 1.0}},
++    "zero_cull": {
++        "OPTIONS": {"CULL_FREQUENCY": 0, "MAX_ENTRIES": 30, "CULL_PROBABILITY": 1.0}
++    },
+ }
+ 
+ 
+@@ -1293,13 +1295,16 @@ def test_delete_many_num_queries(self):
+ 
+     def test_cull_queries(self):
+         old_max_entries = cache._max_entries
++        old_cull_probability = cache._cull_probability
+         # Force _cull to delete on first cached record.
+         cache._max_entries = -1
++        cache._cull_probability = 1.0
+         with CaptureQueriesContext(connection) as captured_queries:
+             try:
+                 cache.set("force_cull", "value", 1000)
+             finally:
+                 cache._max_entries = old_max_entries
++                cache._cull_probability = old_cull_probability
+         num_count_queries = sum("COUNT" in query["sql"] for query in captured_queries)
+         self.assertEqual(num_count_queries, 1)
+         # Column names are quoted.
+@@ -1310,6 +1315,52 @@ def test_cull_queries(self):
+             if "cache_key" in sql:
+                 self.assertIn(connection.ops.quote_name("cache_key"), sql)
+ 
++    def test_db_cull_optimized_off(self):
++        # Check for expired entries every request if probability is 1.0.
++        old_max_entries = cache._max_entries
++        old_cull_probability = cache._cull_probability
++        cache._max_entries = -1
++        cache._cull_probability = 1.0
++        with mock.patch.object(cache, "_cull") as mocked:
++            try:
++                cache.set("key_foo", "foo")
++            finally:
++                cache._max_entries = old_max_entries
++                cache._cull_probability = old_cull_probability
++            mocked.assert_called_once()
++
++    def test_db_cull_optimized_on(self):
++        # Do not check for expired entries unless the cull check passes.
++        old_cull_probability = cache._cull_probability
++        old_max_entries = cache._max_entries
++        cache._max_entries = -1
++        cache._cull_probability = 0.1
++        with mock.patch("random.random") as mock_random:
++            mock_random.return_value = 0.01
++            with mock.patch.object(cache, "_cull") as mocked:
++                try:
++                    cache.set("key_foo", "foo")
++                finally:
++                    cache._max_entries = old_max_entries
++                    cache._cull_probability = old_cull_probability
++            mocked.assert_called_once()
++
++    def test_no_query_without_check(self):
++        # No COUNT query should occur if the cull check is False.
++        old_cull_probability = cache._cull_probability
++        cache._cull_probability = 0.1
++        with mock.patch("random.random") as mock_random:
++            mock_random.return_value = 0.9
++            with CaptureQueriesContext(connection) as captured_queries:
++                try:
++                    cache.set("shouldnt_cull", "value")
++                finally:
++                    cache._cull_probability = old_cull_probability
++                num_count_queries = sum(
++                    "COUNT" in query["sql"] for query in captured_queries
++                )
++                self.assertEqual(num_count_queries, 0)
++
+     def test_delete_cursor_rowcount(self):
+         """
+         The rowcount attribute should not be checked on a closed cursor.

@@ -1,0 +1,74 @@
+diff --git a/CHANGES/12795.bugfix.rst b/CHANGES/12795.bugfix.rst
+new file mode 100644
+index 00000000000..d08ea779287
+--- /dev/null
++++ b/CHANGES/12795.bugfix.rst
+@@ -0,0 +1 @@
++Fixed ``CancelledError`` not closing a connection -- by :user:`aiolibsbot`.
+diff --git a/aiohttp/client_proto.py b/aiohttp/client_proto.py
+index fe604275959..30b13950af7 100644
+--- a/aiohttp/client_proto.py
++++ b/aiohttp/client_proto.py
+@@ -323,12 +323,14 @@ def data_received(self, data: bytes) -> None:
+         # parse http messages
+         try:
+             messages, upgraded, tail = self._parser.feed_data(data)
+-        except Exception as underlying_exc:
++        except BaseException as underlying_exc:
+             if self.transport is not None:
+                 # connection.release() could be called BEFORE
+                 # data_received(), the transport is already
+                 # closed in this case
+                 self.transport.close()
++            if not isinstance(underlying_exc, Exception):
++                raise
+             # should_close is True after the call
+             if isinstance(underlying_exc, HttpProcessingError):
+                 exc = HttpProcessingError(
+diff --git a/tests/test_client_proto.py b/tests/test_client_proto.py
+index 3b6a7b6e8af..4bcf860ac43 100644
+--- a/tests/test_client_proto.py
++++ b/tests/test_client_proto.py
+@@ -1,6 +1,7 @@
+ import asyncio
+ from unittest import mock
+ 
++import pytest
+ from multidict import CIMultiDict
+ from pytest_mock import MockerFixture
+ from yarl import URL
+@@ -169,6 +170,34 @@ class PatchableHttpResponseParser(http.HttpResponseParser):
+     assert isinstance(proto.exception(), http.HttpProcessingError)
+ 
+ 
++async def test_base_exception_during_data_received_closes_transport() -> None:
++    loop = asyncio.get_running_loop()
++    proto = ResponseHandler(loop=loop)
++
++    class PatchableHttpResponseParser(http.HttpResponseParser):
++        """Subclass of HttpResponseParser to make it patchable."""
++
++    with mock.patch(
++        "aiohttp.client_proto.HttpResponseParser", PatchableHttpResponseParser
++    ):
++        transport = mock.create_autospec(
++            asyncio.Transport, spec_set=True, instance=True
++        )
++        proto.connection_made(transport)
++        proto.set_response_params(read_until_eof=True)
++        # Prime the parser so feed_data has been called once with valid data.
++        proto.data_received(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nab")
++        transport.close.reset_mock()
++
++        with mock.patch.object(
++            proto._parser, "feed_data", side_effect=asyncio.CancelledError
++        ):
++            with pytest.raises(asyncio.CancelledError):
++                proto.data_received(b"more")
++
++        assert transport.close.called
++
++
+ async def test_client_protocol_readuntil_eof() -> None:
+     loop = asyncio.get_running_loop()
+     proto = ResponseHandler(loop=loop)

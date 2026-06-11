@@ -1,0 +1,196 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 2cffcef2bae2c..b214a8c0492bd 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -159,6 +159,7 @@ Performance improvements
+ - Performance improvement in :func:`read_sas` when decoding strings (:issue:`47339`)
+ - Performance improvement in :func:`util.hash_pandas_object` for PyArrow-backed string and binary types by using PyArrow's ``dictionary_encode`` instead of converting to NumPy for factorization (:issue:`48964`)
+ - Performance improvement in :meth:`.DataFrameGroupBy.agg` and :meth:`.SeriesGroupBy.agg` with user-defined functions (:issue:`46505`)
++- Performance improvement in :meth:`DataFrame.apply` with ``axis=1`` when the :class:`DataFrame` has :class:`ExtensionDtype` columns (e.g. :class:`ArrowDtype`) (:issue:`61747`)
+ - Performance improvement in :meth:`DataFrame.corr` and :meth:`DataFrame.cov` when data contains no NaN values (:issue:`64857`)
+ - Performance improvement in :meth:`DataFrame.fillna` and :meth:`Series.fillna` with scalar fill value for float, object, nullable, and datetime-like dtypes (:issue:`42147`)
+ - Performance improvement in :meth:`DataFrame.from_records` when passing a 2D :class:`numpy.ndarray` (:issue:`22025`)
+diff --git a/pandas/core/apply.py b/pandas/core/apply.py
+index 0c129a8196a32..8716b1d25b876 100644
+--- a/pandas/core/apply.py
++++ b/pandas/core/apply.py
+@@ -31,7 +31,11 @@
+     is_numeric_dtype,
+     is_sequence,
+ )
+-from pandas.core.dtypes.dtypes import ExtensionDtype
++from pandas.core.dtypes.dtypes import (
++    ArrowDtype,
++    BaseMaskedDtype,
++    ExtensionDtype,
++)
+ from pandas.core.dtypes.generic import (
+     ABCDataFrame,
+     ABCNDFrame,
+@@ -73,6 +77,11 @@
+         Index,
+         Series,
+     )
++    from pandas.core.arrays import (
++        ArrowExtensionArray,
++        BaseMaskedArray,
++        ExtensionArray,
++    )
+     from pandas.core.groupby import GroupBy
+     from pandas.core.resample import Resampler
+     from pandas.core.window.rolling import BaseWindow
+@@ -1420,11 +1429,27 @@ def series_generator(self) -> Generator[Series]:
+         is_view = mgr.blocks[0].refs.has_reference()
+ 
+         if isinstance(ser.dtype, ExtensionDtype):
+-            # values will be incorrect for this block
+-            # TODO(EA2D): special case would be unnecessary with 2D EAs
++            # GH#61747 - Pre-extract column arrays and reuse a template
++            # Series to avoid the per-row block traversal and
++            # Series/manager construction overhead in fast_xs.
+             obj = self.obj
+-            for i in range(len(obj)):
+-                yield obj._ixs(i, axis=0)
++            col_arrays = [obj._get_column_array(i) for i in range(len(obj.columns))]
++            dtype = ser.dtype
++            cls = dtype.construct_array_type()
++            mgr = ser._mgr
++
++            build_row = self._make_ea_row_builder(col_arrays, dtype, cls)
++
++            blk = mgr.blocks[0]
++            for row_idx in range(len(obj)):
++                ser._mgr = mgr
++                mgr.set_values(build_row(row_idx))
++                # EABackedBlock.array_values is @cache_readonly;
++                # clear it so Series.array sees the new values.
++                blk._cache.pop("array_values", None)
++                object.__setattr__(ser, "_name", obj.index[row_idx])
++                blk.refs = BlockValuesRefs(blk)
++                yield ser
+ 
+         else:
+             values = self.values
+@@ -1445,6 +1470,51 @@ def series_generator(self) -> Generator[Series]:
+                     mgr.blocks[0].refs = BlockValuesRefs(mgr.blocks[0])
+                 yield ser
+ 
++    @staticmethod
++    def _make_ea_row_builder(
++        col_arrays: list, dtype: ExtensionDtype, cls: type[ExtensionArray]
++    ) -> Callable[[int], ExtensionArray]:
++        """Build a callable that constructs an EA row for a given row index.
++
++        Special-cases BaseMaskedArray and ArrowExtensionArray to avoid the
++        overhead of _from_sequence per row. The fast paths require all columns
++        to share ``dtype``; mixed-dtype frames fall through to the generic
++        ``_from_sequence`` path (GH#65097).
++        """
++        homogeneous = all(col_arr.dtype == dtype for col_arr in col_arrays)
++
++        if homogeneous and isinstance(dtype, BaseMaskedDtype):
++            col_data = [col_arr._data for col_arr in col_arrays]
++            col_masks = [col_arr._mask for col_arr in col_arrays]
++            np_dtype = dtype.numpy_dtype
++            masked_cls = cast("type[BaseMaskedArray]", cls)
++
++            def build_row(row_idx: int) -> ExtensionArray:
++                data = np.array([cd[row_idx] for cd in col_data], dtype=np_dtype)
++                mask = np.array([cm[row_idx] for cm in col_masks], dtype=np.bool_)
++                return masked_cls._simple_new(data, mask)
++
++        elif homogeneous and isinstance(dtype, ArrowDtype):
++            import pyarrow as pa
++
++            pa_arrays = [col_arr._pa_array for col_arr in col_arrays]
++            pa_type = dtype.pyarrow_dtype
++            arrow_cls = cast("type[ArrowExtensionArray]", cls)
++
++            def build_row(row_idx: int) -> ExtensionArray:
++                pa_scalars = [pa_col[row_idx] for pa_col in pa_arrays]
++                return arrow_cls(pa.array(pa_scalars, type=pa_type))
++
++        else:
++
++            def build_row(row_idx: int) -> ExtensionArray:
++                row_data = np.array(
++                    [col_arr[row_idx] for col_arr in col_arrays], dtype=object
++                )
++                return cls._from_sequence(row_data, dtype=dtype)
++
++        return build_row
++
+     @staticmethod
+     @functools.cache
+     def generate_numba_apply_func(
+diff --git a/pandas/core/indexes/base.py b/pandas/core/indexes/base.py
+index bf15c3106b621..f57a56524fbe9 100644
+--- a/pandas/core/indexes/base.py
++++ b/pandas/core/indexes/base.py
+@@ -5649,7 +5649,7 @@ def _can_hold_identifiers_and_holds_name(self, name: Hashable) -> bool:
+         https://github.com/pandas-dev/pandas/issues/19764
+         """
+         if (
+-            is_object_dtype(self.dtype)
++            self.dtype == object
+             or is_string_dtype(self.dtype)
+             or isinstance(self.dtype, CategoricalDtype)
+         ):
+diff --git a/pandas/tests/apply/test_frame_apply.py b/pandas/tests/apply/test_frame_apply.py
+index 5d8bc5837848e..c0755b3450fd2 100644
+--- a/pandas/tests/apply/test_frame_apply.py
++++ b/pandas/tests/apply/test_frame_apply.py
+@@ -155,6 +155,53 @@ def test_apply_axis1_with_ea():
+     tm.assert_frame_equal(result, expected)
+ 
+ 
++def test_apply_axis1_ea_preserves_dtype():
++    # GH#61747 - row dtype should match the interleaved dtype, not object
++    df = DataFrame(
++        {
++            "a": pd.array([1, 2, 3], dtype="Int64"),
++            "b": pd.array([4, 5, 6], dtype="Int64"),
++        }
++    )
++    result = df.apply(lambda row: row.dtype, axis=1)
++    expected = Series([pd.Int64Dtype()] * 3)
++    tm.assert_series_equal(result, expected)
++
++
++def test_apply_axis1_arrow_heterogeneous_dtypes():
++    # GH#65097 - columns of differing pyarrow types must not raise; each row
++    # is built as the upcast common dtype rather than the first column's type
++    pa = pytest.importorskip("pyarrow")
++    df = DataFrame(
++        {
++            "a": pd.array([1, 2, 3], dtype="int64[pyarrow]"),
++            "b": pd.array([1.5, 2.5, 3.5], dtype="float64[pyarrow]"),
++        }
++    )
++    row_dtypes = df.apply(lambda row: row.dtype, axis=1)
++    tm.assert_series_equal(row_dtypes, Series([pd.ArrowDtype(pa.float64())] * 3))
++
++    result = df.apply(lambda x: x.sum(), axis=1)
++    expected = Series([2.5, 4.5, 6.5])
++    tm.assert_series_equal(result, expected)
++
++
++def test_apply_axis1_masked_heterogeneous_dtypes():
++    # GH#65097 - Int64 + Float64 columns build each row as the upcast Float64
++    df = DataFrame(
++        {
++            "a": pd.array([1, 2, 3], dtype="Int64"),
++            "b": pd.array([1.5, 2.5, 3.5], dtype="Float64"),
++        }
++    )
++    row_dtypes = df.apply(lambda row: row.dtype, axis=1)
++    tm.assert_series_equal(row_dtypes, Series([pd.Float64Dtype()] * 3))
++
++    result = df.apply(lambda x: x.sum(), axis=1)
++    expected = Series([2.5, 4.5, 6.5])
++    tm.assert_series_equal(result, expected)
++
++
+ @pytest.mark.parametrize(
+     "data, dtype",
+     [(1, None), (1, CategoricalDtype([1])), (Timestamp("2013-01-01", tz="UTC"), None)],

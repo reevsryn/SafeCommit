@@ -1,0 +1,1269 @@
+diff --git a/news/13876.feature.rst b/news/13876.feature.rst
+new file mode 100644
+index 00000000000..ab44200cf1c
+--- /dev/null
++++ b/news/13876.feature.rst
+@@ -0,0 +1 @@
++Add experimental support to read requirements from standardized pylock.toml files (``-r pylock.toml``).
+diff --git a/src/pip/_internal/cli/cmdoptions.py b/src/pip/_internal/cli/cmdoptions.py
+index 3abc82f0691..a16130131eb 100644
+--- a/src/pip/_internal/cli/cmdoptions.py
++++ b/src/pip/_internal/cli/cmdoptions.py
+@@ -31,6 +31,7 @@
+ from pip._internal.models.index import PyPI
+ from pip._internal.models.release_control import ReleaseControl
+ from pip._internal.models.target_python import TargetPython
++from pip._internal.utils import pylock as pylock_utils
+ from pip._internal.utils.datetime import parse_iso_datetime
+ from pip._internal.utils.hashes import STRONG_HASHES
+ from pip._internal.utils.misc import strtobool
+@@ -103,6 +104,14 @@ def check_dist_restriction(options: Values, check_target: bool = False) -> None:
+                 "installing via '--target' or using '--dry-run'"
+             )
+ 
++    for filename in options.requirements:
++        if dist_restriction_set and pylock_utils.is_valid_pylock_filename(filename):
++            raise CommandError(
++                "Patform and interpreter constraints using "
++                "--python-version, --platform, --abi, or --implementation, "
++                f"are not supported when selecting requirements from {filename!r}"
++            )
++
+ 
+ def check_build_constraints(options: Values) -> None:
+     """Function for validating build constraints options.
+@@ -542,8 +551,12 @@ def requirements() -> Option:
+         action="append",
+         default=[],
+         metavar="file",
+-        help="Install from the given requirements file. "
+-        "This option can be used multiple times.",
++        help=(
++            "Install from the given requirements file. "
++            "The file or URL can be in pip's requirements.txt format, "
++            "or pylock.toml format. pylock.toml support is experimental. "
++            "This option can be used multiple times."
++        ),
+     )
+ 
+ 
+diff --git a/src/pip/_internal/cli/req_command.py b/src/pip/_internal/cli/req_command.py
+index ea57311d7d4..584597f0c9c 100644
+--- a/src/pip/_internal/cli/req_command.py
++++ b/src/pip/_internal/cli/req_command.py
+@@ -39,6 +39,7 @@
+     install_req_from_editable,
+     install_req_from_line,
+     install_req_from_parsed_requirement,
++    install_req_from_pylock_package,
+     install_req_from_req_string,
+ )
+ from pip._internal.req.pep723 import PEP723Exception, pep723_metadata
+@@ -47,6 +48,10 @@
+ from pip._internal.req.req_install import InstallRequirement
+ from pip._internal.resolution.base import BaseResolver
+ from pip._internal.utils.packaging import check_requires_python
++from pip._internal.utils.pylock import (
++    is_valid_pylock_filename,
++    select_from_pylock_path_or_url,
++)
+ from pip._internal.utils.temp_dir import (
+     TempDirectory,
+     TempDirectoryTypeRegistry,
+@@ -332,6 +337,26 @@ def get_requirements(
+ 
+         # NOTE: options.require_hashes may be set if --require-hashes is True
+         for filename in options.requirements:
++            if is_valid_pylock_filename(filename):
++                logger.warning(
++                    "Using pylock.toml as a requirements source "
++                    "is an experimental feature. "
++                    "It may be removed/changed in a future release "
++                    "without prior warning."
++                )
++                for package, package_dist in select_from_pylock_path_or_url(
++                    filename, session=session
++                ):
++                    requirements.append(
++                        install_req_from_pylock_package(
++                            package,
++                            package_dist,
++                            filename,
++                            options.format_control,
++                            user_supplied=True,
++                        )
++                    )
++                continue
+             for parsed_req in parse_requirements(
+                 filename, finder=finder, options=options, session=session
+             ):
+diff --git a/src/pip/_internal/req/constructors.py b/src/pip/_internal/req/constructors.py
+index 2a0f9138a59..2b9d5ac16fd 100644
+--- a/src/pip/_internal/req/constructors.py
++++ b/src/pip/_internal/req/constructors.py
+@@ -14,13 +14,16 @@
+ import logging
+ import os
+ import re
+-from collections.abc import Collection
++from collections.abc import Collection, Mapping
+ from dataclasses import dataclass
+ 
++from pip._vendor.packaging import pylock
+ from pip._vendor.packaging.markers import Marker
+ from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
++from pip._vendor.packaging.utils import parse_sdist_filename, parse_wheel_filename
+ 
+ from pip._internal.exceptions import InstallationError
++from pip._internal.models.format_control import FormatControl
+ from pip._internal.models.index import PyPI, TestPyPI
+ from pip._internal.models.link import Link
+ from pip._internal.models.wheel import Wheel
+@@ -29,6 +32,13 @@
+ from pip._internal.utils.filetypes import is_archive_file
+ from pip._internal.utils.misc import is_installable_dir
+ from pip._internal.utils.packaging import get_requirement
++from pip._internal.utils.pylock import (
++    package_archive_requirement_url,
++    package_directory_requirement_url,
++    package_sdist_requirement_url,
++    package_vcs_requirement_url,
++    package_wheel_requirement_url,
++)
+ from pip._internal.utils.urls import path_to_url
+ from pip._internal.vcs import is_url, vcs
+ 
+@@ -568,3 +578,100 @@ def install_req_extend_extras(
+         else None
+     )
+     return result
++
++
++def _pylock_hashes_to_hash_options(hashes: Mapping[str, str]) -> dict[str, list[str]]:
++    return {k: [v] for k, v in hashes.items()}
++
++
++def install_req_from_pylock_package(
++    package: pylock.Package,
++    package_dist: (
++        pylock.PackageVcs
++        | pylock.PackageArchive
++        | pylock.PackageDirectory
++        | pylock.PackageSdist
++        | pylock.PackageWheel
++    ),
++    pylock_path_or_url: str,
++    format_control: FormatControl,
++    user_supplied: bool,
++) -> InstallRequirement:
++    pass
++    # TODO: validate file size
++    if isinstance(package_dist, pylock.PackageVcs):
++        return InstallRequirement(
++            req=Requirement(
++                f"{package.name} @ "
++                f"{package_vcs_requirement_url(pylock_path_or_url, package_dist)}"
++            ),
++            comes_from=pylock_path_or_url,
++            user_supplied=user_supplied,
++        )
++    elif isinstance(package_dist, pylock.PackageArchive):
++        return InstallRequirement(
++            req=Requirement(
++                f"{package.name} @ "
++                f"{package_archive_requirement_url(pylock_path_or_url, package_dist)}"
++            ),
++            comes_from=pylock_path_or_url,
++            hash_options=_pylock_hashes_to_hash_options(package_dist.hashes),
++            user_supplied=user_supplied,
++        )
++    elif isinstance(package_dist, pylock.PackageDirectory):
++        req = package_directory_requirement_url(pylock_path_or_url, package_dist)
++        if package_dist.editable:
++            return install_req_from_editable(
++                req,
++                comes_from=pylock_path_or_url,
++                user_supplied=user_supplied,
++            )
++        else:
++            return install_req_from_line(
++                req,
++                comes_from=pylock_path_or_url,
++                user_supplied=user_supplied,
++            )
++    else:
++        # wheel or sdist
++        allowed_formats = format_control.get_allowed_formats(package.name)
++        if (
++            isinstance(package_dist, pylock.PackageSdist)
++            and "source" not in allowed_formats
++        ):
++            raise InstallationError(
++                f"source distributions are not permitted for package {package.name!r} "
++                f"and there is no compatible wheel for it in {pylock_path_or_url!r}"
++            )
++        if (
++            isinstance(package_dist, pylock.PackageWheel)
++            and "binary" not in allowed_formats
++        ):
++            if not package.sdist:
++                raise InstallationError(
++                    f"binaries are not permitted for package {package.name!r} and "
++                    f"there is no source distribution for it in {pylock_path_or_url!r}"
++                )
++            package_dist = package.sdist
++        version = package.version
++        if isinstance(package_dist, pylock.PackageWheel):
++            if not version:
++                _, version, _, _ = parse_wheel_filename(package_dist.filename)
++            requirement_url = package_wheel_requirement_url(
++                pylock_path_or_url, package_dist
++            )
++        elif isinstance(package_dist, pylock.PackageSdist):
++            if not version:
++                _, version = parse_sdist_filename(package_dist.filename)
++            requirement_url = package_sdist_requirement_url(
++                pylock_path_or_url, package_dist
++            )
++        ireq = InstallRequirement(
++            req=Requirement(f"{package.name}=={version}"),
++            comes_from=pylock_path_or_url,
++            locked_link=Link(requirement_url),
++            locked_version=version,
++            hash_options=_pylock_hashes_to_hash_options(package_dist.hashes),
++            user_supplied=user_supplied,
++        )
++        return ireq
+diff --git a/src/pip/_internal/req/req_install.py b/src/pip/_internal/req/req_install.py
+index bd4fb0717d6..aad2f0ee41d 100644
+--- a/src/pip/_internal/req/req_install.py
++++ b/src/pip/_internal/req/req_install.py
+@@ -81,6 +81,8 @@ def __init__(
+         extras: Collection[str] = (),
+         user_supplied: bool = False,
+         permit_editable_wheels: bool = False,
++        locked_link: Link | None = None,
++        locked_version: Version | None = None,
+     ) -> None:
+         assert req is None or isinstance(req, Requirement), req
+         self.req = req
+@@ -107,6 +109,14 @@ def __init__(
+             link = Link(req.url)
+         self.link = self.original_link = link
+ 
++        # locked_link is the link from the lock file that must be used.
++        # A locked link InstallRequirement behaves similarly as a regular requirement
++        # that would be searched in indexes, except its artifact URL is known
++        # in advance. Notably, and contrarily to direct URL requirements and direct URL
++        # constraints, they do not cause the recording of direct_url.json.
++        self.locked_link = locked_link
++        self.locked_version = locked_version
++
+         # When this InstallRequirement is a wheel obtained from the cache of locally
+         # built wheels, this is the source link corresponding to the cache entry, which
+         # was used to download and build the cached wheel.
+diff --git a/src/pip/_internal/resolution/resolvelib/factory.py b/src/pip/_internal/resolution/resolvelib/factory.py
+index b9a4882e79f..da37f299f19 100644
+--- a/src/pip/_internal/resolution/resolvelib/factory.py
++++ b/src/pip/_internal/resolution/resolvelib/factory.py
+@@ -32,6 +32,7 @@
+ )
+ from pip._internal.index.package_finder import PackageFinder
+ from pip._internal.metadata import BaseDistribution, get_default_environment
++from pip._internal.models.candidate import InstallationCandidate
+ from pip._internal.models.link import Link
+ from pip._internal.models.wheel import Wheel
+ from pip._internal.operations.prepare import RequirementPreparer
+@@ -244,6 +245,31 @@ def _make_base_candidate_from_link(
+                     return None
+             return self._link_candidate_cache[link]
+ 
++    def _get_locked_installation_candidate(
++        self, ireqs: Sequence[InstallRequirement], name: str, specifier: SpecifierSet
++    ) -> InstallationCandidate | None:
++        locked_ireqs = [ireq for ireq in ireqs if ireq.locked_link]
++        if not locked_ireqs:
++            return None
++        if len(locked_ireqs) > 1:
++            raise InstallationError(
++                f"Multiple locks provided for package {name!r} in "
++                f"{', '.join(str(lir.comes_from) for lir in locked_ireqs)}"
++            )
++        locked_ireq = locked_ireqs[0]
++        assert locked_ireq.locked_link
++        assert locked_ireq.locked_version
++        if not specifier.contains(locked_ireq.locked_version):
++            raise InstallationError(
++                f"Locked version {locked_ireq.locked_version!s} "
++                f"for package {name!r} from {locked_ireq.comes_from!r} "
++                f"is not compatible with other requirements "
++                f"for the same package ({specifier!s})"
++            )
++        return InstallationCandidate(
++            name, str(locked_ireq.locked_version), locked_ireq.locked_link
++        )
++
+     def _iter_found_candidates(
+         self,
+         ireqs: Sequence[InstallRequirement],
+@@ -311,12 +337,20 @@ def _get_installed_candidate() -> Candidate | None:
+             return candidate
+ 
+         def iter_index_candidate_infos() -> Iterator[IndexCandidateInfo]:
+-            result = self._finder.find_best_candidate(
+-                project_name=name,
+-                specifier=specifier,
+-                hashes=hashes,
+-            )
+-            icans = result.applicable_candidates
++            if locked_ican := self._get_locked_installation_candidate(
++                ireqs, name, specifier
++            ):
++                # Locked InstallRequirements must behave as if they would have
++                # been found on an index, except the link is already known, so we don't
++                # ask the finder for the best candidate in that case.
++                icans = [locked_ican]
++            else:
++                result = self._finder.find_best_candidate(
++                    project_name=name,
++                    specifier=specifier,
++                    hashes=hashes,
++                )
++                icans = result.applicable_candidates
+ 
+             # PEP 592: Yanked releases are ignored unless the specifier
+             # explicitly pins a version (via '==' or '===') that can be
+@@ -733,8 +767,7 @@ def _report_single_requirement_conflict(
+                 version_type = "final version"
+ 
+         logger.critical(
+-            "Could not find a %s that satisfies the requirement %s "
+-            "(from versions: %s)",
++            "Could not find a %s that satisfies the requirement %s (from versions: %s)",
+             version_type,
+             req_disp,
+             ", ".join(versions) or "none",
+diff --git a/src/pip/_internal/utils/pylock.py b/src/pip/_internal/utils/pylock.py
+index 94b1e6369c4..ff91a75ab8b 100644
+--- a/src/pip/_internal/utils/pylock.py
++++ b/src/pip/_internal/utils/pylock.py
+@@ -1,5 +1,11 @@
+-from collections.abc import Iterable
++from __future__ import annotations
++
++import os
++import re
++from collections.abc import Iterable, Iterator
+ from pathlib import Path
++from typing import TYPE_CHECKING
++from urllib.parse import urljoin, urlsplit
+ 
+ from pip._vendor.packaging.pylock import (
+     Package,
+@@ -9,12 +15,18 @@
+     PackageVcs,
+     PackageWheel,
+     Pylock,
++    is_valid_pylock_path,
+ )
+ from pip._vendor.packaging.version import Version
+ 
++from pip._internal.exceptions import InstallationError
+ from pip._internal.models.link import Link
+-from pip._internal.req.req_install import InstallRequirement
+-from pip._internal.utils.urls import url_to_path
++from pip._internal.utils.compat import tomllib
++from pip._internal.utils.urls import path_to_url, url_to_path
++
++if TYPE_CHECKING:
++    from pip._internal.network.session import PipSession
++    from pip._internal.req.req_install import InstallRequirement
+ 
+ 
+ def _pylock_package_from_install_requirement(
+@@ -115,3 +127,157 @@ def pylock_from_install_requirements(
+             key=lambda p: p.name,
+         ),
+     )
++
++
++_SCHEME_RE = re.compile("^(http|https|file)://", re.IGNORECASE)
++
++
++def _is_url(s: str) -> bool:
++    return bool(_SCHEME_RE.match(s))
++
++
++def is_valid_pylock_filename(filename: str) -> bool:
++    if _is_url(filename):
++        path = Path(urlsplit(filename).path.rpartition("/")[-1])
++    else:
++        path = Path(filename)
++    return is_valid_pylock_path(path)
++
++
++def _package_dist_url(
++    pylock_path_or_url: str, path: str | None, url: str | None
++) -> str:
++    """Compute an url from a Pylock package path and url.
++
++    Give priority to path over url. If path is relative,
++    compute an url using the pylock file location as base.
++    """
++    if path is not None:
++        if not os.path.isabs(path):
++            # relative path, join to pylock location
++            if _is_url(pylock_path_or_url):
++                return urljoin(pylock_path_or_url, path)
++            else:
++                return path_to_url(
++                    os.path.join(os.path.dirname(pylock_path_or_url), path)
++                )
++        else:
++            # absolute path, reject if pylock comes from a URL
++            if _is_url(pylock_path_or_url):
++                raise InstallationError(
++                    f"Absolute paths are not supported in pylock files obtained "
++                    f"from a URL: {path!r} in {pylock_path_or_url!r}"
++                )
++            return path_to_url(path)
++    else:
++        assert url is not None  # guaranteed by packaging.pylock validation
++        return url
++
++
++def package_vcs_requirement_url(
++    pylock_path_or_url: str, package_vcs: PackageVcs
++) -> str:
++    dist_url = _package_dist_url(pylock_path_or_url, package_vcs.path, package_vcs.url)
++    url = f"{package_vcs.type}+{dist_url}@{package_vcs.commit_id}"
++    if package_vcs.subdirectory:
++        if "#" in url:
++            raise InstallationError(
++                f"Package URL {url!r} cannot contain fragments in combination "
++                f"with subdirectory field (in {pylock_path_or_url!r})"
++            )
++        url += "#subdirectory=" + package_vcs.subdirectory
++    return url
++
++
++def package_archive_requirement_url(
++    pylock_path_or_url: str, package_archive: PackageArchive
++) -> str:
++    url = _package_dist_url(
++        pylock_path_or_url, package_archive.path, package_archive.url
++    )
++    if package_archive.subdirectory:
++        if "#" in url:
++            raise InstallationError(
++                f"Package URL {url!r} cannot contain fragments in combination "
++                f"with subdirectory field (in {pylock_path_or_url!r})"
++            )
++        url += "#subdirectory=" + package_archive.subdirectory
++    return url
++
++
++def package_directory_requirement_url(
++    pylock_path_or_url: str, package_directory: PackageDirectory
++) -> str:
++    if _is_url(pylock_path_or_url) and not pylock_path_or_url.startswith("file://"):
++        raise InstallationError(
++            f"Directory entries are not supported in remote pylock.toml "
++            f"{pylock_path_or_url!r}"
++        )
++    url = _package_dist_url(pylock_path_or_url, package_directory.path, None)
++    assert url.startswith("file://")
++    if not url.endswith("/"):
++        url += "/"
++    if package_directory.subdirectory:
++        url += package_directory.subdirectory
++        if not url.endswith("/"):
++            url += "/"
++    return url
++
++
++def package_sdist_requirement_url(
++    pylock_path_or_url: str, package_sdist: PackageSdist
++) -> str:
++    return _package_dist_url(pylock_path_or_url, package_sdist.path, package_sdist.url)
++
++
++def package_wheel_requirement_url(
++    pylock_path_or_url: str, package_wheel: PackageWheel
++) -> str:
++    return _package_dist_url(pylock_path_or_url, package_wheel.path, package_wheel.url)
++
++
++def _get_pylock_path_or_url_content(path_or_url: str, session: PipSession) -> str:
++    # TODO: refactor - this is similar to req_file.get_file_content
++    scheme = urlsplit(path_or_url).scheme
++    # Pip has special support for file:// URLs (LocalFSAdapter).
++    if scheme in ["http", "https", "file"]:
++        # Delay importing heavy network modules until absolutely necessary.
++        from pip._internal.network.utils import raise_for_status
++
++        resp = session.get(path_or_url)
++        raise_for_status(resp)
++        return resp.text
++
++    # Assume this is a bare path.
++    return Path(path_or_url).read_text(encoding="utf-8")
++
++
++def select_from_pylock_path_or_url(
++    pylock_path_or_url: str,
++    session: PipSession,
++) -> Iterator[
++    tuple[
++        Package,
++        PackageVcs | PackageDirectory | PackageArchive | PackageWheel | PackageSdist,
++    ]
++]:
++    try:
++        pylock_content = _get_pylock_path_or_url_content(pylock_path_or_url, session)
++    except Exception as exc:
++        raise InstallationError(
++            f"Error reading pylock file {pylock_path_or_url!r}: {exc}"
++        ) from exc
++
++    try:
++        lock = Pylock.from_dict(tomllib.loads(pylock_content))
++    except Exception as exc:
++        raise InstallationError(
++            f"Invalid pylock file {pylock_path_or_url!r}: {exc}"
++        ) from exc
++
++    try:
++        yield from lock.select()
++    except Exception as exc:
++        raise InstallationError(
++            f"Cannot select requirements from pylock file {pylock_path_or_url!r}: {exc}"
++        ) from exc
+diff --git a/tests/data/lockfiles/pylock.directory.toml b/tests/data/lockfiles/pylock.directory.toml
+new file mode 100644
+index 00000000000..349c5a083d0
+--- /dev/null
++++ b/tests/data/lockfiles/pylock.directory.toml
+@@ -0,0 +1,6 @@
++lock-version = "1.0"
++created-by = "pip"
++packages = [
++    { name = "simplewheel", directory = { path = "../src/simplewheel-2.0", editable = true } },
++    { name = "singlemodule", directory = { path = "../src/singlemodule" } },
++]
+diff --git a/tests/data/lockfiles/pylock.invalid.toml b/tests/data/lockfiles/pylock.invalid.toml
+new file mode 100644
+index 00000000000..20b805a47a2
+--- /dev/null
++++ b/tests/data/lockfiles/pylock.invalid.toml
+@@ -0,0 +1,5 @@
++created-by = "pip"
++
++[[packages]]
++name = "simple"
++version = "2.0"
+diff --git a/tests/data/lockfiles/pylock.invalidhash.toml b/tests/data/lockfiles/pylock.invalidhash.toml
+new file mode 100644
+index 00000000000..79ca8840d8f
+--- /dev/null
++++ b/tests/data/lockfiles/pylock.invalidhash.toml
+@@ -0,0 +1,13 @@
++lock-version = "1.0"
++created-by = "pip"
++
++[[packages]]
++name = "simple"
++version = "2.0"
++
++[packages.sdist]
++name = "simple-2.0.tar.gz"
++path = "../packages/simple-2.0.tar.gz"
++
++[packages.sdist.hashes]
++sha256 = "3a084929238d13bcd3bb928af04f3bac7ca2357d419e29f01459dc848e2d69a0"
+diff --git a/tests/data/lockfiles/pylock.oldpython.toml b/tests/data/lockfiles/pylock.oldpython.toml
+new file mode 100644
+index 00000000000..a4794e4514a
+--- /dev/null
++++ b/tests/data/lockfiles/pylock.oldpython.toml
+@@ -0,0 +1,14 @@
++lock-version = "1.0"
++created-by = "pip"
++requires-python = "==3.6.*"
++
++[[packages]]
++name = "simple"
++version = "2.0"
++
++[packages.sdist]
++name = "simple-2.0.tar.gz"
++path = "../packages/simple-2.0.tar.gz"
++
++[packages.sdist.hashes]
++sha256 = "3a084929238d13bcd3bb928af04f3bac7ca2357d419e29f01459dc848e2d69a4"
+diff --git a/tests/data/lockfiles/pylock.onearchive.toml b/tests/data/lockfiles/pylock.onearchive.toml
+new file mode 100644
+index 00000000000..2d79bdf6c7b
+--- /dev/null
++++ b/tests/data/lockfiles/pylock.onearchive.toml
+@@ -0,0 +1,11 @@
++lock-version = "1.0"
++created-by = "pip"
++
++[[packages]]
++name = "simple2"
++
++[packages.archive]
++path = "../packages/simple2-3.0.tar.gz"
++
++[packages.archive.hashes]
++sha256 = "3ad45e1e9aa48b4462af0123f6a7e44a9115db1ef945d4d92c123dfe21815a06"
+diff --git a/tests/data/lockfiles/pylock.onesdist.toml b/tests/data/lockfiles/pylock.onesdist.toml
+new file mode 100644
+index 00000000000..06a55357ac3
+--- /dev/null
++++ b/tests/data/lockfiles/pylock.onesdist.toml
+@@ -0,0 +1,13 @@
++lock-version = "1.0"
++created-by = "pip"
++
++[[packages]]
++name = "simple"
++version = "2.0"
++
++[packages.sdist]
++name = "simple-2.0.tar.gz"
++path = "../packages/simple-2.0.tar.gz"
++
++[packages.sdist.hashes]
++sha256 = "3a084929238d13bcd3bb928af04f3bac7ca2357d419e29f01459dc848e2d69a4"
+diff --git a/tests/data/lockfiles/pylock.onewheel.toml b/tests/data/lockfiles/pylock.onewheel.toml
+new file mode 100644
+index 00000000000..2e966a53fad
+--- /dev/null
++++ b/tests/data/lockfiles/pylock.onewheel.toml
+@@ -0,0 +1,13 @@
++lock-version = "1.0"
++created-by = "pip"
++
++[[packages]]
++name = "simplewheel"
++version = "2.0"
++
++[[packages.wheels]]
++name = "simplewheel-2.0-1-py2.py3-none-any.whl"
++path = "../packages/simplewheel-2.0-1-py2.py3-none-any.whl"
++
++[packages.wheels.hashes]
++sha256 = "71e1ca6b16ae3382a698c284013f66504f2581099b2ce4801f60e9536236ceee"
+diff --git a/tests/data/lockfiles/pylock.toml b/tests/data/lockfiles/pylock.toml
+new file mode 100644
+index 00000000000..194817b4404
+--- /dev/null
++++ b/tests/data/lockfiles/pylock.toml
+@@ -0,0 +1,33 @@
++lock-version = "1.0"
++created-by = "pip"
++
++[[packages]]
++name = "simple"
++version = "2.0"
++
++[packages.sdist]
++name = "simple-2.0.tar.gz"
++path = "../packages/simple-2.0.tar.gz"
++
++[packages.sdist.hashes]
++sha256 = "3a084929238d13bcd3bb928af04f3bac7ca2357d419e29f01459dc848e2d69a4"
++
++[[packages]]
++name = "simple2"
++
++[packages.archive]
++path = "../packages/simple2-3.0.tar.gz"
++
++[packages.archive.hashes]
++sha256 = "3ad45e1e9aa48b4462af0123f6a7e44a9115db1ef945d4d92c123dfe21815a06"
++
++[[packages]]
++name = "simplewheel"
++version = "2.0"
++
++[[packages.wheels]]
++name = "simplewheel-2.0-1-py2.py3-none-any.whl"
++path = "../packages/simplewheel-2.0-1-py2.py3-none-any.whl"
++
++[packages.wheels.hashes]
++sha256 = "71e1ca6b16ae3382a698c284013f66504f2581099b2ce4801f60e9536236ceee"
+diff --git a/tests/functional/test_install_pylock_reqs.py b/tests/functional/test_install_pylock_reqs.py
+new file mode 100644
+index 00000000000..d82865dacc2
+--- /dev/null
++++ b/tests/functional/test_install_pylock_reqs.py
+@@ -0,0 +1,199 @@
++import json
++from pathlib import Path
++
++from tests.lib import PipTestEnvironment, TestData
++
++
++def test_install_pylock(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.toml")
++    result = script.pip(
++        "install",
++        "--no-index",
++        "--find-links",
++        data.common_wheels,  # to obtain build backend to build sdist
++        "--quiet",
++        "--report",
++        "-",
++        "--dry-run",
++        "-r",
++        pylock_path,
++        allow_stderr_warning=True,
++    )
++    assert "experimental" in result.stderr
++    report = json.loads(result.stdout)
++    installed = sorted(report["install"], key=lambda r: r["metadata"]["name"])
++    assert [
++        (
++            r["metadata"]["name"],
++            r["metadata"]["version"],
++            r["is_direct"],
++            r["requested"],
++        )
++        for r in installed
++    ] == [
++        ("simple", "2.0", False, True),  # sdist
++        ("simple2", "3.0", True, True),  # archive (direct URL)
++        ("simplewheel", "2.0", False, True),  # wheel
++    ]
++
++
++def test_install_pylock_wheel_cache(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    """Installing the same sdist twice triggered a hash checking bug."""
++    pylock_path = data.lockfiles.joinpath("pylock.onesdist.toml")
++    args: list[str | Path] = [
++        "--no-index",
++        "--find-links",
++        data.common_wheels,  # to obtain build backend to build sdist
++        "-r",
++        pylock_path,
++    ]
++    result = script.pip("install", *args, allow_stderr_warning=True)
++    assert "experimental" in result.stderr
++    assert "Successfully installed simple-2.0" in result.stdout
++    result = script.pip("install", *args, allow_stderr_warning=True)
++    assert "Requirement already satisfied: simple==2.0" in result.stdout
++    result = script.pip(
++        "install", *args, "--ignore-installed", allow_stderr_warning=True
++    )
++    assert "Successfully installed simple-2.0" in result.stdout
++
++
++def test_install_pylock_directory(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.directory.toml")
++    result = script.pip(
++        "install",
++        "--no-index",
++        "--find-links",
++        data.common_wheels,  # to obtain build backend to build sdist
++        "-r",
++        pylock_path,
++        allow_stderr_warning=True,
++    )
++    assert "experimental" in result.stderr
++    assert (
++        "Successfully installed simplewheel-2.0 singlemodule-0.0.1\n" in result.stdout
++    )
++    script.assert_installed_editable("simplewheel")
++    script.assert_installed(singlemodule="0.0.1")
++
++
++def test_install_pylock_invalid_hash(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.invalidhash.toml")
++    result = script.pip(
++        "install", "--no-index", "--dry-run", "-r", pylock_path, expect_error=True
++    )
++    assert (
++        "Expected sha256 "
++        "3a084929238d13bcd3bb928af04f3bac7ca2357d419e29f01459dc848e2d69a0"
++        in result.stderr
++    )
++    assert (
++        "Got        3a084929238d13bcd3bb928af04f3bac7ca2357d419e29f01459dc848e2d69a4"
++        in result.stderr
++    )
++
++
++def test_install_pylock_not_found(
++    script: PipTestEnvironment,
++    tmp_path: Path,
++) -> None:
++    pylock_path = tmp_path / "pylock.doesnotexist.toml"
++    result = script.pip(
++        "install", "--no-index", "--dry-run", "-r", pylock_path, expect_error=True
++    )
++    assert "Error reading pylock file" in result.stderr
++
++
++def test_install_pylock_invalid_lockfile(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.invalid.toml")
++    result = script.pip(
++        "install", "--no-index", "--dry-run", "-r", pylock_path, expect_error=True
++    )
++    assert "Invalid pylock file" in result.stderr
++
++
++def test_install_pylock_select_error(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.oldpython.toml")
++    result = script.pip(
++        "install", "--no-index", "--dry-run", "-r", pylock_path, expect_error=True
++    )
++    assert "Cannot select requirements from pylock file" in result.stderr
++
++
++def test_install_pylock_no_binary(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.onewheel.toml")
++    result = script.pip(
++        "install",
++        "--no-index",
++        "--dry-run",
++        "-r",
++        pylock_path,
++        "--no-binary=simplewheel",
++        expect_error=True,
++    )
++    assert (
++        "binaries are not permitted for package 'simplewheel' and "
++        "there is no source distribution for it in" in result.stderr
++    )
++
++
++def test_install_pylock_only_binary(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.onesdist.toml")
++    result = script.pip(
++        "install",
++        "--no-index",
++        "--dry-run",
++        "-r",
++        pylock_path,
++        "--only-binary=:all:",
++        expect_error=True,
++    )
++    assert (
++        "source distributions are not permitted for package 'simple' and "
++        "there is no compatible wheel for it in" in result.stderr
++    )
++
++
++def test_install_pylock_only_binary_ignored_for_archives(
++    script: PipTestEnvironment,
++    data: TestData,
++) -> None:
++    """--only-binary is ignored for direct URL"""
++    pylock_path = data.lockfiles.joinpath("pylock.onearchive.toml")
++    result = script.pip(
++        "install",
++        "--no-index",
++        "--find-links",
++        data.common_wheels,  # to obtain build backend to build sdist
++        "--dry-run",
++        "-r",
++        pylock_path,
++        "--only-binary=simple2,simplewheel",
++        allow_stderr_warning=True,
++    )
++    assert "experimental" in result.stderr
++    assert "Would install simple2-3.0" in result.stdout
+diff --git a/tests/functional/test_lock.py b/tests/functional/test_lock.py
+index 9cc6a03a494..bba28e3f49a 100644
+--- a/tests/functional/test_lock.py
++++ b/tests/functional/test_lock.py
+@@ -1,5 +1,6 @@
+ import textwrap
+ from pathlib import Path
++from typing import Any
+ 
+ import pytest
+ 
+@@ -235,3 +236,44 @@ def test_lock_archive(script: PipTestEnvironment, shared_data: TestData) -> None
+             },
+         },
+     ]
++
++
++def test_lock_roundtrip(script: PipTestEnvironment, data: TestData) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.toml")
++    pylock_result_path = pylock_path.parent / "pylock.result.toml"
++    script.pip(
++        "lock",
++        "--quiet",
++        "--no-build-isolation",  # to use the pre-installed setuptools
++        "--no-index",
++        "-r",
++        pylock_path,
++        "--output",
++        pylock_result_path,
++        expect_stderr=True,  # for the experimental warning
++    )
++
++    def simplify_path_and_url(d: dict[str, Any]) -> None:
++        """Keep last part of path/url as filename key"""
++        if path := d.get("path"):
++            d["filename"] = path.rpartition("/")[-1]
++            del d["path"]
++        if url := d.get("url"):
++            d["filename"] = url.rpartition("/")[-1]
++            del d["url"]
++
++    def simplify_paths_and_urls(d: dict[str, Any]) -> None:
++        for p in d["packages"]:
++            if "archive" in p:
++                simplify_path_and_url(p["archive"])
++            elif "sdist" in p:
++                simplify_path_and_url(p["sdist"])
++            elif "wheels" in p:
++                for wheel in p["wheels"]:
++                    simplify_path_and_url(wheel)
++
++    pylock = tomllib.loads(pylock_path.read_text(encoding="utf-8"))
++    simplify_paths_and_urls(pylock)
++    pylock_result = tomllib.loads(pylock_result_path.read_text(encoding="utf-8"))
++    simplify_paths_and_urls(pylock_result)
++    assert pylock_result == pylock
+diff --git a/tests/functional/test_wheel.py b/tests/functional/test_wheel.py
+index 27e735b1bd1..a3e371578d2 100644
+--- a/tests/functional/test_wheel.py
++++ b/tests/functional/test_wheel.py
+@@ -463,3 +463,46 @@ def test_legacy_wheels_are_not_confused_with_other_files(
+     wheel_file_name = f"simplewheel-1.0-py{pyversion[0]}-none-any.whl"
+     wheel_file_path = script.scratch / wheel_file_name
+     result.did_create(wheel_file_path)
++
++
++def test_wheel_pylock(
++    script: PipTestEnvironment, data: TestData, tmp_path: Path
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.toml")
++    result = script.pip(
++        "wheel",
++        "--no-index",
++        "--no-build-isolation",  # to use pre-installed setuptools
++        "-w",
++        tmp_path,
++        "-r",
++        pylock_path,
++        allow_stderr_warning=True,
++    )
++    assert "experimental" in result.stderr
++    assert sorted(p.name for p in tmp_path.glob("*.whl")) == [
++        "simple-2.0-py3-none-any.whl",
++        "simple2-3.0-py3-none-any.whl",
++        "simplewheel-2.0-1-py2.py3-none-any.whl",
++    ]
++
++
++def test_wheel_pylock_directories(
++    script: PipTestEnvironment, data: TestData, tmp_path: Path
++) -> None:
++    pylock_path = data.lockfiles.joinpath("pylock.directory.toml")
++    result = script.pip(
++        "wheel",
++        "--no-index",
++        "--no-build-isolation",  # to use pre-installed setuptools
++        "-w",
++        tmp_path,
++        "-r",
++        pylock_path,
++        allow_stderr_warning=True,
++    )
++    assert "experimental" in result.stderr
++    assert sorted(p.name for p in tmp_path.glob("*.whl")) == [
++        "simplewheel-2.0-py3-none-any.whl",
++        "singlemodule-0.0.1-py2.py3-none-any.whl",
++    ]
+diff --git a/tests/lib/__init__.py b/tests/lib/__init__.py
+index cfeb2da77ee..eae91567587 100644
+--- a/tests/lib/__init__.py
++++ b/tests/lib/__init__.py
+@@ -171,6 +171,10 @@ def packages2(self) -> pathlib.Path:
+     def packages3(self) -> pathlib.Path:
+         return self.root.joinpath("packages3")
+ 
++    @property
++    def lockfiles(self) -> pathlib.Path:
++        return self.root.joinpath("lockfiles")
++
+     @property
+     def pypi_packages(self) -> pathlib.Path:
+         return self.root.joinpath("pypi_packages")
+diff --git a/tests/unit/test_utils_pylock.py b/tests/unit/test_utils_pylock.py
+new file mode 100644
+index 00000000000..e3afa58b81f
+--- /dev/null
++++ b/tests/unit/test_utils_pylock.py
+@@ -0,0 +1,239 @@
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++import pytest
++
++from pip._vendor.packaging.pylock import (
++    PackageArchive,
++    PackageDirectory,
++    PackageSdist,
++    PackageVcs,
++    PackageWheel,
++)
++
++from pip._internal.exceptions import InstallationError
++from pip._internal.utils.pylock import (
++    _package_dist_url,
++    package_archive_requirement_url,
++    package_directory_requirement_url,
++    package_sdist_requirement_url,
++    package_vcs_requirement_url,
++    package_wheel_requirement_url,
++)
++from pip._internal.utils.urls import path_to_url
++
++
++def _adapt_full_path_url(url: str) -> str:
++    """A little hack to adapt absolute file:/// url to windows drive letter."""
++    if sys.platform == "win32" and url.startswith("file:///"):
++        return url.replace("file:///", path_to_url("/a")[:-1])
++    return url
++
++
++@pytest.mark.parametrize(
++    "pylock_filename_or_url,path,url,expected",
++    [
++        (
++            # URL, no path
++            "pylock.toml",
++            None,
++            "https://example.com/foo.tar.gz",
++            "https://example.com/foo.tar.gz",
++        ),
++        (
++            # path over URL, joined with pylock.toml dir
++            "/base/pylock.toml",
++            "foo.tar.gz",
++            "https://example.com/foo.tar.gz",
++            "file:///base/foo.tar.gz",
++        ),
++        (
++            # absolute path over URL, not joined with pylock.toml dir
++            "/base/pylock.toml",
++            "/there/foo.tar.gz",
++            "https://example.com/foo.tar.gz",
++            "file:///there/foo.tar.gz",
++        ),
++        (
++            # relative path joined with pylock.toml http url
++            "https://example.com/pylock.toml",
++            "./there/foo.tar.gz",
++            None,
++            "https://example.com/there/foo.tar.gz",
++        ),
++    ],
++)
++def test_package_dist_url(
++    pylock_filename_or_url: str,
++    path: str | None,
++    url: str | None,
++    expected: str,
++) -> None:
++    assert _package_dist_url(pylock_filename_or_url, path, url) == _adapt_full_path_url(
++        expected
++    )
++
++
++def test_package_dist_url_abs_path_remote_lock_file() -> None:
++    """A remote lock file cannot have package with absolute paths."""
++    with pytest.raises(InstallationError, match="Absolute paths are not supported"):
++        _package_dist_url(
++            "https://example.com/pylock.toml",
++            path=str(Path("/here/pkg.tgz").absolute()),
++            url=None,
++        )
++
++
++@pytest.mark.parametrize(
++    "pylock_path_or_url,package_vcs,expected",
++    [
++        (
++            "pylock.toml",
++            PackageVcs(
++                type="git",
++                url="https://g.c/o/p.git",
++                commit_id="ccc",
++            ),
++            "git+https://g.c/o/p.git@ccc",
++        ),
++        (
++            "pylock.toml",
++            PackageVcs(
++                type="git",
++                url="https://g.c/o/p.git",
++                commit_id="ccc",
++                subdirectory="setup",
++            ),
++            "git+https://g.c/o/p.git@ccc#subdirectory=setup",
++        ),
++    ],
++)
++def test_package_vcs_requirement_url(
++    pylock_path_or_url: str, package_vcs: PackageVcs, expected: str
++) -> None:
++    assert package_vcs_requirement_url(
++        pylock_path_or_url, package_vcs
++    ) == _adapt_full_path_url(expected)
++
++
++@pytest.mark.parametrize(
++    "pylock_path_or_url,package_archive,expected",
++    [
++        (
++            "pylock.toml",
++            PackageArchive(
++                url="https://example.com/archive.tgz",
++                hashes={"sha256": "aaa"},
++            ),
++            "https://example.com/archive.tgz",
++        ),
++        (
++            "pylock.toml",
++            PackageArchive(
++                url="https://example.com/archive.tgz",
++                subdirectory="subdir",
++                hashes={"sha256": "aaa"},
++            ),
++            "https://example.com/archive.tgz#subdirectory=subdir",
++        ),
++        (
++            "https://example.com/pylock.toml",
++            PackageArchive(
++                path="archive.tgz",
++                hashes={"sha256": "aaa"},
++            ),
++            "https://example.com/archive.tgz",
++        ),
++        (
++            "/path/to/pylock.toml",
++            PackageArchive(
++                path="archive.tgz",
++                hashes={"sha256": "aaa"},
++            ),
++            "file:///path/to/archive.tgz",
++        ),
++    ],
++)
++def test_package_archive_requirement_url(
++    pylock_path_or_url: str, package_archive: PackageArchive, expected: str
++) -> None:
++    assert package_archive_requirement_url(
++        pylock_path_or_url, package_archive
++    ) == _adapt_full_path_url(expected)
++
++
++@pytest.mark.parametrize(
++    "pylock_path_or_url,package_directory,expected",
++    [
++        (
++            "/path/to/pylock.toml",
++            PackageDirectory(path="dir"),
++            "file:///path/to/dir/",
++        ),
++        (
++            "/path/to/pylock.toml",
++            PackageDirectory(path="dir", subdirectory="subdir"),
++            "file:///path/to/dir/subdir/",
++        ),
++    ],
++)
++def test_package_directory_requirement_url(
++    pylock_path_or_url: str, package_directory: PackageDirectory, expected: str
++) -> None:
++    assert package_directory_requirement_url(
++        pylock_path_or_url, package_directory
++    ) == _adapt_full_path_url(expected)
++
++
++def test_package_directory_requirement_remote_url() -> None:
++    with pytest.raises(
++        InstallationError,
++        match="Directory entries are not supported in remote pylock.toml ",
++    ):
++        package_directory_requirement_url(
++            "https://example.com/pylock.toml", PackageDirectory(path="dir")
++        )
++
++
++@pytest.mark.parametrize(
++    "pylock_path_or_url,package_sdist,expected",
++    [
++        (
++            "https://example.com/pylock.toml",
++            PackageSdist(
++                path="pkga-1.0.tar.gz",
++                hashes={"sha256": "aaa"},
++            ),
++            "https://example.com/pkga-1.0.tar.gz",
++        ),
++    ],
++)
++def test_package_sdist_requirement_url(
++    pylock_path_or_url: str, package_sdist: PackageSdist, expected: str
++) -> None:
++    assert package_sdist_requirement_url(
++        pylock_path_or_url, package_sdist
++    ) == _adapt_full_path_url(expected)
++
++
++@pytest.mark.parametrize(
++    "pylock_path_or_url,package_wheel,expected",
++    [
++        (
++            "pylock.toml",
++            PackageWheel(
++                url="https://there.org/wheel_1.0_py3-none-any.whl",
++                hashes={"sha256": "aaa"},
++            ),
++            "https://there.org/wheel_1.0_py3-none-any.whl",
++        ),
++    ],
++)
++def test_package_wheel_requirement_url(
++    pylock_path_or_url: str, package_wheel: PackageWheel, expected: str
++) -> None:
++    assert package_wheel_requirement_url(
++        pylock_path_or_url, package_wheel
++    ) == _adapt_full_path_url(expected)

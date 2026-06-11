@@ -1,0 +1,78 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 5bfd1c76e5d87..40e23d2f4b6df 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -355,6 +355,7 @@ I/O
+ - Fixed bug in :meth:`DataFrame.to_hdf` with ``format="table"`` where a :class:`TimedeltaIndex` was reconstructed as a :class:`PeriodIndex` (when ``freq`` was set) or an integer :class:`Index` (otherwise) on read-back (:issue:`21466`)
+ - Fixed bug in :meth:`HDFStore.select` where passing ``where`` as a list of conditions referencing caller-scope variables failed on Python 3.12+ due to :pep:`709` inlining list comprehension stack frames (:issue:`64881`)
+ - Storing a :class:`DataFrame` or :class:`Series` with a :class:`MultiIndex` level named ``'index'`` via :meth:`HDFStore.put` or :meth:`HDFStore.append` with ``format='table'`` now raises a clear ``ValueError`` instead of an opaque reshape error (:issue:`6208`)
++- Writing a :class:`DataFrame` with ``format='table'`` and a column named ``'index'`` as a ``data_columns`` entry (including ``data_columns=True``) now raises a clear ``ValueError`` instead of an opaque reshape error (:issue:`41437`)
+ 
+ Period
+ ^^^^^^
+diff --git a/pandas/io/pytables.py b/pandas/io/pytables.py
+index 893b5f58a7ad3..de5b6ecd8406a 100644
+--- a/pandas/io/pytables.py
++++ b/pandas/io/pytables.py
+@@ -4410,6 +4410,16 @@ def _create_axes(
+             data_columns, min_itemsize, new_non_index_axes
+         )
+ 
++        if new_index.cname in data_columns:
++            # GH#41437 the implicit row index is stored under the reserved
++            # cname (typically 'index') and a data column of the same name
++            # would collide with it in the table description.
++            raise ValueError(
++                f"cannot use a column named {new_index.cname!r} as a "
++                f"data_column; {new_index.cname!r} is reserved for the "
++                "implicit row index"
++            )
++
+         frame = self.get_object(obj, transposed)._consolidate()
+ 
+         blocks, blk_items = self._get_blocks_and_items(
+diff --git a/pandas/tests/io/pytables/test_errors.py b/pandas/tests/io/pytables/test_errors.py
+index d1ac66a368e2e..3afd3cb505406 100644
+--- a/pandas/tests/io/pytables/test_errors.py
++++ b/pandas/tests/io/pytables/test_errors.py
+@@ -17,6 +17,7 @@
+     date_range,
+     read_hdf,
+ )
++import pandas._testing as tm
+ 
+ from pandas.io.pytables import (
+     Term,
+@@ -274,6 +275,32 @@ def test_to_hdf_multiindex_level_named_index_raises(temp_hdfstore):
+         temp_hdfstore.put("s", series, format="table", track_times=False)
+ 
+ 
++@pytest.mark.parametrize("data_columns", [["index"], True, ["column_1", "index"]])
++def test_to_hdf_data_column_named_index_raises(temp_hdfstore, data_columns):
++    # GH#41437 a data column named 'index' collides with the table format's
++    # implicit row index; surface a clear error instead of the confusing
++    # reshape failure that used to come from write_data
++    df = DataFrame({"column_1": [1, 2], "index": [3, 4]})
++    df.index.name = "something_else"
++    msg = "cannot use a column named 'index' as a data_column"
++    with pytest.raises(ValueError, match=msg):
++        temp_hdfstore.put(
++            "df", df, format="table", data_columns=data_columns, track_times=False
++        )
++    with pytest.raises(ValueError, match=msg):
++        temp_hdfstore.append("df", df, format="table", data_columns=data_columns)
++
++
++def test_to_hdf_column_named_index_without_data_columns(temp_h5_path):
++    # GH#41437 a column named 'index' is fine as long as it is not a
++    # data_column; it round-trips like any other column
++    df = DataFrame({"column_1": [1, 2], "index": [3, 4]})
++    df.index.name = "something_else"
++    df.to_hdf(temp_h5_path, key="df", format="table")
++    result = read_hdf(temp_h5_path, "df")
++    tm.assert_frame_equal(result, df)
++
++
+ def test_unsupported_hdf_file_error(datapath):
+     # GH 9539
+     data_path = datapath("io", "data", "legacy_hdf/incompatible_dataset.h5")

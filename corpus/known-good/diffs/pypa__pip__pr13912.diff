@@ -1,0 +1,294 @@
+diff --git a/news/13912.feature.rst b/news/13912.feature.rst
+new file mode 100644
+index 00000000000..628945ae765
+--- /dev/null
++++ b/news/13912.feature.rst
+@@ -0,0 +1,2 @@
++Emit a deprecation warning when pip imports an unexpected module after
++installation of a distribution has started.
+diff --git a/src/pip/_internal/commands/install.py b/src/pip/_internal/commands/install.py
+index b79e4f95993..27c6e7df203 100644
+--- a/src/pip/_internal/commands/install.py
++++ b/src/pip/_internal/commands/install.py
+@@ -7,9 +7,11 @@
+ import os
+ import shutil
+ import site
++import sys
+ from collections.abc import Iterator
+ from optparse import SUPPRESS_HELP, Values
+ from pathlib import Path
++from typing import Any
+ 
+ from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
+ from pip._vendor.packaging.utils import canonicalize_name
+@@ -46,6 +48,7 @@
+     InstallRequirement,
+ )
+ from pip._internal.utils.compat import WINDOWS
++from pip._internal.utils.deprecation import deprecated
+ from pip._internal.utils.filesystem import test_writable_dir
+ from pip._internal.utils.logging import getLogger
+ from pip._internal.utils.misc import (
+@@ -66,6 +69,68 @@
+ logger = getLogger(__name__)
+ 
+ 
++_IMPORT_AUDIT_HOOK_INSTALLED = False
++_MISSING_MODULES: set[str] = set()
++
++# Non-stdlib modules pip (or its vendored dependencies) may import lazily
++# after installation has started. Importing them eagerly keeps the audit
++# hook from misattributing them to a freshly installed distribution.
++_EAGER_IMPORTS: tuple[str, ...] = (
++    # Used by rich when emitting output to a legacy Windows console.
++    "pip._vendor.rich._windows_renderer",
++)
++
++
++# Imports of standard library modules are always safe: they cannot be
++# shadowed by a distribution pip has just installed.
++_STDLIB_MODULE_NAMES: frozenset[str] = frozenset(sys.stdlib_module_names) | frozenset(
++    sys.builtin_module_names
++)
++
++
++def _prevent_import_hook(name: str, args: tuple[Any, ...]) -> None:
++    if name != "import":
++        return
++    module = args[0]
++    if module in _MISSING_MODULES:
++        raise ImportError(f"No module named {module!r}")
++    if module.partition(".")[0] in _STDLIB_MODULE_NAMES:
++        return
++    deprecated(
++        reason=f"Unexpected import of {module!r} after pip install started.",
++        replacement=None,
++        gone_in="26.3",
++        issue=13842,
++        include_source=True,
++        stacklevel=3,
++    )
++
++
++def _eagerly_import_modules() -> None:
++    """Import modules pip uses lazily so the audit hook ignores them later."""
++    for module in _EAGER_IMPORTS:
++        try:
++            __import__(module)
++        except ImportError:
++            # Record the module as missing so the hook can raise ImportError
++            # instead of trying to import it again.
++            _MISSING_MODULES.add(module)
++
++
++def _prevent_further_imports() -> None:
++    """Install an audit hook that warns on unexpected imports after pip install starts.
++
++    Eagerly pre-imports the known lazy imports first so the hook only fires
++    on genuinely unexpected modules.
++    """
++    global _IMPORT_AUDIT_HOOK_INSTALLED
++    if _IMPORT_AUDIT_HOOK_INSTALLED:
++        return
++
++    _IMPORT_AUDIT_HOOK_INSTALLED = True
++    sys.addaudithook(_prevent_import_hook)
++
++
+ def _arg_refers_to_pip(arg: str) -> bool:
+     try:
+         req = Requirement(arg)
+@@ -481,6 +546,13 @@ def run(self, options: Values, args: list[str]) -> int:
+             if options.target_dir or options.prefix_path:
+                 warn_script_location = False
+ 
++            # Warn on late imports so we don't silently pick up a module
++            # from a distribution pip is about to install.
++            try:
++                _eagerly_import_modules()
++            finally:
++                _prevent_further_imports()
++
+             installed = install_given_reqs(
+                 to_install,
+                 root=options.root_path,
+diff --git a/src/pip/_internal/utils/deprecation.py b/src/pip/_internal/utils/deprecation.py
+index 96e7783feb3..d586da7590e 100644
+--- a/src/pip/_internal/utils/deprecation.py
++++ b/src/pip/_internal/utils/deprecation.py
+@@ -16,7 +16,7 @@
+ 
+ 
+ class PipDeprecationWarning(Warning):
+-    pass
++    include_source: bool = False
+ 
+ 
+ _original_showwarning: Any = None
+@@ -38,7 +38,10 @@ def _showwarning(
+         # We use a specially named logger which will handle all of the
+         # deprecation messages for pip.
+         logger = logging.getLogger("pip._internal.deprecations")
+-        logger.warning(message)
++        if isinstance(message, PipDeprecationWarning) and message.include_source:
++            logger.warning("%s (%s:%s)", message, filename, lineno)
++        else:
++            logger.warning(message)
+     else:
+         _original_showwarning(message, category, filename, lineno, file, line)
+ 
+@@ -61,6 +64,8 @@ def deprecated(
+     gone_in: str | None,
+     feature_flag: str | None = None,
+     issue: int | None = None,
++    stacklevel: int = 2,
++    include_source: bool = False,
+ ) -> None:
+     """Helper to deprecate existing functionality.
+ 
+@@ -80,6 +85,12 @@ def deprecated(
+     issue:
+         Issue number on the tracker that would serve as a useful place for
+         users to find related discussion and provide feedback.
++    stacklevel:
++        How many frames up the call stack to attribute the warning to.
++        Defaults to 2 (the caller of deprecated()).
++    include_source:
++        If True, include the source filename and line number in the warning
++        output. Useful when the warning originates from external code.
+     """
+ 
+     # Determine whether or not the feature is already gone in this version.
+@@ -123,4 +134,6 @@ def deprecated(
+     if is_gone:
+         raise PipDeprecationWarning(message)
+ 
+-    warnings.warn(message, category=PipDeprecationWarning, stacklevel=2)
++    warning = PipDeprecationWarning(message)
++    warning.include_source = include_source
++    warnings.warn(warning, stacklevel=stacklevel)
+diff --git a/tests/functional/test_install.py b/tests/functional/test_install.py
+index c6b89c5ffb6..998f89e6bd5 100644
+--- a/tests/functional/test_install.py
++++ b/tests/functional/test_install.py
+@@ -310,6 +310,57 @@ def test_pip_second_command_line_interface_works(
+     result.did_create(initools_folder)
+ 
+ 
++def test_install_warns_on_unexpected_post_install_import(
++    script: PipTestEnvironment,
++) -> None:
++    """
++    Verify that pip warns when an unexpected import happens after the
++    install audit hook has been registered. The hook is installed before
++    ``install_given_reqs`` runs, so imports issued from code running after
++    that point must trigger the deprecation warning.
++    """
++    wheel_path = create_basic_wheel_for_package(script, "mypackage", "1.0")
++    runner = script.scratch_path / "run_install.py"
++    runner.write_text(
++        textwrap.dedent(
++            """\
++            import sys
++            import pip._internal.commands.install as _install_mod
++            _orig_get_environment = _install_mod.get_environment
++
++            def _patched_get_environment(lib_locations):
++                try:
++                    import pip_unexpected_module_xyz
++                except ModuleNotFoundError:
++                    pass
++                return _orig_get_environment(lib_locations)
++
++            _install_mod.get_environment = _patched_get_environment
++
++            from pip._internal.cli.main import main
++            wheels_dir = sys.argv[1]
++            sys.exit(main([
++                "install",
++                "--no-index",
++                "--find-links",
++                wheels_dir,
++                "mypackage"
++                ])
++            )
++        """
++        )
++    )
++
++    result = script.run(
++        "python", str(runner), str(wheel_path.parent), expect_stderr=True
++    )
++    assert (
++        "Unexpected import of 'pip_unexpected_module_xyz' "
++        "after pip install started" in result.stderr
++    )
++    assert "run_install.py:7)" in result.stderr
++
++
+ def test_install_exit_status_code_when_no_requirements(
+     script: PipTestEnvironment,
+ ) -> None:
+diff --git a/tests/unit/test_command_install.py b/tests/unit/test_command_install.py
+index 86b32e7891f..6b76813fcc6 100644
+--- a/tests/unit/test_command_install.py
++++ b/tests/unit/test_command_install.py
+@@ -1,5 +1,6 @@
+ import errno
+ import sys
++import warnings
+ from unittest import mock
+ 
+ import pytest
+@@ -7,7 +8,12 @@
+ from pip._vendor.requests.exceptions import InvalidProxyURL
+ 
+ from pip._internal.commands import install
+-from pip._internal.commands.install import create_os_error_message, decide_user_install
++from pip._internal.commands.install import (
++    _prevent_further_imports,
++    create_os_error_message,
++    decide_user_install,
++)
++from pip._internal.utils.deprecation import PipDeprecationWarning
+ 
+ 
+ class TestDecideUserInstall:
+@@ -183,3 +189,36 @@ def test_create_os_error_message(
+     monkeypatch.setattr(install, "running_under_virtualenv", lambda: False)
+     msg = create_os_error_message(error, show_traceback, using_user_site)
+     assert msg == expected
++
++
++def test_prevent_further_imports_warns_on_import() -> None:
++    """
++    An import issued after _prevent_further_imports() has run must emit a
++    deprecation warning via the registered audit hook, except when the
++    imported module lives in the standard library.
++    """
++    captured_hooks: list[mock.Mock] = []
++
++    with mock.patch.object(install, "_IMPORT_AUDIT_HOOK_INSTALLED", False):
++        with mock.patch.object(sys, "addaudithook", side_effect=captured_hooks.append):
++            _prevent_further_imports()
++
++    assert len(captured_hooks) == 1, "Expected exactly one audit hook to be registered"
++    audit_hook = captured_hooks[0]
++
++    with warnings.catch_warnings(record=True) as caught:
++        warnings.simplefilter("always")
++        audit_hook("import", ("unknown_module",))
++
++    assert len(caught) == 1
++    assert "unknown_module" in str(caught[0].message)
++    assert issubclass(caught[0].category, PipDeprecationWarning)
++
++    # Standard library imports must not emit a warning: pip cannot shadow
++    # them with a freshly installed distribution.
++    with warnings.catch_warnings(record=True) as caught:
++        warnings.simplefilter("always")
++        audit_hook("import", ("os",))
++        audit_hook("import", ("encodings.iso8859_15",))
++
++    assert caught == []

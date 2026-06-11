@@ -1,0 +1,619 @@
+diff --git a/doc/whats_new/upcoming_changes/metadata-routing/30859.fix.rst b/doc/whats_new/upcoming_changes/metadata-routing/30859.fix.rst
+new file mode 100644
+index 0000000000000..eb8bedf5ae782
+--- /dev/null
++++ b/doc/whats_new/upcoming_changes/metadata-routing/30859.fix.rst
+@@ -0,0 +1,5 @@
++- Scorers now correctly request for metadata, and their `set_score_request` methods
++  correctly detect metadata available in the signature of their `score_func`. Also,
++  :class:`sklearn.linear_model.LogisticRegressionCV` now correctly routes metadata
++  to the underlying scorer when its ``.score(...)`` method is called.
++  By `Adrin Jalali`_
+diff --git a/doc/whats_new/upcoming_changes/sklearn.linear_model/30859.api.rst b/doc/whats_new/upcoming_changes/sklearn.linear_model/30859.api.rst
+new file mode 100644
+index 0000000000000..c3967a5d49286
+--- /dev/null
++++ b/doc/whats_new/upcoming_changes/sklearn.linear_model/30859.api.rst
+@@ -0,0 +1,4 @@
++- Passing `sample_weight` as a positional argument to
++  :meth:`linear_model.LogisticRegressionCV.score` is deprecated and will be
++  removed in version 1.11. Pass it as a keyword argument instead.
++  By `Adrin Jalali`_ :pr:`30859`
+diff --git a/sklearn/linear_model/_logistic.py b/sklearn/linear_model/_logistic.py
+index bc3ca35215948..3de8ad961862e 100644
+--- a/sklearn/linear_model/_logistic.py
++++ b/sklearn/linear_model/_logistic.py
+@@ -39,6 +39,7 @@
+     check_consistent_length,
+     check_random_state,
+     compute_class_weight,
++    metadata_routing,
+ )
+ from sklearn.utils._array_api import (
+     _is_numpy_namespace,
+@@ -65,6 +66,7 @@
+ from sklearn.utils.validation import (
+     _check_method_params,
+     _check_sample_weight,
++    _deprecate_positional_args,
+     check_is_fitted,
+     validate_data,
+ )
+@@ -1983,6 +1985,9 @@ class of problems.
+     -0.041...
+     """
+ 
++    # TODO(1.11): remove this when sample_weight as positional arg is removed
++    # from the `score` signature
++    __metadata_request__score = {"sample_weight": metadata_routing.UNUSED}
+     _parameter_constraints: dict = {**LogisticRegression._parameter_constraints}
+ 
+     for param in ["C", "warm_start", "l1_ratio"]:
+@@ -2464,7 +2469,10 @@ def fit(self, X, y, sample_weight=None, **params):
+ 
+         return self
+ 
+-    def score(self, X, y, sample_weight=None, **score_params):
++    # TODO(1.11): remove this decorator along with `sample_weight` from the `score`
++    #  signature
++    @_deprecate_positional_args(version="1.11")
++    def score(self, X, y, *, sample_weight=None, **score_params):
+         """Score using the `scoring` option on the given test data and labels.
+ 
+         Parameters
+@@ -2478,6 +2486,10 @@ def score(self, X, y, sample_weight=None, **score_params):
+         sample_weight : array-like of shape (n_samples,), default=None
+             Sample weights.
+ 
++            .. deprecated:: 1.9
++              `sample_weight` needs to be passed as a keyword argument and not as a
++              positional argument.
++
+         **score_params : dict
+             Parameters to pass to the `score` method of the underlying scorer.
+ 
+@@ -2488,21 +2500,29 @@ def score(self, X, y, sample_weight=None, **score_params):
+         score : float
+             Score of self.predict(X) w.r.t. y.
+         """
++        # TODO(1.11): for backwards compatibility, when `sample_weight` becomes a part
++        # of **score_params, it should be skipped in the following check so that people
++        # can still pass it w/o metadata routing enabled.
+         _raise_for_params(score_params, self, "score")
++        # TODO(1.11): remove this when sample_weight is removed from the `score`
++        # signature
++        if sample_weight is not None:
++            score_params["sample_weight"] = sample_weight
+ 
+         scoring = self._get_scorer()
+         if _routing_enabled():
+             routed_params = process_routing(
+                 self,
+                 "score",
+-                sample_weight=sample_weight,
+                 **score_params,
+             )
+         else:
+             routed_params = Bunch()
+             routed_params.scorer = Bunch(score={})
+-            if sample_weight is not None:
+-                routed_params.scorer.score["sample_weight"] = sample_weight
++            if score_params.get("sample_weight") is not None:
++                routed_params.scorer.score["sample_weight"] = score_params[
++                    "sample_weight"
++                ]
+ 
+         return scoring(
+             self,
+diff --git a/sklearn/linear_model/tests/test_logistic.py b/sklearn/linear_model/tests/test_logistic.py
+index f6de8f49155f0..db95dfe0f7797 100644
+--- a/sklearn/linear_model/tests/test_logistic.py
++++ b/sklearn/linear_model/tests/test_logistic.py
+@@ -2490,26 +2490,24 @@ def test_lr_cv_scores_differ_when_sample_weight_is_requested(global_random_seed)
+     sample_weight[: len(y) // 2] = 2
+     kwargs = {"sample_weight": sample_weight}
+ 
+-    scorer1 = get_scorer("accuracy")
+-    lr_cv1 = LogisticRegressionCV(
+-        scoring=scorer1,
+-        tol=3e-6,
+-        use_legacy_attributes=True,
+-    )
++    scorer1 = get_scorer("accuracy").set_score_request(sample_weight=False)
++    lr_cv1 = LogisticRegressionCV(scoring=scorer1, tol=3e-6, use_legacy_attributes=True)
+     lr_cv1.fit(X, y, **kwargs)
+ 
+-    scorer2 = get_scorer("accuracy")
+-    scorer2.set_score_request(sample_weight=True)
+-    lr_cv2 = LogisticRegressionCV(
+-        scoring=scorer2,
+-        tol=3e-6,
+-        use_legacy_attributes=True,
+-    )
++    scorer2 = get_scorer("accuracy").set_score_request(sample_weight=True)
++    lr_cv2 = LogisticRegressionCV(scoring=scorer2, tol=3e-6, use_legacy_attributes=True)
+     lr_cv2.fit(X, y, **kwargs)
+ 
+     assert not np.allclose(lr_cv1.scores_[1], lr_cv2.scores_[1])
+ 
+-    score_1 = lr_cv1.score(X_t, y_t, **kwargs)
++    # sample_weight cannot be passed to lr_cv1.score since it's unrequested.
++    err_msg = (
++        "LogisticRegressionCV.score got unexpected argument(s) {'sample_weight'},"
++        " which are not routed to any object."
++    )
++    with pytest.raises(TypeError, match=re.escape(err_msg)):
++        lr_cv1.score(X_t, y_t, **kwargs)
++    score_1 = lr_cv1.score(X_t, y_t)
+     score_2 = lr_cv2.score(X_t, y_t, **kwargs)
+ 
+     assert not np.allclose(score_1, score_2)
+diff --git a/sklearn/metrics/_scorer.py b/sklearn/metrics/_scorer.py
+index d8356ca54298d..284e4c9198f39 100644
+--- a/sklearn/metrics/_scorer.py
++++ b/sklearn/metrics/_scorer.py
+@@ -69,6 +69,7 @@
+     v_measure_score,
+ )
+ from sklearn.utils import Bunch
++from sklearn.utils._metadata_requests import MethodMetadataRequest
+ from sklearn.utils._param_validation import (
+     HasMethods,
+     StrOptions,
+@@ -85,7 +86,7 @@
+     get_routing_for_object,
+     process_routing,
+ )
+-from sklearn.utils.validation import _check_response_method
++from sklearn.utils.validation import _check_response_method, _deprecate_positional_args
+ 
+ 
+ def _cached_call(cache, estimator, response_method, *args, **kwargs):
+@@ -276,7 +277,9 @@ def __repr__(self):
+     def _routing_repr(self):
+         return repr(self)
+ 
+-    def __call__(self, estimator, X, y_true, sample_weight=None, **kwargs):
++    # TODO (1.11): remove decorator and sample_weight param from signature
++    @_deprecate_positional_args(version="1.11")
++    def __call__(self, estimator, X, y_true, *, sample_weight=None, **kwargs):
+         """Evaluate predicted target values for X relative to y_true.
+ 
+         Parameters
+@@ -311,6 +314,8 @@ def __call__(self, estimator, X, y_true, sample_weight=None, **kwargs):
+         _raise_for_params(kwargs, self, None)
+ 
+         _kwargs = copy.deepcopy(kwargs)
++        # TODO(1.11): remove this when sample_weight is removed from the `__call__`
++        # signature
+         if sample_weight is not None:
+             _kwargs["sample_weight"] = sample_weight
+ 
+@@ -364,6 +369,47 @@ def set_score_request(self, **kwargs):
+             self._metadata_request.score.add_request(param=param, alias=alias)
+         return self
+ 
++    def _get_metadata_request(self):
++        """Get requested metadata properties.
++
++        Please check :ref:`User Guide <metadata_routing>` on how the routing
++        mechanism works.
++
++        Returns
++        -------
++        request : MetadataRequest
++            A :class:`~sklearn.utils.metadata_routing.MetadataRequest` instance.
++        """
++        if hasattr(self, "_metadata_request"):
++            requests = get_routing_for_object(self._metadata_request)
++        else:
++            requests = MetadataRequest(owner=self)
++            setattr(
++                requests,
++                "score",
++                MethodMetadataRequest(
++                    owner=self,
++                    method="score",
++                    requests=self._get_class_level_metadata_request_values(
++                        method_name="score",
++                        method=self._score_func,
++                        ignore_params={
++                            "y_true",
++                            "y_pred",
++                            "y_prob",
++                            "y_proba",
++                            "y_score",
++                            "y2",
++                            "pred_decision",
++                            "labels_true",
++                            "labels_pred",
++                        },
++                    ),
++                ),
++            )
++
++        return requests
++
+ 
+ class _Scorer(_BaseScorer):
+     def _score(self, method_caller, estimator, X, y_true, **kwargs):
+@@ -1057,7 +1103,7 @@ def from_scorer(cls, scorer, response_method, thresholds):
+             kwargs=scorer._kwargs,
+         )
+         # transfer the metadata request
+-        instance._metadata_request = scorer._get_metadata_request()
++        instance._metadata_request = scorer.get_metadata_routing()
+         return instance
+ 
+     def _score(self, method_caller, estimator, X, y_true, **kwargs):
+diff --git a/sklearn/metrics/tests/test_score_objects.py b/sklearn/metrics/tests/test_score_objects.py
+index d536884d7f759..4b330f4642300 100644
+--- a/sklearn/metrics/tests/test_score_objects.py
++++ b/sklearn/metrics/tests/test_score_objects.py
+@@ -3,6 +3,7 @@
+ import re
+ from copy import deepcopy
+ from functools import partial
++from inspect import signature
+ 
+ import joblib
+ import numpy as np
+@@ -20,6 +21,7 @@
+     make_multilabel_classification,
+     make_regression,
+ )
++from sklearn.exceptions import UnsetMetadataPassedError
+ from sklearn.linear_model import LogisticRegression, Perceptron, Ridge
+ from sklearn.metrics import (
+     accuracy_score,
+@@ -1278,18 +1280,38 @@ def test_scorer_metadata_request(name):
+         weighted_scorer.get_metadata_routing().score.requests["sample_weight"] is True
+     )
+ 
+-    # make sure putting the scorer in a router doesn't request anything by
+-    # default
++    # Some scoring functions accept sample_weight, some don't. We need to cover both
++    # cases.
++    scorer = get_scorer(name)
++    accepts_sample_weight = "sample_weight" in signature(scorer._score_func).parameters
++
+     router = MetadataRouter(owner="test").add(
+-        scorer=get_scorer(name),
++        scorer=scorer,
+         method_mapping=MethodMapping().add(caller="score", callee="score"),
+     )
+-    # make sure `sample_weight` is refused if passed.
+-    with pytest.raises(TypeError, match="got unexpected argument"):
++
++    if accepts_sample_weight:
++        # When sample_weight is accepted, `validate_data` passes and `route_params`
++        # raises
+         router.validate_metadata(params={"sample_weight": 1}, method="score")
+-    # make sure `sample_weight` is not routed even if passed.
+-    routed_params = router.route_params(params={"sample_weight": 1}, caller="score")
+-    assert not routed_params.scorer.score
++        scorer_repr = repr(scorer)
++        err_msg = (
++            "[sample_weight] are passed but are not explicitly set as requested or not"
++            f" requested for {scorer_repr}.score, which is used within test.score."
++            f" Call `{scorer_repr}.set_score_request({{metadata}}=True/False)` for each"
++            " metadata you want to request/ignore."
++        )
++        with pytest.raises(UnsetMetadataPassedError, match=re.escape(err_msg)):
++            router.route_params(params={"sample_weight": 1}, caller="score")
++    else:
++        # When sample_weight is not accepted, `validate_data` raises and `route_params`
++        # is never called
++        err_msg = re.escape(
++            "test.score got unexpected argument(s) {'sample_weight'}, which are not"
++            " routed to any object."
++        )
++        with pytest.raises(TypeError, match=err_msg):
++            router.validate_metadata(params={"sample_weight": 1}, method="score")
+ 
+     # make sure putting weighted_scorer in a router requests sample_weight
+     router = MetadataRouter(owner="test").add(
+diff --git a/sklearn/model_selection/tests/test_classification_threshold.py b/sklearn/model_selection/tests/test_classification_threshold.py
+index 1ba4dcea36974..3b3443f8568ff 100644
+--- a/sklearn/model_selection/tests/test_classification_threshold.py
++++ b/sklearn/model_selection/tests/test_classification_threshold.py
+@@ -17,6 +17,7 @@
+     balanced_accuracy_score,
+     f1_score,
+     fbeta_score,
++    get_scorer,
+     make_scorer,
+ )
+ from sklearn.metrics._scorer import _CurveScorer
+@@ -359,9 +360,11 @@ def test_tuned_threshold_classifier_refit(with_sample_weight, global_random_seed
+ 
+     # check that `estimator_` if fitted on the full dataset when `refit=True`
+     estimator = LogisticRegression().set_fit_request(sample_weight=True)
+-    model = TunedThresholdClassifierCV(estimator, refit=True).fit(
+-        X, y, sample_weight=sample_weight
+-    )
++    model = TunedThresholdClassifierCV(
++        estimator,
++        refit=True,
++        scoring=get_scorer("balanced_accuracy").set_score_request(sample_weight=True),
++    ).fit(X, y, sample_weight=sample_weight)
+ 
+     assert model.estimator_ is not estimator
+     estimator.fit(X, y, sample_weight=sample_weight)
+@@ -372,9 +375,12 @@ def test_tuned_threshold_classifier_refit(with_sample_weight, global_random_seed
+     estimator = LogisticRegression().set_fit_request(sample_weight=True)
+     estimator.fit(X, y, sample_weight=sample_weight)
+     coef = estimator.coef_.copy()
+-    model = TunedThresholdClassifierCV(estimator, cv="prefit", refit=False).fit(
+-        X, y, sample_weight=sample_weight
+-    )
++    model = TunedThresholdClassifierCV(
++        estimator,
++        cv="prefit",
++        refit=False,
++        scoring=get_scorer("balanced_accuracy").set_score_request(sample_weight=True),
++    ).fit(X, y, sample_weight=sample_weight)
+ 
+     assert model.estimator_ is estimator
+     assert_allclose(model.estimator_.coef_, coef)
+@@ -384,9 +390,12 @@ def test_tuned_threshold_classifier_refit(with_sample_weight, global_random_seed
+     cv = [
+         (np.arange(50), np.arange(50, 100)),
+     ]  # single split
+-    model = TunedThresholdClassifierCV(estimator, cv=cv, refit=False).fit(
+-        X, y, sample_weight=sample_weight
+-    )
++    model = TunedThresholdClassifierCV(
++        estimator,
++        cv=cv,
++        refit=False,
++        scoring=get_scorer("balanced_accuracy").set_score_request(sample_weight=True),
++    ).fit(X, y, sample_weight=sample_weight)
+ 
+     assert model.estimator_ is not estimator
+     if with_sample_weight:
+@@ -427,9 +436,17 @@ def test_tuned_threshold_classifier_cv_zeros_sample_weights_equivalence():
+     sample_weight = np.zeros_like(y)
+     sample_weight[::2] = 1
+ 
+-    estimator = LogisticRegression().set_fit_request(sample_weight=True)
++    estimator = (
++        LogisticRegression()
++        .set_fit_request(sample_weight=True)
++        .set_score_request(sample_weight=True)
++    )
+     model_without_weights = TunedThresholdClassifierCV(estimator, cv=2)
+-    model_with_weights = clone(model_without_weights)
++    model_with_weights = TunedThresholdClassifierCV(
++        estimator,
++        cv=2,
++        scoring=get_scorer("balanced_accuracy").set_score_request(sample_weight=True),
++    )
+ 
+     model_with_weights.fit(X, y, sample_weight=sample_weight)
+     model_without_weights.fit(X[::2], y[::2])
+diff --git a/sklearn/tests/metadata_routing_common.py b/sklearn/tests/metadata_routing_common.py
+index 3c56dbca2da58..292b8dc0928f0 100644
+--- a/sklearn/tests/metadata_routing_common.py
++++ b/sklearn/tests/metadata_routing_common.py
+@@ -436,22 +436,22 @@ def transform(self, X, sample_weight=None, metadata=None):
+         return X
+ 
+ 
++def consuming_metric(y_pred, y_true, registry=None, **kwargs):
++    if registry is not None:
++        registry.append(consuming_metric)
++    record_metadata_not_default(consuming_metric, **kwargs)
++    sample_weight = kwargs.get("sample_weight", None)
++    return mean_squared_error(y_pred, y_true, sample_weight=sample_weight)
++
++
+ class ConsumingScorer(_Scorer):
+     def __init__(self, registry=None):
++        score_func = partial(consuming_metric, registry=registry)
+         super().__init__(
+-            score_func=mean_squared_error, sign=1, kwargs={}, response_method="predict"
++            score_func=score_func, sign=1, kwargs={}, response_method="predict"
+         )
+         self.registry = registry
+ 
+-    def _score(self, method_caller, clf, X, y, **kwargs):
+-        if self.registry is not None:
+-            self.registry.append(self)
+-
+-        record_metadata_not_default(self, **kwargs)
+-
+-        sample_weight = kwargs.get("sample_weight", None)
+-        return super()._score(method_caller, clf, X, y, sample_weight=sample_weight)
+-
+ 
+ class ConsumingSplitter(GroupsConsumerMixin, BaseCrossValidator):
+     def __init__(self, registry=None):
+diff --git a/sklearn/tests/test_metadata_routing.py b/sklearn/tests/test_metadata_routing.py
+index ec2a64254a254..97dc904b227e1 100644
+--- a/sklearn/tests/test_metadata_routing.py
++++ b/sklearn/tests/test_metadata_routing.py
+@@ -598,6 +598,39 @@ def fit(self, X, y, **kwargs):
+         InvalidRequestRemoval().get_metadata_routing()
+ 
+ 
++def test_get_class_level_metadata_request_values():
++    """Test `_get_class_level_metadata_request_values`, which infers metadata
++    requests from callables; used for class methods in consumers and by scorers
++    for custom `score_func`s.
++    """
++
++    class Dummy(BaseEstimator):
++        def fit(self, X, y, sample_weight=None, extra=None):
++            return self
++
++    # Baseline: sniff the class method's signature.
++    assert Dummy._get_class_level_metadata_request_values("fit") == {
++        "sample_weight": None,
++        "extra": None,
++    }
++
++    # `ignore_params` filters names out of the result.
++    assert Dummy._get_class_level_metadata_request_values(
++        "fit", ignore_params={"sample_weight"}
++    ) == {"extra": None}
++
++    # `method` lets us inspect a different callable; first arg is auto-skipped.
++    def score_func(y_true, y_pred, sample_weight=None):
++        return 0  # pragma: no cover
++
++    assert Dummy._get_class_level_metadata_request_values(
++        "score", method=score_func, ignore_params={"y_pred"}
++    ) == {"sample_weight": None}
++
++    # No matching class method and no `method` callable -> empty dict.
++    assert Dummy._get_class_level_metadata_request_values("predict") == {}
++
++
+ @config_context(enable_metadata_routing=True)
+ def test_method_metadata_request():
+     mmr = MethodMetadataRequest(owner="test", method="fit")
+diff --git a/sklearn/tests/test_metaestimators_metadata_routing.py b/sklearn/tests/test_metaestimators_metadata_routing.py
+index 70ed1ba237313..f85a49c122781 100644
+--- a/sklearn/tests/test_metaestimators_metadata_routing.py
++++ b/sklearn/tests/test_metaestimators_metadata_routing.py
+@@ -223,6 +223,10 @@
+         "y": y_binary,
+         "estimator_routing_methods": ["fit"],
+         "preserves_metadata": "subset",
++        "scorer_name": "scoring",
++        "scorer_routing_methods": ["fit", "score"],
++        "cv_name": "cv",
++        "cv_routing_methods": ["fit"],
+     },
+     {
+         "metaestimator": OneVsRestClassifier,
+@@ -884,6 +888,8 @@ def test_metadata_is_routed_correctly_to_scorer(metaestimator):
+         # This test only makes sense for CV estimators
+         return
+ 
++    X = metaestimator["X"]
++    y = metaestimator["y"]
+     metaestimator_class = metaestimator["metaestimator"]
+     routing_methods = metaestimator["scorer_routing_methods"]
+     method_mapping = metaestimator.get("method_mapping", {})
+diff --git a/sklearn/utils/_metadata_requests.py b/sklearn/utils/_metadata_requests.py
+index 0c0da25b27793..c5af9cbc9ac81 100644
+--- a/sklearn/utils/_metadata_requests.py
++++ b/sklearn/utils/_metadata_requests.py
+@@ -101,7 +101,7 @@
+ import inspect
+ from collections import defaultdict, namedtuple
+ from copy import deepcopy
+-from typing import TYPE_CHECKING, Optional, Union
++from typing import TYPE_CHECKING, Callable, Iterable, Optional, Union
+ from warnings import warn
+ 
+ from sklearn import get_config
+@@ -1564,9 +1564,34 @@ def _needs_generated_set_request(cls, name, requests):
+         super().__init_subclass__(**kwargs)
+ 
+     @classmethod
+-    def _get_class_level_metadata_request_values(cls, method: str):
++    def _get_class_level_metadata_request_values(
++        cls,
++        method_name: str,
++        method: Callable | None = None,
++        ignore_params: Iterable[str] | None = None,
++    ):
+         """Get class level metadata request values.
+ 
++        Parameters
++        ----------
++        method_name : str
++            The name of the method to get the metadata request values for.
++
++        method : callable, default=None
++            The method to get the metadata request values for. If None, the method
++            from the class with the name `method_name` is used.
++
++        ignore_params : set, default=None
++            A set of parameter names to ignore. The usual parameters
++            `X`, `y`, `Y`, `Xt`, `yt` are always ignored.
++
++        Returns
++        -------
++        requests : dict
++            A dictionary of metadata request values.
++
++        Notes
++        -----
+         This method first checks the `method`'s signature for passable metadata and then
+         updates these with the metadata request values set at class level via the
+         ``__metadata_request__{method}`` class attributes.
+@@ -1576,18 +1601,34 @@ def _get_class_level_metadata_request_values(cls, method: str):
+         """
+         # Here we use `isfunction` instead of `ismethod` because calling `getattr`
+         # on a class instead of an instance returns an unbound function.
+-        if not hasattr(cls, method) or not inspect.isfunction(getattr(cls, method)):
++        # If the given method doesn't exist or is not a function on the class, we simply
++        # return early with an empty dict.
++        if method is None and (
++            not hasattr(cls, method_name)
++            or not inspect.isfunction(getattr(cls, method_name))
++        ):
+             return dict()
+-        # ignore the first parameter of the method, which is usually "self"
+-        signature_items = list(
+-            inspect.signature(getattr(cls, method)).parameters.items()
+-        )[1:]
++
++        resolved_method: Callable = (
++            method if method is not None else getattr(cls, method_name)
++        )
++
++        # ignore the first parameter of the method, which is usually "self".
++        # In case of a callable which is usually passed from a scorer, we can still
++        # safely ignore the first argument which is "y_true"
++        signature_items = list(inspect.signature(resolved_method).parameters.items())[
++            1:
++        ]
++
++        ignore_params = set() if ignore_params is None else set(ignore_params)
++        ignore_params.update({"X", "y", "Y", "Xt", "yt"})
++
+         params = defaultdict(
+             str,
+             {
+                 param_name: None
+                 for param_name, param_info in signature_items
+-                if param_name not in {"X", "y", "Y", "Xt", "yt"}
++                if param_name not in ignore_params
+                 and param_info.kind
+                 not in {param_info.VAR_POSITIONAL, param_info.VAR_KEYWORD}
+             },
+@@ -1600,7 +1641,7 @@ def _get_class_level_metadata_request_values(cls, method: str):
+         # ``vars`` doesn't report the parent class attributes. We go through
+         # the reverse of the MRO so that child classes have precedence over
+         # their parents.
+-        substr = f"__metadata_request__{method}"
++        substr = f"__metadata_request__{method_name}"
+         for base_class in reversed(inspect.getmro(cls)):
+             # Copy is needed with free-threaded context to avoid
+             # RuntimeError: dictionary changed size during iteration.
+@@ -1643,14 +1684,16 @@ def _get_metadata_request(self):
+             requests = get_routing_for_object(self._metadata_request)
+         else:
+             requests = MetadataRequest(owner=self)
+-            for method in SIMPLE_METHODS:
++            for method_name in SIMPLE_METHODS:
+                 setattr(
+                     requests,
+-                    method,
++                    method_name,
+                     MethodMetadataRequest(
+                         owner=self,
+-                        method=method,
+-                        requests=self._get_class_level_metadata_request_values(method),
++                        method=method_name,
++                        requests=self._get_class_level_metadata_request_values(
++                            method_name
++                        ),
+                     ),
+                 )
+         return requests

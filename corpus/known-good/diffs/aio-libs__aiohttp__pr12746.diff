@@ -1,0 +1,157 @@
+diff --git a/aiohttp/client.py b/aiohttp/client.py
+index 4852b5b706b..35724f69d4b 100644
+--- a/aiohttp/client.py
++++ b/aiohttp/client.py
+@@ -1122,7 +1122,7 @@ async def _ws_connect(
+                     headers=resp.headers,
+                 )
+ 
+-            if resp.headers.get(hdrs.CONNECTION, "").lower() != "upgrade":
++            if not resp._upgraded:
+                 raise WSServerHandshakeError(
+                     resp.request_info,
+                     resp.history,
+diff --git a/aiohttp/client_reqrep.py b/aiohttp/client_reqrep.py
+index 310f744390d..430aa2e9c01 100644
+--- a/aiohttp/client_reqrep.py
++++ b/aiohttp/client_reqrep.py
+@@ -196,6 +196,7 @@ class ClientResponse(HeadersMixin):
+     _headers: HeadersDictProxy = None  # type: ignore[assignment]
+     _history: tuple["ClientResponse", ...] = ()
+     _raw_headers: RawHeaders = None  # type: ignore[assignment]
++    _upgraded: bool = False  # parser saw a Connection: upgrade token
+ 
+     _connection: "Connection | None" = None  # current connection
+     _cookies: SimpleCookie | None = None
+@@ -489,6 +490,7 @@ async def start(self, connection: "Connection") -> "ClientResponse":
+         # headers
+         self._headers = message.headers
+         self._raw_headers = message.raw_headers
++        self._upgraded = message.upgrade
+ 
+         # payload
+         self.content = payload
+diff --git a/tests/test_client_proto.py b/tests/test_client_proto.py
+index 3b6a7b6e8af..62515a4da9a 100644
+--- a/tests/test_client_proto.py
++++ b/tests/test_client_proto.py
+@@ -1,6 +1,7 @@
+ import asyncio
+ from unittest import mock
+ 
++import pytest
+ from multidict import CIMultiDict
+ from pytest_mock import MockerFixture
+ from yarl import URL
+@@ -358,3 +359,43 @@ async def test_abort_without_transport() -> None:
+         # Should not raise and should still clean up
+         assert proto._exception is None
+         mock_drop_timeout.assert_not_called()
++
++
++@pytest.mark.parametrize(
++    ("connection", "expected"),
++    [(b"upgrade, keep-alive", True), (b"keep-alive", False)],
++)
++async def test_response_start_records_upgrade(
++    connection: bytes, expected: bool
++) -> None:
++    """ClientResponse.start() preserves the parser's Connection upgrade flag."""
++    loop = asyncio.get_running_loop()
++    proto = ResponseHandler(loop=loop)
++    proto.connection_made(mock.Mock())
++    conn = mock.Mock(protocol=proto)
++    proto.set_response_params(read_until_eof=True)
++    proto.data_received(
++        b"HTTP/1.1 101 Switching Protocols\r\n"
++        b"Upgrade: websocket\r\n"
++        b"Connection: " + connection + b"\r\n\r\n"
++    )
++
++    url = URL("http://ws-upgrade.org")
++    response = ClientResponse(
++        "get",
++        url,
++        writer=mock.Mock(),
++        continue100=None,
++        timer=TimerNoop(),
++        traces=[],
++        loop=loop,
++        session=mock.Mock(),
++        request_headers=CIMultiDict[str](),
++        original_url=url,
++        stream_writer=mock.create_autospec(
++            AbstractStreamWriter, spec_set=True, instance=True
++        ),
++    )
++    await response.start(conn)
++    assert response._upgraded is expected
++    response.close()
+diff --git a/tests/test_client_ws.py b/tests/test_client_ws.py
+index 2c85734ca3f..44c71a5ec37 100644
+--- a/tests/test_client_ws.py
++++ b/tests/test_client_ws.py
+@@ -30,6 +30,7 @@ async def test_ws_connect(ws_key: str, key_data: bytes) -> None:
+         hdrs.SEC_WEBSOCKET_ACCEPT: ws_key,
+         hdrs.SEC_WEBSOCKET_PROTOCOL: "chat",
+     }
++    resp._upgraded = True
+     resp.connection.protocol.read_timeout = None
+     with mock.patch("aiohttp.client.os") as m_os:
+         with mock.patch("aiohttp.client.ClientSession.request") as m_req:
+@@ -255,6 +256,8 @@ async def test_ws_connect_err_upgrade(ws_key: str, key_data: bytes) -> None:
+ 
+ 
+ async def test_ws_connect_err_conn(ws_key: str, key_data: bytes) -> None:
++    # The parser did not see a Connection: upgrade token (resp._upgraded is
++    # False), so the handshake must be rejected.
+     resp = mock.Mock()
+     resp.status = 101
+     resp.headers = {
+@@ -262,6 +265,7 @@ async def test_ws_connect_err_conn(ws_key: str, key_data: bytes) -> None:
+         hdrs.CONNECTION: "close",
+         hdrs.SEC_WEBSOCKET_ACCEPT: ws_key,
+     }
++    resp._upgraded = False
+     with mock.patch("aiohttp.client.os") as m_os:
+         with mock.patch("aiohttp.client.ClientSession.request") as m_req:
+             m_os.urandom.return_value = key_data
+diff --git a/tests/test_http_parser.py b/tests/test_http_parser.py
+index f0e19325005..41700dd722d 100644
+--- a/tests/test_http_parser.py
++++ b/tests/test_http_parser.py
+@@ -775,6 +775,34 @@ def test_upgrade_header_non_ascii(parser: HttpRequestParser) -> None:
+     assert not upgrade
+ 
+ 
++@pytest.mark.parametrize(
++    ("connection", "expected"),
++    [
++        ("upgrade", True),
++        ("upgrade, keep-alive", True),  # other tokens alongside upgrade
++        ("keep-alive, upgrade", True),  # upgrade not first
++        ("Upgrade, Keep-Alive", True),  # case-insensitive
++        ("keep-alive", False),  # no upgrade token
++        ("keep-alive, notupgrade", False),  # substring is not a token
++    ],
++)
++def test_response_upgrade_token_in_connection_list(
++    response: HttpResponseParser, connection: str, expected: bool
++) -> None:
++    # RFC 9110 §7.6.1: Connection is a comma-separated token list, so the parser
++    # must set msg.upgrade for a 101 response whenever "upgrade" appears as a
++    # token, regardless of position, case, or neighbouring tokens.
++    text = (
++        b"HTTP/1.1 101 Switching Protocols\r\n"
++        b"Upgrade: websocket\r\n"
++        b"Connection: " + connection.encode() + b"\r\n\r\n"
++    )
++    messages, upgrade, tail = response.feed_data(text)
++    msg = messages[0][0]
++    assert msg.upgrade == expected
++    assert upgrade == expected
++
++
+ def test_request_te_chunked_with_content_length(parser: HttpRequestParser) -> None:
+     text = (
+         b"GET /test HTTP/1.1\r\n"

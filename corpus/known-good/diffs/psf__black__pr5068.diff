@@ -1,0 +1,150 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index b326a0139d1..02c9d648700 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -38,7 +38,8 @@
+ 
+ ### Output
+ 
+-<!-- Changes to Black's terminal output and error messages -->
++- Improve parse error readability by showing multi-line output with an error pointer.
++  (#5068)
+ 
+ ### _Blackd_
+ 
+diff --git a/docs/usage_and_configuration/the_basics.md b/docs/usage_and_configuration/the_basics.md
+index 738a9793bbb..89133d429b3 100644
+--- a/docs/usage_and_configuration/the_basics.md
++++ b/docs/usage_and_configuration/the_basics.md
+@@ -353,7 +353,10 @@ silenced by `2>/dev/null`).
+ 
+ ```console
+ $ black src/ -q
+-error: cannot format src/black_primer/cli.py: Cannot parse: 5:6: mport asyncio
++error: cannot format src/black_primer/cli.py: Cannot parse: 5:6
++    mport asyncio
++         ^
++ParseError: bad input
+ ```
+ 
+ #### `-v`, `--verbose`
+@@ -368,7 +371,10 @@ Using configuration from /tmp/pyproject.toml.
+ src/blib2to3 ignored: matches the --extend-exclude regular expression
+ src/_black_version.py wasn't modified on disk since last run.
+ src/black/__main__.py wasn't modified on disk since last run.
+-error: cannot format src/black_primer/cli.py: Cannot parse: 5:6: mport asyncio
++error: cannot format src/black_primer/cli.py: Cannot parse: 5:6
++    mport asyncio
++         ^
++ParseError: bad input
+ reformatted src/black_primer/lib.py
+ reformatted src/blackd/__init__.py
+ reformatted src/black/__init__.py
+@@ -443,7 +449,10 @@ plus a short summary.
+ 
+ ```console
+ $ black src/
+-error: cannot format src/black_primer/cli.py: Cannot parse: 5:6: mport asyncio
++error: cannot format src/black_primer/cli.py: Cannot parse: 5:6
++    mport asyncio
++         ^
++ParseError: bad input
+ reformatted src/black_primer/lib.py
+ reformatted src/blackd/__init__.py
+ reformatted src/black/__init__.py
+diff --git a/src/black/parsing.py b/src/black/parsing.py
+index cb4f715dcb3..6eb33f9b88c 100644
+--- a/src/black/parsing.py
++++ b/src/black/parsing.py
+@@ -80,16 +80,29 @@ def lib2to3_parse(
+                 faulty_line = lines[lineno - 1]
+             except IndexError:
+                 faulty_line = "<line number missing in source>"
+-            errors[grammar.version] = InvalidInput(
+-                f"Cannot parse{tv_str}: {lineno}:{column}: {faulty_line}"
++            error_msg = (
++                f"Cannot parse{tv_str}: {lineno}:{column}\n"
++                f"    {faulty_line}\n"
++                f"    {' ' * (column - 1)}^\n"
++                f"ParseError: {pe.msg}"
+             )
+ 
++            errors[grammar.version] = InvalidInput(error_msg)
++
+         except TokenError as te:
+-            # In edge cases these are raised; and typically don't have a "faulty_line".
+             lineno, column = te.args[1]
+-            errors[grammar.version] = InvalidInput(
+-                f"Cannot parse{tv_str}: {lineno}:{column}: {te.args[0]}"
++            lines = src_txt.splitlines()
++            try:
++                faulty_line = lines[lineno - 1]
++            except IndexError:
++                faulty_line = "<line number missing in source>"
++            error_msg = (
++                f"Cannot parse{tv_str}: {lineno}:{column}\n"
++                f"    {faulty_line}\n"
++                f"    {' ' * (column - 1)}^\n"
++                f"TokenError: {te.args[0]}"
+             )
++            errors[grammar.version] = InvalidInput(error_msg)
+ 
+     else:
+         # Choose the latest version when raising the actual parsing error.
+diff --git a/tests/test_black.py b/tests/test_black.py
+index 862679feef4..8e61e8e866e 100644
+--- a/tests/test_black.py
++++ b/tests/test_black.py
+@@ -1025,8 +1025,13 @@ def test_format_file_contents(self) -> None:
+         invalid = "return if you can"
+         with self.assertRaises(black.InvalidInput) as e:
+             black.format_file_contents(invalid, mode=mode, fast=False)
+-        self.assertEqual(str(e.exception), "Cannot parse: 1:7: return if you can")
+-
++        self.assertEqual(
++            str(e.exception),
++            "Cannot parse: 1:7\n"
++            "    return if you can\n"
++            "          ^\n"
++            "ParseError: bad input",
++        )
+         just_crlf = "\r\n"
+         with self.assertRaises(black.NothingChanged):
+             black.format_file_contents(just_crlf, mode=mode, fast=False)
+@@ -1985,7 +1990,14 @@ def test_for_handled_unexpected_eof_error(self) -> None:
+         with pytest.raises(black.parsing.InvalidInput) as exc_info:
+             black.lib2to3_parse("print(", {})
+ 
+-        exc_info.match("Cannot parse: 1:6: Unexpected EOF in multi-line statement")
++        exc_info.match(
++            re.escape(
++                "Cannot parse: 1:6\n"
++                "    print(\n"
++                "         ^\n"
++                "TokenError: Unexpected EOF in multi-line statement"
++            )
++        )
+ 
+     def test_line_ranges_with_code_option(self) -> None:
+         code = textwrap.dedent("""\
+diff --git a/tests/test_format.py b/tests/test_format.py
+index 31c44b9fa90..2a9d6280143 100644
+--- a/tests/test_format.py
++++ b/tests/test_format.py
+@@ -1,3 +1,4 @@
++import re
+ from collections.abc import Iterator
+ from dataclasses import replace
+ from typing import Any
+@@ -89,5 +90,10 @@ def test_patma_invalid() -> None:
+         assert_format(source, expected, mode, minimum_version=(3, 10))
+ 
+     exc_info.match(
+-        "Cannot parse for target version Python 3.10: 10:11:     case a := b:"
++        re.escape(
++            "Cannot parse for target version Python 3.10: 10:11\n"
++            "        case a := b:\n"
++            "              ^\n"
++            "ParseError: bad input"
++        )
+     )

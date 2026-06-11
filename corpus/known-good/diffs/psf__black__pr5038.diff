@@ -1,0 +1,184 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 3fd3f73c48d..7bbe868b7e7 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -13,6 +13,10 @@
+ 
+ <!-- Changes that affect Black's stable style -->
+ 
++- Prevent Jupyter notebook magic masking collisions from corrupting cells by using
++  exact-length placeholders for short magics and aborting if a placeholder can no longer
++  be unmasked safely (#5038)
++
+ ### Preview style
+ 
+ <!-- Changes that affect Black's preview style -->
+@@ -21,6 +25,9 @@
+ 
+ <!-- Changes to how Black can be configured -->
+ 
++- Always hash cache filename components derived from `--python-cell-magics` so custom
++  magic names cannot affect cache paths (#5038)
++
+ ### Packaging
+ 
+ <!-- Changes to how Black is packaged, such as dependency requirements -->
+diff --git a/src/black/handle_ipynb_magics.py b/src/black/handle_ipynb_magics.py
+index c84fe6219fb..e12537d8309 100644
+--- a/src/black/handle_ipynb_magics.py
++++ b/src/black/handle_ipynb_magics.py
+@@ -5,6 +5,8 @@
+ import dataclasses
+ import re
+ import secrets
++import string
++from collections.abc import Collection
+ from functools import lru_cache
+ from importlib.util import find_spec
+ from typing import TypeGuard
+@@ -188,6 +190,13 @@ def mask_cell(src: str) -> tuple[str, list[Replacement]]:
+ def create_token(n_chars: int) -> str:
+     """Create a randomly generated token that is n_chars characters long."""
+     assert n_chars > 0
++    if n_chars == 1:
++        return secrets.choice(string.ascii_letters)
++    if n_chars < 4:
++        return "_" + "".join(
++            secrets.choice(string.ascii_letters + string.digits + "_")
++            for _ in range(n_chars - 1)
++        )
+     n_bytes = max(n_chars // 2 - 1, 1)
+     token = secrets.token_hex(n_bytes)
+     if len(token) + 3 > n_chars:
+@@ -197,7 +206,7 @@ def create_token(n_chars: int) -> str:
+     return f'b"{token}"'
+ 
+ 
+-def get_token(src: str, magic: str) -> str:
++def get_token(src: str, magic: str, existing_tokens: Collection[str] = ()) -> str:
+     """Return randomly generated token to mask IPython magic with.
+ 
+     For example, if 'magic' was `%matplotlib inline`, then a possible
+@@ -209,7 +218,7 @@ def get_token(src: str, magic: str) -> str:
+     n_chars = len(magic)
+     token = create_token(n_chars)
+     counter = 0
+-    while token in src:
++    while token in src or token in existing_tokens:
+         token = create_token(n_chars)
+         counter += 1
+         if counter > 100:
+@@ -271,6 +280,7 @@ def replace_magics(src: str) -> tuple[str, list[Replacement]]:
+     The replacement, along with the transformed code, are returned.
+     """
+     replacements = []
++    existing_tokens: set[str] = set()
+     magic_finder = MagicFinder()
+     magic_finder.visit(ast.parse(src))
+     new_srcs = []
+@@ -286,8 +296,9 @@ def replace_magics(src: str) -> tuple[str, list[Replacement]]:
+                 offsets_and_magics[0].col_offset,
+                 offsets_and_magics[0].magic,
+             )
+-            mask = get_token(src, magic)
++            mask = get_token(src, magic, existing_tokens)
+             replacements.append(Replacement(mask=mask, src=magic))
++            existing_tokens.add(mask)
+             line = line[:col_offset] + mask
+         new_srcs.append(line)
+     return "\n".join(new_srcs), replacements
+@@ -307,7 +318,9 @@ def unmask_cell(src: str, replacements: list[Replacement]) -> str:
+         foo = bar
+     """
+     for replacement in replacements:
+-        src = src.replace(replacement.mask, replacement.src)
++        if src.count(replacement.mask) != 1:
++            raise NothingChanged
++        src = src.replace(replacement.mask, replacement.src, 1)
+     return src
+ 
+ 
+diff --git a/src/black/mode.py b/src/black/mode.py
+index 8653a705495..e5b95abd078 100644
+--- a/src/black/mode.py
++++ b/src/black/mode.py
+@@ -292,10 +292,9 @@ def get_cache_key(self) -> str:
+             + "@"
+             + ",".join(sorted(self.python_cell_magics))
+         )
+-        if len(features_and_magics) > _MAX_CACHE_KEY_PART_LENGTH:
+-            features_and_magics = sha256(features_and_magics.encode()).hexdigest()[
+-                :_MAX_CACHE_KEY_PART_LENGTH
+-            ]
++        features_and_magics = sha256(features_and_magics.encode()).hexdigest()[
++            :_MAX_CACHE_KEY_PART_LENGTH
++        ]
+         parts = [
+             version_str,
+             str(self.line_length),
+diff --git a/tests/test_black.py b/tests/test_black.py
+index a8152e5cc10..ee04a7e9408 100644
+--- a/tests/test_black.py
++++ b/tests/test_black.py
+@@ -2166,6 +2166,15 @@ def test_cache_file_length(self) -> None:
+             # doesn't get too crazy.
+             assert len(cache_file.name) <= 96
+ 
++    def test_cache_file_path_ignores_python_cell_magic_separators(self) -> None:
++        mode = replace(DEFAULT_MODE, python_cell_magics={"../../../tmp/pwned"})
++        with cache_dir() as workspace:
++            cache_file = get_cache_file(mode)
++            assert cache_file.parent == workspace
++            assert "/" not in cache_file.name
++            assert ".." not in cache_file.name
++            assert "../../../tmp/pwned" not in mode.get_cache_key()
++
+     def test_cache_broken_file(self) -> None:
+         mode = DEFAULT_MODE
+         with cache_dir() as workspace:
+diff --git a/tests/test_ipynb.py b/tests/test_ipynb.py
+index 12afb971e2c..aadf7058a83 100644
+--- a/tests/test_ipynb.py
++++ b/tests/test_ipynb.py
+@@ -6,8 +6,8 @@
+ from dataclasses import replace
+ 
+ import pytest
+-from _pytest.monkeypatch import MonkeyPatch
+ from click.testing import CliRunner
++from pytest import MonkeyPatch
+ 
+ from black import (
+     Mode,
+@@ -17,7 +17,12 @@
+     format_file_in_place,
+     main,
+ )
+-from black.handle_ipynb_magics import jupyter_dependencies_are_installed
++from black.handle_ipynb_magics import (
++    Replacement,
++    create_token,
++    jupyter_dependencies_are_installed,
++    unmask_cell,
++)
+ from tests.util import DATA_DIR, get_case_path, read_jupyter_notebook
+ 
+ with contextlib.suppress(ModuleNotFoundError):
+@@ -39,6 +44,17 @@ def test_noop() -> None:
+         format_cell(src, fast=True, mode=JUPYTER_MODE)
+ 
+ 
++@pytest.mark.parametrize("n_chars", [1, 2, 3, 4, 5, 17])
++def test_create_token_uses_requested_length(n_chars: int) -> None:
++    assert len(create_token(n_chars)) == n_chars
++
++
++def test_unmask_cell_raises_when_token_is_not_unique() -> None:
++    replacement = Replacement(mask='b"dead"', src="%time")
++    with pytest.raises(NothingChanged):
++        unmask_cell(f"{replacement.mask}\nvalue = {replacement.mask}", [replacement])
++
++
+ @pytest.mark.parametrize("fast", [True, False])
+ def test_trailing_semicolon(fast: bool) -> None:
+     src = 'foo = "a" ;'

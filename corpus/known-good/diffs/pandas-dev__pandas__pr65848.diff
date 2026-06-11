@@ -1,0 +1,37 @@
+diff --git a/pandas/compat/numpy/__init__.py b/pandas/compat/numpy/__init__.py
+index a4562b35c0b8a..5e497dbd24ff9 100644
+--- a/pandas/compat/numpy/__init__.py
++++ b/pandas/compat/numpy/__init__.py
+@@ -13,6 +13,7 @@
+ np_version_gt2_2 = _nlv >= Version("2.2.0")
+ np_version_gt2_3 = _nlv >= Version("2.3.0")
+ np_version_gt2_5 = _nlv >= Version("2.5.0")
++np_version_gt2_6 = _nlv >= Version("2.6.0.dev0")
+ is_numpy_dev = _nlv.dev is not None
+ _min_numpy_ver = "1.26.0"
+ 
+diff --git a/pandas/tests/indexes/datetimes/test_setops.py b/pandas/tests/indexes/datetimes/test_setops.py
+index cb34d165821f0..b05a651ecd24c 100644
+--- a/pandas/tests/indexes/datetimes/test_setops.py
++++ b/pandas/tests/indexes/datetimes/test_setops.py
+@@ -7,6 +7,7 @@
+ import numpy as np
+ import pytest
+ 
++from pandas.compat.numpy import np_version_gt2_6
+ import pandas.util._test_decorators as td
+ 
+ import pandas as pd
+@@ -527,7 +528,11 @@ def test_dti_union_mixed(self):
+         # GH#21671
+         rng = DatetimeIndex([Timestamp("2011-01-01"), pd.NaT])
+         rng2 = DatetimeIndex(["2012-01-01", "2012-01-02"], tz="Asia/Tokyo")
+-        result = rng.union(rng2)
++        # numpy>=2.6 object-dtype sort compares the tz-naive and tz-aware
++        #  Timestamps directly, so safe_sort fails and union warns
++        warn = RuntimeWarning if np_version_gt2_6 else None
++        with tm.assert_produces_warning(warn, match="sort order is undefined"):
++            result = rng.union(rng2)
+         expected = Index(
+             [
+                 Timestamp("2011-01-01"),

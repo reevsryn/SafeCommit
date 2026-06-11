@@ -1,0 +1,373 @@
+diff --git a/AUTHORS b/AUTHORS
+index 1385cc5afde6..25154e29ac53 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -600,6 +600,7 @@ answer newbie questions, and generally made Django that much better:
+     Karderio <karderio@gmail.com>
+     Karen Tracey <kmtracey@gmail.com>
+     Karol Sikora <elektrrrus@gmail.com>
++    Karolis Ryselis <karolis.ryselis@gmail.com>
+     Kasey Steinhauer <kstein257@gmail.com>
+     Kasun Herath <kasunh01@gmail.com>
+     Katherine “Kati” Michel <kthrnmichel@gmail.com>
+diff --git a/django/contrib/admin/checks.py b/django/contrib/admin/checks.py
+index e6933045e57e..3cea98a0dcb0 100644
+--- a/django/contrib/admin/checks.py
++++ b/django/contrib/admin/checks.py
+@@ -190,6 +190,7 @@ def check(self, admin_obj, **kwargs):
+             *self._check_view_on_site_url(admin_obj),
+             *self._check_ordering(admin_obj),
+             *self._check_readonly_fields(admin_obj),
++            *self._check_delete_confirmation_max_display(admin_obj),
+         ]
+ 
+     def _check_autocomplete_fields(self, obj):
+@@ -824,6 +825,25 @@ def _check_readonly_fields_item(self, obj, field_name, label):
+             else:
+                 return []
+ 
++    def _check_delete_confirmation_max_display(self, obj):
++        """Check that delete_confirmation_max_display is
++        a non-negative integer or None."""
++
++        if obj.delete_confirmation_max_display is None:
++            return []
++        if (
++            not isinstance(obj.delete_confirmation_max_display, int)
++            or obj.delete_confirmation_max_display < 0
++        ):
++            return must_be(
++                "a non-negative integer or None",
++                option="delete_confirmation_max_display",
++                obj=obj,
++                id="admin.E041",
++            )
++        else:
++            return []
++
+ 
+ class ModelAdminChecks(BaseModelAdminChecks):
+     def check(self, admin_obj, **kwargs):
+@@ -842,7 +862,6 @@ def check(self, admin_obj, **kwargs):
+             *self._check_search_fields(admin_obj),
+             *self._check_date_hierarchy(admin_obj),
+             *self._check_actions(admin_obj),
+-            *self._check_delete_confirmation_max_display(admin_obj),
+         ]
+ 
+     def _check_save_as(self, obj):
+@@ -1093,25 +1112,6 @@ def _check_list_select_related(self, obj):
+         else:
+             return []
+ 
+-    def _check_delete_confirmation_max_display(self, obj):
+-        """Check that delete_confirmation_max_display is
+-        a non-negative integer or None."""
+-
+-        if obj.delete_confirmation_max_display is None:
+-            return []
+-        if (
+-            not isinstance(obj.delete_confirmation_max_display, int)
+-            or obj.delete_confirmation_max_display < 0
+-        ):
+-            return must_be(
+-                "a non-negative integer or None",
+-                option="delete_confirmation_max_display",
+-                obj=obj,
+-                id="admin.E131",
+-            )
+-        else:
+-            return []
+-
+     def _check_list_per_page(self, obj):
+         """Check that list_per_page is an integer."""
+ 
+diff --git a/django/contrib/admin/options.py b/django/contrib/admin/options.py
+index 83faff961d41..b4713c2f1598 100644
+--- a/django/contrib/admin/options.py
++++ b/django/contrib/admin/options.py
+@@ -1,7 +1,9 @@
+ import copy
+ import enum
++import itertools
+ import json
+ import re
++import sys
+ import warnings
+ from collections.abc import Callable
+ from dataclasses import dataclass
+@@ -191,6 +193,7 @@ class BaseModelAdmin(metaclass=forms.MediaDefiningClass):
+     view_on_site = True
+     show_full_result_count = True
+     checks_class = BaseModelAdminChecks
++    delete_confirmation_max_display = None
+ 
+     def check(self, **kwargs):
+         return self.checks_class().check(self, **kwargs)
+@@ -704,7 +707,6 @@ class ModelAdmin(BaseModelAdmin):
+     add_form_template = None
+     change_form_template = None
+     change_list_template = None
+-    delete_confirmation_max_display = None
+     delete_confirmation_template = None
+     delete_selected_confirmation_template = None
+     object_history_template = None
+@@ -2755,6 +2757,11 @@ def get_formset(self, request, obj=None, **kwargs):
+         base_model_form = defaults["form"]
+         can_change = self.has_change_permission(request, obj) if request else True
+         can_add = self.has_add_permission(request, obj) if request else True
++        delete_confirmation_max_display = (
++            self.delete_confirmation_max_display
++            if self.delete_confirmation_max_display
++            else sys.maxsize
++        )
+ 
+         class DeleteProtectedModelForm(base_model_form):
+             def hand_clean_DELETE(self):
+@@ -2771,7 +2778,10 @@ def hand_clean_DELETE(self):
+                     collector.collect([self.instance])
+                     if collector.protected:
+                         objs = []
+-                        for p in collector.protected:
++                        protected = itertools.islice(
++                            collector.protected, delete_confirmation_max_display
++                        )
++                        for p in protected:
+                             objs.append(
+                                 # Translators: Model verbose name and instance
+                                 # representation, suitable to be an item in a
+@@ -2782,8 +2792,26 @@ def hand_clean_DELETE(self):
+                         params = {
+                             "class_name": self._meta.model._meta.verbose_name,
+                             "instance": self.instance,
+-                            "related_objects": get_text_list(objs, _("and")),
+                         }
++                        remaining_object_count = (
++                            len(collector.protected) - delete_confirmation_max_display
++                        )
++                        if remaining_object_count > 0:
++                            # Translators: This string is used as a separator
++                            # between list elements
++                            related = (
++                                _(", ").join(str(i) for i in objs)
++                                + _(", ")
++                                + ngettext(
++                                    "…and %(count)d more object.",
++                                    "…and %(count)d more objects.",
++                                    remaining_object_count,
++                                )
++                                % {"count": remaining_object_count}
++                            )
++                        else:
++                            related = get_text_list(objs, _("and"))
++                        params["related_objects"] = related
+                         msg = _(
+                             "Deleting %(class_name)s %(instance)s would require "
+                             "deleting the following protected related objects: "
+diff --git a/docs/ref/checks.txt b/docs/ref/checks.txt
+index f6fedf87d331..462736782325 100644
+--- a/docs/ref/checks.txt
++++ b/docs/ref/checks.txt
+@@ -759,6 +759,8 @@ with the admin site:
+   referenced by ``<modeladmin>.autocomplete_fields``.
+ * **admin.E040**: ``<modeladmin>`` must define ``search_fields``, because
+   it's referenced by ``<other_modeladmin>.autocomplete_fields``.
++* **admin.E041**: The value of ``delete_confirmation_max_display`` must be a
++  non-negative integer or ``None``.
+ 
+ ``ModelAdmin``
+ ~~~~~~~~~~~~~~
+@@ -819,8 +821,6 @@ with the admin site:
+   method for the ``<action>`` action.
+ * **admin.E130**: ``__name__`` attributes of actions defined in
+   ``<modeladmin>`` must be unique. Name ``<name>`` is not unique.
+-* **admin.E131**: The value of ``delete_confirmation_max_display`` must be a
+-  non-negative integer or ``None``.
+ 
+ ``InlineModelAdmin``
+ ~~~~~~~~~~~~~~~~~~~~
+diff --git a/docs/ref/contrib/admin/index.txt b/docs/ref/contrib/admin/index.txt
+index e814e0aca09b..875739cffa42 100644
+--- a/docs/ref/contrib/admin/index.txt
++++ b/docs/ref/contrib/admin/index.txt
+@@ -1403,8 +1403,10 @@ default templates used by the :class:`ModelAdmin` views:
+     relationship hierarchy. This is purely a display setting and does not
+     affect the total number of objects retrieved from the database.
+ 
+-    This applies to both :meth:`delete_view` and the ``delete_selected``
+-    action. By default, this is ``None`` (no truncation).
++    This applies to :meth:`delete_view` and the ``delete_selected``
++    action if specified for ``ModelAdmin``, and to protected deletion
++    validation messages if specified for ``InlineModelAdmin``. By default,
++    this is ``None`` (no truncation).
+ 
+ .. attribute:: ModelAdmin.object_history_template
+ 
+diff --git a/docs/releases/6.1.txt b/docs/releases/6.1.txt
+index 7ef149f40c97..123486f2429d 100644
+--- a/docs/releases/6.1.txt
++++ b/docs/releases/6.1.txt
+@@ -143,8 +143,8 @@ Minor features
+ 
+ * The :attr:`~django.contrib.admin.ModelAdmin.delete_confirmation_max_display`
+   option allows customizing how many objects are displayed on admin delete
+-  confirmation pages before the remainder is truncated. The default is
+-  ``None`` (no truncation).
++  confirmation pages and inline protected deletion errors before the remainder
++  is truncated. The default is ``None`` (no truncation).
+ 
+ * In order to improve accessibility of the admin change forms:
+ 
+diff --git a/tests/admin_inlines/admin.py b/tests/admin_inlines/admin.py
+index dbb74991dce0..4ab00b1df6eb 100644
+--- a/tests/admin_inlines/admin.py
++++ b/tests/admin_inlines/admin.py
+@@ -296,6 +296,7 @@ def call_me(self, obj):
+ class ChapterInline(admin.TabularInline):
+     model = Chapter
+     readonly_fields = ["call_me"]
++    delete_confirmation_max_display = 3
+ 
+     def call_me(self, obj):
+         return "Callable in ChapterInline"
+diff --git a/tests/admin_inlines/models.py b/tests/admin_inlines/models.py
+index ea5ba78656d2..3c2758705cf4 100644
+--- a/tests/admin_inlines/models.py
++++ b/tests/admin_inlines/models.py
+@@ -247,9 +247,7 @@ class Chapter(models.Model):
+ 
+ 
+ class FootNote(models.Model):
+-    """
+-    Model added for ticket 19838
+-    """
++    """Model for models.PROTECT."""
+ 
+     chapter = models.ForeignKey(Chapter, models.PROTECT)
+     note = models.CharField(max_length=40)
+diff --git a/tests/admin_inlines/tests.py b/tests/admin_inlines/tests.py
+index eda7c91310e9..a2814a8d46cd 100644
+--- a/tests/admin_inlines/tests.py
++++ b/tests/admin_inlines/tests.py
+@@ -830,6 +830,76 @@ def test_inlines_based_on_model_state(self):
+         parent.refresh_from_db()
+         self.assertIs(parent.show_inlines, True)
+ 
++    def test_delete_protected_message_limits_number_of_objects_displayed(self):
++        # admin limits the number of displayed objects to 2, so we create
++        # 5 footnotes.
++        novel = Novel.objects.create()
++        chapter = Chapter.objects.create(novel=novel)
++        footnotes = [FootNote(chapter=chapter) for i in range(5)]
++        FootNote.objects.bulk_create(footnotes)
++
++        response = self.client.post(
++            reverse("admin:admin_inlines_novel_change", args=(novel.pk,)),
++            data={
++                "show_inlines": "on",
++                "chapter_set-TOTAL_FORMS": "1",
++                "chapter_set-INITIAL_FORMS": "1",
++                "chapter_set-MAX_NUM_FORMS": "1000",
++                "chapter_set-MIN_NUM_FORMS": "0",
++                "chapter_set-0-id": chapter.id,
++                "chapter_set-0-name": chapter.name,
++                "chapter_set-0-novel": novel.id,
++                "chapter_set-0-DELETE": "on",
++            },
++        )
++        self.assertEqual(response.status_code, 200)
++        inline_formset = response.context_data["inline_admin_formsets"][0]
++        self.assertEqual(1, len(inline_formset.non_form_errors()))
++        error_message = inline_formset.non_form_errors()[0]
++        self.assertTrue(
++            error_message.startswith(
++                f"Deleting chapter Chapter object ({chapter.pk}) would "
++                "require deleting the following protected related objects:"
++            ),
++            error_message,
++        )
++        self.assertEqual(error_message.count("FootNote"), 3, error_message)
++        self.assertTrue(error_message.endswith("…and 2 more objects."), error_message)
++
++    def test_delete_protected_message_does_not_limit_small_amount_of_objects(self):
++        novel = Novel.objects.create()
++        chapter = Chapter.objects.create(novel=novel)
++        footnotes = [FootNote(chapter=chapter) for i in range(3)]
++        FootNote.objects.bulk_create(footnotes)
++
++        response = self.client.post(
++            reverse("admin:admin_inlines_novel_change", args=(novel.pk,)),
++            data={
++                "show_inlines": "on",
++                "chapter_set-TOTAL_FORMS": "1",
++                "chapter_set-INITIAL_FORMS": "1",
++                "chapter_set-MAX_NUM_FORMS": "1000",
++                "chapter_set-MIN_NUM_FORMS": "0",
++                "chapter_set-0-id": chapter.id,
++                "chapter_set-0-name": chapter.name,
++                "chapter_set-0-novel": novel.id,
++                "chapter_set-0-DELETE": "on",
++            },
++        )
++        self.assertEqual(response.status_code, 200)
++        inline_formset = response.context_data["inline_admin_formsets"][0]
++        self.assertEqual(1, len(inline_formset.non_form_errors()))
++        error_message = inline_formset.non_form_errors()[0]
++        self.assertTrue(
++            error_message.startswith(
++                f"Deleting chapter Chapter object ({chapter.pk}) would require "
++                "deleting the following protected related objects:"
++            ),
++            error_message,
++        )
++        self.assertEqual(error_message.count("FootNote object"), 3)
++        self.assertNotIn("more", error_message)
++
+ 
+ @override_settings(ROOT_URLCONF="admin_inlines.urls")
+ class TestInlineMedia(TestDataMixin, TestCase):
+diff --git a/tests/modeladmin/test_checks.py b/tests/modeladmin/test_checks.py
+index bcac262d695e..40777d14589d 100644
+--- a/tests/modeladmin/test_checks.py
++++ b/tests/modeladmin/test_checks.py
+@@ -1033,7 +1033,7 @@ class TestModelAdmin(ModelAdmin):
+                 "'delete_confirmation_max_display'"
+                 " must be a non-negative integer or None."
+             ),
+-            "admin.E131",
++            "admin.E041",
+         )
+ 
+     def test_negative_integer(self):
+@@ -1048,7 +1048,7 @@ class TestModelAdmin(ModelAdmin):
+                 "'delete_confirmation_max_display'"
+                 " must be a non-negative integer or None."
+             ),
+-            "admin.E131",
++            "admin.E041",
+         )
+ 
+     def test_valid_case(self):
+@@ -1063,6 +1063,22 @@ class TestModelAdmin(ModelAdmin):
+ 
+         self.assertIsValid(TestModelAdmin, ValidationTestModel)
+ 
++    def test_inline_not_integer(self):
++        class TestInlineModelAdmin(TabularInline):
++            delete_confirmation_max_display = "goodbye"
++            model = ValidationTestInlineModel
++
++        self.assertIsInvalid(
++            TestInlineModelAdmin,
++            ValidationTestModel,
++            (
++                "The value of "
++                "'delete_confirmation_max_display'"
++                " must be a non-negative integer or None."
++            ),
++            "admin.E041",
++        )
++
+ 
+ class SearchFieldsCheckTests(CheckTestCase):
+     def test_not_iterable(self):

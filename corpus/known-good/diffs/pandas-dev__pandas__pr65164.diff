@@ -1,0 +1,451 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 1b4af23dc53b8..a13385809cc9d 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -30,8 +30,10 @@ Other enhancements
+ ^^^^^^^^^^^^^^^^^^
+ - :class:`Period` now supports f-string formatting via ``__format__``, e.g. ``f"{period:%Y-%m}"`` (:issue:`48536`)
+ - :meth:`.DataFrameGroupBy.agg` now allows for the provided ``func`` to return a NumPy array (:issue:`63957`)
++- :meth:`DataFrameGroupBy.transform` now accepts list-like and dict arguments similar to :meth:`GroupBy.agg`, and supports :class:`NamedFunc` (:issue:`58318`)
+ - :meth:`Series.to_json` now supports serializing custom ExtensionArrays (by correctly using the ``_values_for_json`` method of an ExtensionArray) (:issue:`65047`)
+ - :meth:`Timestamp.round`, :meth:`Timestamp.floor`, and :meth:`Timestamp.ceil` now officially accept :class:`Timedelta` arguments (:issue:`63687`)
++- Added :class:`NamedFunc`, an alias to :class:`NamedAgg` for a more semantically accurate name when used with non-aggregation functions; either can accept arbitrary functions (:issue:`65164`)
+ - :meth:`ExtensionArray.map` now calls :meth:`ExtensionArray._cast_pointwise_result` to retain the dtype backend, e.g. Arrow-backed arrays now preserve their Arrow dtype through ``map`` (:issue:`57189`, :issue:`62164`)
+ - :func:`read_csv` now supports ``dtype="complex64"`` and ``dtype="complex128"`` with the C engine, enabling round-tripping of complex-number columns written by :meth:`DataFrame.to_csv` (:issue:`9379`)
+ - Added :meth:`ExtensionArray.count` (:issue:`64450`)
+diff --git a/pandas/__init__.py b/pandas/__init__.py
+index a005593811cc2..7388b0196e553 100644
+--- a/pandas/__init__.py
++++ b/pandas/__init__.py
+@@ -100,6 +100,7 @@
+     factorize,
+     unique,
+     NamedAgg,
++    NamedFunc,
+     array,
+     Categorical,
+     set_eng_float_format,
+@@ -254,6 +255,7 @@
+     "MultiIndex",
+     "NaT",
+     "NamedAgg",
++    "NamedFunc",
+     "Period",
+     "PeriodDtype",
+     "PeriodIndex",
+diff --git a/pandas/core/api.py b/pandas/core/api.py
+index ec12d543d8389..3fce5a5e08f7f 100644
+--- a/pandas/core/api.py
++++ b/pandas/core/api.py
+@@ -47,6 +47,8 @@
+     Grouper,
+     NamedAgg,
+ )
++
++NamedFunc = NamedAgg  # alias, see GH#58318
+ from pandas.core.indexes.api import (
+     CategoricalIndex,
+     DatetimeIndex,
+@@ -106,6 +108,7 @@
+     "MultiIndex",
+     "NaT",
+     "NamedAgg",
++    "NamedFunc",
+     "Period",
+     "PeriodDtype",
+     "PeriodIndex",
+diff --git a/pandas/core/groupby/generic.py b/pandas/core/groupby/generic.py
+index ab75ebc8ddc09..99122d3995803 100644
+--- a/pandas/core/groupby/generic.py
++++ b/pandas/core/groupby/generic.py
+@@ -752,6 +752,14 @@ def transform(self, func, *args, engine=None, engine_kwargs=None, **kwargs):
+         Parrot     30
+         Name: Max Speed, dtype: int64
+         """
++
++        if isinstance(func, list):
++            raise NotImplementedError(
++                "Passing a list to SeriesGroupBy.transform is not yet supported "
++                "and is intended to be implemented in a future release. "
++                "See https://github.com/pandas-dev/pandas/issues/58318."
++            )
++
+         return self._transform(
+             func, *args, engine=engine, engine_kwargs=engine_kwargs, **kwargs
+         )
+@@ -2516,7 +2524,7 @@ def _transform_general(self, func, engine, engine_kwargs, *args, **kwargs):
+         concatenated = concatenated.reindex(concat_index, axis=1)
+         return self._set_result_index_ordered(concatenated)
+ 
+-    def transform(self, func, *args, engine=None, engine_kwargs=None, **kwargs):
++    def transform(self, func=None, *args, engine=None, engine_kwargs=None, **kwargs):
+         """
+         Call function producing a same-indexed DataFrame on each group.
+ 
+@@ -2525,7 +2533,7 @@ def transform(self, func, *args, engine=None, engine_kwargs=None, **kwargs):
+ 
+         Parameters
+         ----------
+-        func : function, str
++        func : function, str, list, or dict
+             Function to apply to each group.
+             See the Notes section below for requirements.
+ 
+@@ -2534,8 +2542,15 @@ def transform(self, func, *args, engine=None, engine_kwargs=None, **kwargs):
+             - String
+             - Python function
+             - Numba JIT function with ``engine='numba'`` specified.
++            - List of strings/functions: applied to every non-key column,
++              returning a MultiIndex-column DataFrame ``(column, func)``.
++            - Dict ``{column: func}`` or ``{name: NamedFunc(column, func)}``:
++              applied per-column as specified.
+ 
+-            Only passing a single function is supported with this engine.
++            .. versionchanged:: 3.1.0
++                    Added support for list-like, dict, and :class:`NamedFunc` arguments.
++
++            Only passing a single function is supported with the numba engine.
+             If the ``'numba'`` engine is chosen, the function must be
+             a user defined function with ``values`` and ``index`` as the
+             first and second arguments respectively in the function signature.
+@@ -2544,6 +2559,7 @@ def transform(self, func, *args, engine=None, engine_kwargs=None, **kwargs):
+ 
+             If a string is chosen, then it needs to be the name
+             of the groupby method you want to use.
++
+         *args
+             Positional arguments to pass to func.
+         engine : str, default None
+@@ -2554,7 +2570,7 @@ def transform(self, func, *args, engine=None, engine_kwargs=None, **kwargs):
+ 
+         engine_kwargs : dict, default None
+             * For ``'cython'`` engine, there are no accepted ``engine_kwargs``
+-            * For ``'numba'`` engine, the engine can accept  ``nogil``
++            * For ``'numba'`` engine, the engine can accept ``nogil``
+               and ``parallel`` dictionary keys. The values must either be ``True`` or
+               ``False``. The default ``engine_kwargs`` for the ``'numba'`` engine is
+               ``{'nogil': False, 'parallel': False}`` and will be
+@@ -2562,6 +2578,8 @@ def transform(self, func, *args, engine=None, engine_kwargs=None, **kwargs):
+ 
+         **kwargs
+             Keyword arguments to be passed into func.
++            When ``func=None``, ``**kwargs`` should be pairs of
++            ``output_name=NamedFunc(column, func)``.
+ 
+         Returns
+         -------
+@@ -2663,9 +2681,177 @@ def transform(self, func, *args, engine=None, engine_kwargs=None, **kwargs):
+         3  5  9
+         4  5  8
+         5  5  9
++
++        List-like arguments
++
++        >>> df2 = pd.DataFrame({"col": list("aab"), "val": range(3), "other": range(3)})
++        >>> df2.groupby("col").transform(["sum", "min"])
++           val       other
++           sum min   sum min
++        0    1   0     1   0
++        1    1   0     1   0
++        2    2   2     2   2
++
++        Dictionary arguments
++
++        >>> df2.groupby("col").transform({"val": "sum", "other": "min"})
++           val  other
++        0    1      0
++        1    1      0
++        2    2      2
++
++        Named aggregation
++
++        >>> df2.groupby("col").transform(
++        ...     val_sum=pd.NamedAgg(column="val", aggfunc="sum"),
++        ...     other_min=pd.NamedAgg(column="other", aggfunc="min"),
++        ... )
++           val_sum  other_min
++        0        1          0
++        1        1          0
++        2        2          2
+         """
+-        return self._transform(
+-            func, *args, engine=engine, engine_kwargs=engine_kwargs, **kwargs
++        # GH#58318 - extended to accept list, dict, and NamedAgg kwargs.
++
++        if func is None:
++            # Named-aggregation style:
++            #   .transform(val_sum=NamedAgg(column="val", aggfunc="sum"), ...)
++            return self._transform_multiple_funcs(
++                kwargs, *args, engine=engine, engine_kwargs=engine_kwargs
++            )
++        elif is_dict_like(func):
++            # e.g. .transform({"val": "sum"}) or {"name": NamedAgg(...)}
++            # Dict-of-lists is not yet supported.
++            for val in func.values():
++                if is_list_like(val):
++                    raise NotImplementedError(
++                        "Passing a dict of lists to DataFrameGroupBy.transform is "
++                        "not yet supported and is intended to be implemented in a "
++                        "future release. "
++                        "See https://github.com/pandas-dev/pandas/issues/58318"
++                    )
++            return self._transform_multiple_funcs(
++                func, *args, engine=engine, engine_kwargs=engine_kwargs, **kwargs
++            )
++        elif is_list_like(func):
++            # e.g. .transform(["sum", "min"])
++            func = maybe_mangle_lambdas(func)
++            return self._transform_multiple_funcs(
++                func, *args, engine=engine, engine_kwargs=engine_kwargs, **kwargs
++            )
++        else:
++            return self._transform(
++                func, *args, engine=engine, engine_kwargs=engine_kwargs, **kwargs
++            )
++
++    def _transform_multiple_funcs(
++        self,
++        func: list | dict,
++        *args,
++        engine: str | None = None,
++        engine_kwargs: dict | None = None,
++        **kwargs,
++    ) -> DataFrame:
++        """
++        Handle list-like and dict dispatch for DataFrameGroupBy.transform.
++
++        Parameters
++        ----------
++        func : list or dict
++            - list of str/callable: applied to every non-key column, producing
++              a MultiIndex-column DataFrame (column, func_name).
++            - dict mapping output_name -> str/callable or NamedAgg.
++        """
++        from pandas.core.reshape.concat import concat
++
++        if is_dict_like(func):
++            # Also includes NamedAgg / NamedFunc
++            func = cast("dict", func)
++            results: list[Series] = []
++            for name, agg in func.items():
++                if isinstance(agg, NamedAgg):
++                    column_name = agg.column
++                    agg_func = agg.aggfunc
++                elif isinstance(agg, tuple) and len(agg) == 2:
++                    # plain tuple (column, func) — same semantics as NamedAgg
++                    column_name = agg[0]
++                    agg_func = agg[1]
++                else:
++                    # plain {"col": "sum"} — column IS the key
++                    column_name = name
++                    agg_func = agg
++                result = self._transform_single_column(
++                    column_name,
++                    agg_func,
++                    *args,
++                    engine=engine,
++                    engine_kwargs=engine_kwargs,
++                    **kwargs,
++                )
++                result.name = name
++                results.append(result)
++            return concat(results, axis=1)
++
++        # list path
++        # Apply every func to every non-key column.
++        assert is_list_like(func)
++        results_list: list[Series] = []
++        col_order: list[tuple] = []
++        for column in self._obj_with_exclusions.columns:
++            for agg_func in func:
++                col_result = self._transform_single_column(
++                    column,
++                    agg_func,
++                    *args,
++                    engine=engine,
++                    engine_kwargs=engine_kwargs,
++                    **kwargs,
++                )
++                col_result.name = (column, agg_func)
++                results_list.append(col_result)
++                col_order.append((column, agg_func))
++
++        # Use ignore_index=True then assign MultiIndex — avoids redundant work.
++        output = concat(results_list, ignore_index=True, axis=1)
++        arrays = [list(x) for x in zip(*col_order, strict=False)]
++        output.columns = MultiIndex.from_arrays(arrays)
++        return output
++
++    def _transform_single_column(
++        self,
++        column_name: Hashable,
++        agg_func: Callable | str,
++        *args,
++        engine: str | None = None,
++        engine_kwargs: dict | None = None,
++        **kwargs,
++    ) -> Series:
++        """
++        Apply a single transform function to one column via SeriesGroupBy.
++
++        Parameters
++        ----------
++        column_name : Hashable
++            Column label to select from the grouped DataFrame.
++        agg_func : callable or str
++            Transform function to apply to the selected column.
++        *args
++            Positional arguments to pass to ``agg_func``.
++        engine : str, default None
++            Passed through to ``SeriesGroupBy.transform``.
++        engine_kwargs : dict, default None
++            Passed through to ``SeriesGroupBy.transform``.
++        **kwargs
++            Keyword arguments to pass to ``agg_func``.
++
++        Returns
++        -------
++        Series
++            Transformed Series with the same index as the original DataFrame.
++        """
++        data = self._gotitem(column_name, ndim=1)
++        return data.transform(
++            agg_func, *args, engine=engine, engine_kwargs=engine_kwargs, **kwargs
+         )
+ 
+     def _define_paths(self, func, *args, **kwargs):
+diff --git a/pandas/tests/api/test_api.py b/pandas/tests/api/test_api.py
+index 0069a2729b9b1..2d0b6e0e418c5 100644
+--- a/pandas/tests/api/test_api.py
++++ b/pandas/tests/api/test_api.py
+@@ -101,6 +101,7 @@ class TestPDApi(Base):
+         "Float32Dtype",
+         "Float64Dtype",
+         "NamedAgg",
++        "NamedFunc",
+     ]
+ 
+     # these are already deprecated; awaiting removal
+diff --git a/pandas/tests/groupby/transform/test_transform.py b/pandas/tests/groupby/transform/test_transform.py
+index 4bc0e9fe4917e..cc95da371ab65 100644
+--- a/pandas/tests/groupby/transform/test_transform.py
++++ b/pandas/tests/groupby/transform/test_transform.py
+@@ -20,6 +20,7 @@
+     date_range,
+ )
+ import pandas._testing as tm
++from pandas.core.groupby import NamedAgg
+ from pandas.tests.groupby import get_groupby_method_args
+ 
+ 
+@@ -85,6 +86,110 @@ def demean(arr):
+     tm.assert_frame_equal(result, expected)
+ 
+ 
++def test_transform_with_list_like():
++    # GH#58318
++    df = DataFrame({"col": list("aab"), "val": range(3), "another": range(3)})
++    result = df.groupby("col").transform(["sum", "min"])
++    expected = DataFrame(
++        {
++            ("val", "sum"): [1, 1, 2],
++            ("val", "min"): [0, 0, 2],
++            ("another", "sum"): [1, 1, 2],
++            ("another", "min"): [0, 0, 2],
++        }
++    )
++    expected.columns = MultiIndex.from_tuples(
++        [("val", "sum"), ("val", "min"), ("another", "sum"), ("another", "min")]
++    )
++    tm.assert_frame_equal(result, expected)
++
++
++def test_transform_with_list_like_single_column():
++    # GH#58318 - only one non-key column
++    df = DataFrame({"col": list("aab"), "val": range(3)})
++    result = df.groupby("col").transform(["sum", "min"])
++    expected = DataFrame({("val", "sum"): [1, 1, 2], ("val", "min"): [0, 0, 2]})
++    expected.columns = MultiIndex.from_tuples([("val", "sum"), ("val", "min")])
++    tm.assert_frame_equal(result, expected)
++
++
++def test_transform_with_dict():
++    # GH#58318 - plain {"col": "func"} dict selects specific columns only
++    df = DataFrame({"col": list("aab"), "val": range(3), "another": range(3)})
++    result = df.groupby("col").transform({"val": "sum", "another": "min"})
++    expected = DataFrame({"val": [1, 1, 2], "another": [0, 0, 2]})
++    tm.assert_frame_equal(result, expected)
++
++
++def test_transform_with_dict_subset_columns():
++    # GH#58318 - dict only touches the listed columns (not all non-key cols)
++    df = DataFrame(
++        {"col": list("aab"), "val": range(3), "other": range(3), "extra": range(3)}
++    )
++    result = df.groupby("col").transform({"val": "sum"})
++    expected = DataFrame({"val": [1, 1, 2]})
++    tm.assert_frame_equal(result, expected)
++
++
++def test_transform_with_dict_of_lists_raises():
++    # GH#58318 - dict-of-lists is not yet implemented; should raise clearly
++    df = DataFrame({"col": list("aab"), "val": range(3)})
++    with pytest.raises(NotImplementedError, match="dict of lists"):
++        df.groupby("col").transform({"val": ["sum", "min"]})
++
++
++def test_transform_with_namedagg():
++    # GH#58318 - NamedAgg lets user rename output columns and select source col
++    df = DataFrame({"A": list("aaabbbccc"), "B": range(9), "D": range(9, 18)})
++    result = df.groupby("A").transform(
++        b_min=NamedAgg(column="B", aggfunc="min"),
++        d_sum=NamedAgg(column="D", aggfunc="sum"),
++    )
++    expected = DataFrame(
++        {
++            "b_min": [0, 0, 0, 3, 3, 3, 6, 6, 6],
++            "d_sum": [30, 30, 30, 39, 39, 39, 48, 48, 48],
++        }
++    )
++    tm.assert_frame_equal(result, expected)
++
++
++def test_transform_with_namedagg_same_source_column():
++    # GH#58318 - multiple NamedAgg targeting the same source column
++    df = DataFrame({"A": list("aaabbbccc"), "B": range(9, 18)})
++    result = df.groupby("A").transform(
++        b_min=NamedAgg(column="B", aggfunc="min"),
++        b_max=NamedAgg(column="B", aggfunc="max"),
++    )
++    expected = DataFrame(
++        {
++            "b_min": [9, 9, 9, 12, 12, 12, 15, 15, 15],
++            "b_max": [11, 11, 11, 14, 14, 14, 17, 17, 17],
++        }
++    )
++    tm.assert_frame_equal(result, expected)
++
++
++def test_transform_with_namedagg_plain_tuple():
++    # GH#58318 - plain tuples are accepted just like NamedAgg (namedtuple)
++    df = DataFrame({"A": list("aaabbb"), "B": range(6)})
++    result = df.groupby("A").transform(
++        b_sum=NamedAgg(column="B", aggfunc="sum"),
++    )
++    # Plain tuple equivalent:
++    result2 = df.groupby("A").transform(
++        b_sum=("B", "sum"),
++    )
++    tm.assert_frame_equal(result, result2)
++
++
++def test_transform_series_groupby_list_raises():
++    # GH#58318 - SeriesGroupBy.transform with list not yet implemented
++    g = DataFrame({"col": list("aaabbb"), "val": range(6)}).groupby("col")["val"]
++    with pytest.raises(NotImplementedError, match="SeriesGroupBy"):
++        g.transform(["sum", "min"])
++
++
+ def test_transform_fast():
+     df = DataFrame(
+         {

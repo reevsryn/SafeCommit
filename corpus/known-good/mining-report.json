@@ -1,0 +1,90 @@
+{
+  "criteria": {
+    "recency_days": 730,
+    "max_files": 30,
+    "max_changed_lines": 1500,
+    "per_repo_cap": 15,
+    "gates": [
+      "merged",
+      "merged within 730 days",
+      "human-authored (no bots)",
+      "touches >=1 .py file",
+      "adds import line or dependency requirement",
+      "size <= 1500 changed lines / 30 files",
+      "per-repo cap 15"
+    ]
+  },
+  "repos": {
+    "django/django": {
+      "examined_merged": 26,
+      "rejected_no_import_or_dep": 8,
+      "skipped_not_merged": 14,
+      "kept_new": 12,
+      "rejected_no_python_file": 3,
+      "rejected_too_old": 1,
+      "rejected_too_large": 2
+    },
+    "pandas-dev/pandas": {
+      "examined_merged": 57,
+      "kept_new": 12,
+      "rejected_no_import_or_dep": 33,
+      "skipped_not_merged": 28,
+      "rejected_bot": 6,
+      "rejected_too_large": 1,
+      "rejected_too_old": 1,
+      "rejected_no_python_file": 4
+    },
+    "scikit-learn/scikit-learn": {
+      "examined_merged": 31,
+      "kept_new": 12,
+      "rejected_no_python_file": 11,
+      "skipped_not_merged": 9,
+      "rejected_no_import_or_dep": 8
+    },
+    "pytest-dev/pytest": {
+      "skipped_not_merged": 20,
+      "examined_merged": 50,
+      "kept_new": 12,
+      "rejected_bot": 18,
+      "rejected_no_python_file": 6,
+      "rejected_no_import_or_dep": 12,
+      "rejected_too_old": 2
+    },
+    "aio-libs/aiohttp": {
+      "skipped_not_merged": 21,
+      "examined_merged": 59,
+      "rejected_bot": 31,
+      "rejected_no_import_or_dep": 14,
+      "kept_new": 12,
+      "rejected_no_python_file": 2
+    },
+    "pypa/pip": {
+      "skipped_not_merged": 42,
+      "examined_merged": 45,
+      "rejected_too_large": 5,
+      "rejected_bot": 3,
+      "rejected_no_python_file": 11,
+      "kept_new": 12,
+      "rejected_no_import_or_dep": 14
+    },
+    "psf/black": {
+      "examined_merged": 79,
+      "rejected_no_import_or_dep": 27,
+      "rejected_bot": 23,
+      "kept_new": 12,
+      "skipped_not_merged": 43,
+      "rejected_no_python_file": 15,
+      "rejected_too_old": 2
+    },
+    "encode/httpx": {
+      "skipped_not_merged": 89,
+      "examined_merged": 57,
+      "rejected_no_import_or_dep": 19,
+      "rejected_no_python_file": 18,
+      "rejected_bot": 4,
+      "kept_new": 12,
+      "rejected_too_old": 4
+    }
+  },
+  "updated": "2026-06-11T05:10:49+00:00"
+}

@@ -37,6 +37,9 @@ class Case:
     label: str
     truths: list[Truth] = field(default_factory=list)
     source: dict = field(default_factory=dict)
+    # Human rulings on names a QA pass flagged ({"name", "decision", "reason",
+    # "date"}). `bench verify` respects these instead of re-quarantining.
+    adjudicated: list[dict] = field(default_factory=list)
 
     @property
     def is_clean(self) -> bool:
@@ -83,6 +86,7 @@ def load_corpus(corpus_dir: str | Path) -> list[Case]:
                 label=label,
                 truths=truths,
                 source=row.get("source", {}),
+                adjudicated=row.get("adjudicated", []),
             )
         )
     return cases

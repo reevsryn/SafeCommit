@@ -1,0 +1,1370 @@
+diff --git a/examples/miscellaneous/plot_metadata_routing.py b/examples/miscellaneous/plot_metadata_routing.py
+index f27d8fb2ec527..619680c87f4c0 100644
+--- a/examples/miscellaneous/plot_metadata_routing.py
++++ b/examples/miscellaneous/plot_metadata_routing.py
+@@ -199,18 +199,20 @@ def fit(self, X, y, **fit_params):
+         routed_params = process_routing(self, "fit", **fit_params)
+         # A sub-estimator is fitted and its classes are attributed to the
+         # meta-estimator. Since we call the sub-estimator's fit method, we pass the
+-        # the metadata stored in `routed_params.estimator.fit`.
+-        self.estimator_ = clone(self.estimator).fit(X, y, **routed_params.estimator.fit)
++        # the metadata stored in `routed_params["estimator"]["fit"]`.
++        self.estimator_ = clone(self.estimator).fit(
++            X, y, **routed_params["estimator"]["fit"]
++        )
+         self.classes_ = self.estimator_.classes_
+         return self
+ 
+     def predict(self, X, **predict_params):
+         check_is_fitted(self)
+-        # As in `fit`, we get information on all the metadata that should be routed and
+-        # pass the metadata that is stored in `routed_params.estimator.predict` to the
+-        # sub-estimator's predict method.
++        # As in `fit`, we get information on all the metadata that should be routed
++        # and pass the metadata that is stored in
++        # `routed_params["estimator"]["predict"]` to the sub-estimator's predict method.
+         routed_params = process_routing(self, "predict", **predict_params)
+-        return self.estimator_.predict(X, **routed_params.estimator.predict)
++        return self.estimator_.predict(X, **routed_params["estimator"]["predict"])
+ 
+ 
+ # %%
+@@ -219,8 +221,9 @@ def predict(self, X, **predict_params):
+ # In each method, we use the ``process_routing`` function to construct a
+ # :class:`~utils.Bunch` of the form ``{"object_name": {"method_name": {"metadata":
+ # value}}}`` to pass to the underlying estimator's method. The ``object_name``
+-# (``estimator`` in ``routed_params.estimator.fit``) is the same as the `estimator`
+-# added in the ``get_metadata_routing``. ``process_routing`` also validates the input
++# (``estimator`` in ``routed_params["estimator"]["fit"]``) is the same as the
++# `estimator` added in the ``get_metadata_routing``. ``process_routing`` also validates
++# the input
+ # metadata: it makes sure all given metadata are requested to avoid silent bugs.
+ 
+ # %%
+@@ -376,14 +379,16 @@ def fit(self, X, y, sample_weight, **fit_params):
+         if sample_weight is not None:
+             fit_params["sample_weight"] = sample_weight
+         routed_params = process_routing(self, "fit", **fit_params)
+-        self.estimator_ = clone(self.estimator).fit(X, y, **routed_params.estimator.fit)
++        self.estimator_ = clone(self.estimator).fit(
++            X, y, **routed_params["estimator"]["fit"]
++        )
+         self.classes_ = self.estimator_.classes_
+         return self
+ 
+     def predict(self, X, **predict_params):
+         check_is_fitted(self)
+         routed_params = process_routing(self, "predict", **predict_params)
+-        return self.estimator_.predict(X, **routed_params.estimator.predict)
++        return self.estimator_.predict(X, **routed_params["estimator"]["predict"])
+ 
+ 
+ # %%
+@@ -496,14 +501,14 @@ def fit(self, X, y, **fit_params):
+         routed_params = process_routing(self, "fit", **fit_params)
+ 
+         self.transformer_ = clone(self.transformer).fit(
+-            X, y, **routed_params.transformer.fit
++            X, y, **routed_params["transformer"]["fit"]
+         )
+         X_transformed = self.transformer_.transform(
+-            X, **routed_params.transformer.transform
++            X, **routed_params["transformer"]["transform"]
+         )
+ 
+         self.classifier_ = clone(self.classifier).fit(
+-            X_transformed, y, **routed_params.classifier.fit
++            X_transformed, y, **routed_params["classifier"]["fit"]
+         )
+         return self
+ 
+@@ -511,10 +516,10 @@ def predict(self, X, **predict_params):
+         routed_params = process_routing(self, "predict", **predict_params)
+ 
+         X_transformed = self.transformer_.transform(
+-            X, **routed_params.transformer.transform
++            X, **routed_params["transformer"]["transform"]
+         )
+         return self.classifier_.predict(
+-            X_transformed, **routed_params.classifier.predict
++            X_transformed, **routed_params["classifier"]["predict"]
+         )
+ 
+ 
+@@ -597,7 +602,9 @@ def __init__(self, estimator):
+ 
+     def fit(self, X, y, **fit_params):
+         routed_params = process_routing(self, "fit", **fit_params)
+-        self.estimator_ = clone(self.estimator).fit(X, y, **routed_params.estimator.fit)
++        self.estimator_ = clone(self.estimator).fit(
++            X, y, **routed_params["estimator"]["fit"]
++        )
+ 
+     def get_metadata_routing(self):
+         router = MetadataRouter(owner=self).add(
+@@ -633,7 +640,9 @@ def fit(self, X, y, sample_weight=None, **fit_params):
+             self, "fit", sample_weight=sample_weight, **fit_params
+         )
+         check_metadata(self, sample_weight=sample_weight)
+-        self.estimator_ = clone(self.estimator).fit(X, y, **routed_params.estimator.fit)
++        self.estimator_ = clone(self.estimator).fit(
++            X, y, **routed_params["estimator"]["fit"]
++        )
+ 
+     def get_metadata_routing(self):
+         router = (
+diff --git a/sklearn/calibration.py b/sklearn/calibration.py
+index f1b142720329c..7ccdfca720f11 100644
+--- a/sklearn/calibration.py
++++ b/sklearn/calibration.py
+@@ -31,7 +31,7 @@
+ from sklearn.model_selection import LeaveOneOut, check_cv, cross_val_predict
+ from sklearn.preprocessing import LabelEncoder, label_binarize
+ from sklearn.svm import LinearSVC
+-from sklearn.utils import Bunch, _safe_indexing, column_or_1d, get_tags, indexable
++from sklearn.utils import _safe_indexing, column_or_1d, get_tags, indexable
+ from sklearn.utils._array_api import (
+     _is_numpy_namespace,
+     get_namespace,
+@@ -53,6 +53,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _routing_enabled,
+     process_routing,
+ )
+@@ -402,11 +403,12 @@ def fit(self, X, y, sample_weight=None, **fit_params):
+                     " Be warned that the result of the calibration is likely to be"
+                     " incorrect."
+                 )
+-            routed_params = Bunch()
+-            routed_params.splitter = Bunch(split={})  # no routing for splitter
+-            routed_params.estimator = Bunch(fit=fit_params)
++            fit_kwargs = dict(fit_params)
+             if sample_weight is not None and supports_sw:
+-                routed_params.estimator.fit["sample_weight"] = sample_weight
++                fit_kwargs["sample_weight"] = sample_weight
++            routed_params = _manual_routing(
++                {"splitter": {}, "estimator": {"fit": fit_kwargs}}
++            )
+ 
+         xp, is_array_api, device_ = get_namespace_and_device(X)
+         if is_array_api:
+diff --git a/sklearn/compose/_column_transformer.py b/sklearn/compose/_column_transformer.py
+index 4124b081c3f5b..8b9b490bd96b7 100644
+--- a/sklearn/compose/_column_transformer.py
++++ b/sklearn/compose/_column_transformer.py
+@@ -25,7 +25,6 @@
+     _get_column_indices,
+     _safe_indexing,
+ )
+-from sklearn.utils._metadata_requests import METHODS
+ from sklearn.utils._param_validation import HasMethods, Hidden, Interval, StrOptions
+ from sklearn.utils._repr_html.estimator import _VisualBlock
+ from sklearn.utils._set_output import (
+@@ -38,7 +37,6 @@
+     MetadataRouter,
+     MethodMapping,
+     _raise_for_params,
+-    _routing_enabled,
+     process_routing,
+ )
+ from sklearn.utils.metaestimators import _BaseComposition
+@@ -971,10 +969,10 @@ def fit_transform(self, X, y=None, **params):
+         self._validate_column_callables(X)
+         self._validate_remainder(X)
+ 
+-        if _routing_enabled():
+-            routed_params = process_routing(self, "fit_transform", **params)
+-        else:
+-            routed_params = self._get_empty_routing()
++        # ``params`` is empty unless routing is enabled (guaranteed by
++        # ``_raise_for_params`` above), so the call below produces a properly
++        # shaped empty routing in the disabled case.
++        routed_params = process_routing(self, "fit_transform", **params)
+ 
+         result = self._call_func_on_transformers(
+             X,
+@@ -1071,10 +1069,7 @@ def transform(self, X, **params):
+             # check that n_features_in_ is consistent
+             _check_n_features(self, X, reset=False)
+ 
+-        if _routing_enabled():
+-            routed_params = process_routing(self, "transform", **params)
+-        else:
+-            routed_params = self._get_empty_routing()
++        routed_params = process_routing(self, "transform", **params)
+ 
+         Xs = self._call_func_on_transformers(
+             X,
+@@ -1207,26 +1202,6 @@ def __getitem__(self, key):
+         except KeyError as e:
+             raise KeyError(f"'{key}' is not a valid transformer name") from e
+ 
+-    def _get_empty_routing(self):
+-        """Return empty routing.
+-
+-        Used while routing can be disabled.
+-
+-        TODO: Remove when ``set_config(enable_metadata_routing=False)`` is no
+-        more an option.
+-        """
+-        return Bunch(
+-            **{
+-                name: Bunch(**{method: {} for method in METHODS})
+-                for name, step, _, _ in self._iter(
+-                    fitted=False,
+-                    column_as_labels=False,
+-                    skip_drop=True,
+-                    skip_empty_columns=True,
+-                )
+-            }
+-        )
+-
+     def get_metadata_routing(self):
+         """Get metadata routing of this object.
+ 
+diff --git a/sklearn/compose/_target.py b/sklearn/compose/_target.py
+index 63a8d252c7075..afdfe9c40237f 100644
+--- a/sklearn/compose/_target.py
++++ b/sklearn/compose/_target.py
+@@ -9,10 +9,11 @@
+ from sklearn.exceptions import NotFittedError
+ from sklearn.linear_model import LinearRegression
+ from sklearn.preprocessing import FunctionTransformer
+-from sklearn.utils import Bunch, _safe_indexing, check_array
++from sklearn.utils import _safe_indexing, check_array
+ from sklearn.utils._metadata_requests import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _routing_enabled,
+     process_routing,
+ )
+@@ -289,7 +290,7 @@ def fit(self, X, y, **fit_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+-            routed_params = Bunch(regressor=Bunch(fit=fit_params))
++            routed_params = _manual_routing({"regressor": {"fit": fit_params}})
+ 
+         self.regressor_.fit(X, y_trans, **routed_params.regressor.fit)
+ 
+@@ -329,7 +330,7 @@ def predict(self, X, **predict_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "predict", **predict_params)
+         else:
+-            routed_params = Bunch(regressor=Bunch(predict=predict_params))
++            routed_params = _manual_routing({"regressor": {"predict": predict_params}})
+ 
+         pred = self.regressor_.predict(X, **routed_params.regressor.predict)
+         if pred.ndim == 1:
+diff --git a/sklearn/covariance/_graph_lasso.py b/sklearn/covariance/_graph_lasso.py
+index aa114cb4ba195..21bc3392e4f75 100644
+--- a/sklearn/covariance/_graph_lasso.py
++++ b/sklearn/covariance/_graph_lasso.py
+@@ -22,11 +22,11 @@
+ from sklearn.linear_model import _cd_fast as cd_fast  # type: ignore[attr-defined]
+ from sklearn.linear_model import lars_path_gram
+ from sklearn.model_selection import check_cv, cross_val_score
+-from sklearn.utils import Bunch
+ from sklearn.utils._param_validation import Interval, StrOptions, validate_params
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -1010,7 +1010,7 @@ def fit(self, X, y=None, **params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **params)
+         else:
+-            routed_params = Bunch(splitter=Bunch(split={}))
++            routed_params = _manual_routing({"splitter": {}})
+ 
+         t0 = time.time()
+         for i in range(n_refinements):
+diff --git a/sklearn/ensemble/_bagging.py b/sklearn/ensemble/_bagging.py
+index 62f4f9b9718c2..ac2104bd8a421 100644
+--- a/sklearn/ensemble/_bagging.py
++++ b/sklearn/ensemble/_bagging.py
+@@ -17,13 +17,14 @@
+ from sklearn.ensemble._bootstrap import _get_n_samples_bootstrap
+ from sklearn.metrics import accuracy_score, r2_score
+ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+-from sklearn.utils import Bunch, _safe_indexing, check_random_state, column_or_1d
++from sklearn.utils import _safe_indexing, check_random_state, column_or_1d
+ from sklearn.utils._mask import indices_to_mask
+ from sklearn.utils._param_validation import HasMethods, Interval, RealNotInt
+ from sklearn.utils._tags import get_tags
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     get_routing_for_object,
+@@ -454,8 +455,7 @@ def _fit(
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+-            routed_params = Bunch()
+-            routed_params.estimator = Bunch(fit=fit_params)
++            routed_params = _manual_routing({"estimator": {"fit": fit_params}})
+ 
+         if max_depth is not None:
+             self.estimator_.max_depth = max_depth
+@@ -1017,8 +1017,7 @@ def predict_proba(self, X, **params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "predict_proba", **params)
+         else:
+-            routed_params = Bunch()
+-            routed_params.estimator = Bunch(predict_proba=Bunch())
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         # Parallel loop
+         n_jobs, _, starts = _partition_estimators(self.n_estimators, self.n_jobs)
+@@ -1092,8 +1091,7 @@ def predict_log_proba(self, X, **params):
+             if _routing_enabled():
+                 routed_params = process_routing(self, "predict_log_proba", **params)
+             else:
+-                routed_params = Bunch()
+-                routed_params.estimator = Bunch(predict_log_proba=Bunch())
++                routed_params = _manual_routing({"estimator": {}})
+ 
+             # Parallel loop
+             n_jobs, _, starts = _partition_estimators(self.n_estimators, self.n_jobs)
+@@ -1170,8 +1168,7 @@ def decision_function(self, X, **params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "decision_function", **params)
+         else:
+-            routed_params = Bunch()
+-            routed_params.estimator = Bunch(decision_function=Bunch())
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         # Parallel loop
+         n_jobs, _, starts = _partition_estimators(self.n_estimators, self.n_jobs)
+@@ -1428,8 +1425,7 @@ def predict(self, X, **params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "predict", **params)
+         else:
+-            routed_params = Bunch()
+-            routed_params.estimator = Bunch(predict=Bunch())
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         # Parallel loop
+         n_jobs, _, starts = _partition_estimators(self.n_estimators, self.n_jobs)
+diff --git a/sklearn/ensemble/_stacking.py b/sklearn/ensemble/_stacking.py
+index c7ad732c6fa65..e46facecdf8fd 100644
+--- a/sklearn/ensemble/_stacking.py
++++ b/sklearn/ensemble/_stacking.py
+@@ -30,6 +30,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -190,13 +191,12 @@ def fit(self, X, y, **fit_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+-            routed_params = Bunch()
+-            for name in names:
+-                routed_params[name] = Bunch(fit={})
+-                if "sample_weight" in fit_params:
+-                    routed_params[name].fit["sample_weight"] = fit_params[
+-                        "sample_weight"
+-                    ]
++            sw = (
++                {"sample_weight": fit_params["sample_weight"]}
++                if "sample_weight" in fit_params
++                else {}
++            )
++            routed_params = _manual_routing({name: {"fit": sw} for name in names})
+ 
+         if self.cv == "prefit":
+             self.estimators_ = []
+@@ -743,9 +743,9 @@ def predict(self, X, **predict_params):
+             routed_params = process_routing(self, "predict", **predict_params)
+         else:
+             # TODO(SLEP6): remove when metadata routing cannot be disabled.
+-            routed_params = Bunch()
+-            routed_params.final_estimator_ = Bunch(predict={})
+-            routed_params.final_estimator_.predict = predict_params
++            routed_params = _manual_routing(
++                {"final_estimator_": {"predict": predict_params}}
++            )
+ 
+         y_pred = super().predict(X, **routed_params.final_estimator_["predict"])
+         if isinstance(self._label_encoder, list):
+@@ -1127,9 +1127,9 @@ def predict(self, X, **predict_params):
+             routed_params = process_routing(self, "predict", **predict_params)
+         else:
+             # TODO(SLEP6): remove when metadata routing cannot be disabled.
+-            routed_params = Bunch()
+-            routed_params.final_estimator_ = Bunch(predict={})
+-            routed_params.final_estimator_.predict = predict_params
++            routed_params = _manual_routing(
++                {"final_estimator_": {"predict": predict_params}}
++            )
+ 
+         y_pred = super().predict(X, **routed_params.final_estimator_["predict"])
+ 
+diff --git a/sklearn/ensemble/_voting.py b/sklearn/ensemble/_voting.py
+index b53eb1cc01d41..bf26d85d85eac 100644
+--- a/sklearn/ensemble/_voting.py
++++ b/sklearn/ensemble/_voting.py
+@@ -30,6 +30,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -88,13 +89,12 @@ def fit(self, X, y, **fit_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+-            routed_params = Bunch()
+-            for name in names:
+-                routed_params[name] = Bunch(fit={})
+-                if "sample_weight" in fit_params:
+-                    routed_params[name].fit["sample_weight"] = fit_params[
+-                        "sample_weight"
+-                    ]
++            sw = (
++                {"sample_weight": fit_params["sample_weight"]}
++                if "sample_weight" in fit_params
++                else {}
++            )
++            routed_params = _manual_routing({name: {"fit": sw} for name in names})
+ 
+         self.estimators_ = Parallel(n_jobs=self.n_jobs)(
+             delayed(_fit_single_estimator)(
+diff --git a/sklearn/feature_selection/_rfe.py b/sklearn/feature_selection/_rfe.py
+index 011dbc7b515f1..2f35514b8e2de 100644
+--- a/sklearn/feature_selection/_rfe.py
++++ b/sklearn/feature_selection/_rfe.py
+@@ -21,10 +21,11 @@
+ from sklearn.metrics import get_scorer
+ from sklearn.model_selection import check_cv
+ from sklearn.model_selection._validation import _score
+-from sklearn.utils import Bunch, metadata_routing
++from sklearn.utils import metadata_routing
+ from sklearn.utils._metadata_requests import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -271,7 +272,7 @@ def fit(self, X, y, **fit_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(fit=fit_params))
++            routed_params = _manual_routing({"estimator": {"fit": fit_params}})
+ 
+         return self._fit(X, y, **routed_params.estimator.fit)
+ 
+@@ -405,7 +406,7 @@ def predict(self, X, **predict_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "predict", **predict_params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(predict={}))
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         return self.estimator_.predict(
+             self.transform(X), **routed_params.estimator.predict
+@@ -446,7 +447,7 @@ def score(self, X, y, **score_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "score", **score_params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(score=score_params))
++            routed_params = _manual_routing({"estimator": {"score": score_params}})
+ 
+         return self.estimator_.score(
+             self.transform(X), y, **routed_params.estimator.score
+@@ -840,10 +841,12 @@ def fit(self, X, y, **params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **params)
+         else:
+-            routed_params = Bunch(
+-                estimator=Bunch(fit={}),
+-                splitter=Bunch(split={"groups": params.pop("groups", None)}),
+-                scorer=Bunch(score={}),
++            routed_params = _manual_routing(
++                {
++                    "estimator": {},
++                    "splitter": {"split": {"groups": params.pop("groups", None)}},
++                    "scorer": {},
++                }
+             )
+ 
+         # Initialization
+@@ -966,8 +969,7 @@ def score(self, X, y, **score_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "score", **score_params)
+         else:
+-            routed_params = Bunch()
+-            routed_params.scorer = Bunch(score={})
++            routed_params = _manual_routing({"scorer": {}})
+ 
+         return scoring(self, X, y, **routed_params.scorer.score)
+ 
+@@ -988,7 +990,9 @@ def get_metadata_routing(self):
+         router = MetadataRouter(owner=self)
+         router.add(
+             estimator=self.estimator,
+-            method_mapping=MethodMapping().add(caller="fit", callee="fit"),
++            method_mapping=MethodMapping()
++            .add(caller="fit", callee="fit")
++            .add(caller="predict", callee="predict"),
+         )
+         router.add(
+             splitter=check_cv(self.cv),
+diff --git a/sklearn/linear_model/_coordinate_descent.py b/sklearn/linear_model/_coordinate_descent.py
+index afbbc67308d6c..af5a7d3b044a4 100644
+--- a/sklearn/linear_model/_coordinate_descent.py
++++ b/sklearn/linear_model/_coordinate_descent.py
+@@ -21,7 +21,7 @@
+     _pre_fit,
+ )
+ from sklearn.model_selection import check_cv
+-from sklearn.utils import Bunch, check_array, check_scalar, metadata_routing
++from sklearn.utils import check_array, check_scalar, metadata_routing
+ from sklearn.utils._metadata_requests import (
+     MetadataRouter,
+     MethodMapping,
+@@ -35,7 +35,11 @@
+ )
+ from sklearn.utils._sparse import _align_api_if_sparse
+ from sklearn.utils.extmath import safe_sparse_dot
+-from sklearn.utils.metadata_routing import _routing_enabled, process_routing
++from sklearn.utils.metadata_routing import (
++    _manual_routing,
++    _routing_enabled,
++    process_routing,
++)
+ from sklearn.utils.parallel import Parallel, delayed
+ from sklearn.utils.sparsefuncs import mean_variance_axis
+ from sklearn.utils.validation import (
+@@ -1911,8 +1915,7 @@ def fit(self, X, y, sample_weight=None, **params):
+                 **params,
+             )
+         else:
+-            routed_params = Bunch()
+-            routed_params.splitter = Bunch(split=Bunch())
++            routed_params = _manual_routing({"splitter": {}})
+ 
+         # Compute path for all folds and compute MSE to get the best alpha
+         folds = list(cv.split(X, y, **routed_params.splitter.split))
+diff --git a/sklearn/linear_model/_least_angle.py b/sklearn/linear_model/_least_angle.py
+index c9c11f2abd543..aaf224acb1b90 100644
+--- a/sklearn/linear_model/_least_angle.py
++++ b/sklearn/linear_model/_least_angle.py
+@@ -25,10 +25,11 @@
+ from sklearn.model_selection import check_cv
+ 
+ # mypy error: Module 'sklearn.utils' has no attribute 'arrayfuncs'
+-from sklearn.utils import Bunch, arrayfuncs, as_float_array, check_random_state
++from sklearn.utils import arrayfuncs, as_float_array, check_random_state
+ from sklearn.utils._metadata_requests import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -1737,7 +1738,7 @@ def fit(self, X, y, **params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **params)
+         else:
+-            routed_params = Bunch(splitter=Bunch(split={}))
++            routed_params = _manual_routing({"splitter": {}})
+ 
+         # As we use cross-validation, the Gram matrix is not precomputed here
+         Gram = self.precompute
+diff --git a/sklearn/linear_model/_logistic.py b/sklearn/linear_model/_logistic.py
+index 70d0bae63b2f0..190fc18e0b747 100644
+--- a/sklearn/linear_model/_logistic.py
++++ b/sklearn/linear_model/_logistic.py
+@@ -34,7 +34,6 @@
+ from sklearn.preprocessing import LabelEncoder
+ from sklearn.svm._base import _fit_liblinear
+ from sklearn.utils import (
+-    Bunch,
+     check_array,
+     check_consistent_length,
+     check_random_state,
+@@ -56,6 +55,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -2236,11 +2236,12 @@ def fit(self, X, y, sample_weight=None, **params):
+                 **params,
+             )
+         else:
+-            routed_params = Bunch()
+-            routed_params.splitter = Bunch(split={})
+-            routed_params.scorer = Bunch(score=params)
++            score_kwargs = dict(params)
+             if sample_weight is not None:
+-                routed_params.scorer.score["sample_weight"] = sample_weight
++                score_kwargs["sample_weight"] = sample_weight
++            routed_params = _manual_routing(
++                {"splitter": {}, "scorer": {"score": score_kwargs}}
++            )
+ 
+         # init cross-validation generator
+         cv = check_cv(self.cv, y, classifier=True)
+@@ -2525,12 +2526,12 @@ def score(self, X, y, *, sample_weight=None, **score_params):
+                 **score_params,
+             )
+         else:
+-            routed_params = Bunch()
+-            routed_params.scorer = Bunch(score={})
+-            if score_params.get("sample_weight") is not None:
+-                routed_params.scorer.score["sample_weight"] = score_params[
+-                    "sample_weight"
+-                ]
++            sw = (
++                {"sample_weight": score_params["sample_weight"]}
++                if score_params.get("sample_weight") is not None
++                else {}
++            )
++            routed_params = _manual_routing({"scorer": {"score": sw}})
+ 
+         return scoring(
+             self,
+diff --git a/sklearn/linear_model/_omp.py b/sklearn/linear_model/_omp.py
+index e59fce98316bf..b3a8112d3f3c8 100644
+--- a/sklearn/linear_model/_omp.py
++++ b/sklearn/linear_model/_omp.py
+@@ -14,11 +14,12 @@
+ from sklearn.base import RegressorMixin, _fit_context
+ from sklearn.linear_model._base import LinearModel, MultiOutputLinearModel, _pre_fit
+ from sklearn.model_selection import check_cv
+-from sklearn.utils import Bunch, as_float_array, check_array
++from sklearn.utils import as_float_array, check_array
+ from sklearn.utils._param_validation import Interval, StrOptions, validate_params
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -1070,8 +1071,7 @@ def fit(self, X, y, **fit_params):
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+             # TODO(SLEP6): remove when metadata routing cannot be disabled.
+-            routed_params = Bunch()
+-            routed_params.splitter = Bunch(split={})
++            routed_params = _manual_routing({"splitter": {}})
+         max_iter = (
+             min(max(int(0.1 * X.shape[1]), 5), X.shape[1])
+             if not self.max_iter
+diff --git a/sklearn/linear_model/_ransac.py b/sklearn/linear_model/_ransac.py
+index b1e148b488392..3c6e3ca11d6f5 100644
+--- a/sklearn/linear_model/_ransac.py
++++ b/sklearn/linear_model/_ransac.py
+@@ -17,7 +17,6 @@
+ from sklearn.exceptions import ConvergenceWarning
+ from sklearn.linear_model._base import LinearRegression
+ from sklearn.utils import check_consistent_length, check_random_state, get_tags
+-from sklearn.utils._bunch import Bunch
+ from sklearn.utils._param_validation import (
+     HasMethods,
+     Interval,
+@@ -28,6 +27,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -438,11 +438,12 @@ def fit(self, X, y, sample_weight=None, **fit_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+-            routed_params = Bunch()
+-            routed_params.estimator = Bunch(fit={}, predict={}, score={})
+-            if sample_weight is not None:
+-                sample_weight = _check_sample_weight(sample_weight, X)
+-                routed_params.estimator.fit = {"sample_weight": sample_weight}
++            sw = (
++                {"sample_weight": _check_sample_weight(sample_weight, X)}
++                if sample_weight is not None
++                else {}
++            )
++            routed_params = _manual_routing({"estimator": {"fit": sw}})
+ 
+         n_inliers_best = 1
+         score_best = -np.inf
+diff --git a/sklearn/linear_model/_ridge.py b/sklearn/linear_model/_ridge.py
+index 488bdc1518d9a..857c66ddbdae2 100644
+--- a/sklearn/linear_model/_ridge.py
++++ b/sklearn/linear_model/_ridge.py
+@@ -34,7 +34,6 @@
+ from sklearn.model_selection import GridSearchCV
+ from sklearn.preprocessing import LabelBinarizer
+ from sklearn.utils import (
+-    Bunch,
+     check_array,
+     check_consistent_length,
+     check_scalar,
+@@ -56,6 +55,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -2538,9 +2538,12 @@ def fit(self, X, y, sample_weight=None, **params):
+                     **params,
+                 )
+             else:
+-                routed_params = Bunch(scorer=Bunch(score={}))
+-                if sample_weight is not None:
+-                    routed_params.scorer.score["sample_weight"] = sample_weight
++                sw = (
++                    {"sample_weight": sample_weight}
++                    if sample_weight is not None
++                    else {}
++                )
++                routed_params = _manual_routing({"scorer": {"score": sw}})
+ 
+             # reset `scorer` variable to original user-intend if no scoring is passed
+             if self.scoring is None:
+diff --git a/sklearn/metrics/_scorer.py b/sklearn/metrics/_scorer.py
+index 284e4c9198f39..c91081d1de3ab 100644
+--- a/sklearn/metrics/_scorer.py
++++ b/sklearn/metrics/_scorer.py
+@@ -68,7 +68,6 @@
+     rand_score,
+     v_measure_score,
+ )
+-from sklearn.utils import Bunch
+ from sklearn.utils._metadata_requests import MethodMetadataRequest
+ from sklearn.utils._param_validation import (
+     HasMethods,
+@@ -80,6 +79,7 @@
+     MetadataRequest,
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _MetadataRequester,
+     _raise_for_params,
+     _routing_enabled,
+@@ -151,15 +151,22 @@ def __call__(self, estimator, *args, **kwargs):
+             common_kwargs = {
+                 arg: value for arg, value in kwargs.items() if arg != "sample_weight"
+             }
+-            routed_params = Bunch(
+-                **{name: Bunch(score=common_kwargs.copy()) for name in self._scorers}
++            sw = kwargs.get("sample_weight")
++            routed_params = _manual_routing(
++                {
++                    name: {
++                        "score": {
++                            **common_kwargs,
++                            **(
++                                {"sample_weight": sw}
++                                if sw is not None and scorer._accept_sample_weight()
++                                else {}
++                            ),
++                        }
++                    }
++                    for name, scorer in self._scorers.items()
++                }
+             )
+-            if "sample_weight" in kwargs:
+-                for name, scorer in self._scorers.items():
+-                    if scorer._accept_sample_weight():
+-                        routed_params[name].score["sample_weight"] = kwargs[
+-                            "sample_weight"
+-                        ]
+ 
+         for name, scorer in self._scorers.items():
+             try:
+diff --git a/sklearn/model_selection/_search.py b/sklearn/model_selection/_search.py
+index 05344a677de4a..825cda56c57f2 100644
+--- a/sklearn/model_selection/_search.py
++++ b/sklearn/model_selection/_search.py
+@@ -46,7 +46,7 @@
+     _normalize_score_results,
+     _warn_or_raise_about_fit_failures,
+ )
+-from sklearn.utils import Bunch, check_random_state
++from sklearn.utils import check_random_state
+ from sklearn.utils._array_api import xpx
+ from sklearn.utils._param_validation import HasMethods, Interval, StrOptions
+ from sklearn.utils._repr_html.estimator import _VisualBlock
+@@ -54,6 +54,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -939,19 +940,21 @@ def _get_routed_params_for_fit(self, params):
+         else:
+             params = params.copy()
+             groups = params.pop("groups", None)
+-            routed_params = Bunch(
+-                estimator=Bunch(fit=params),
+-                splitter=Bunch(split={"groups": groups}),
+-                scorer=Bunch(score={}),
+-            )
+-            # NOTE: sample_weight is forwarded to the scorer if sample_weight
+-            # is not None and scorers accept sample_weight. For _MultimetricScorer,
+-            # sample_weight is forwarded if any scorer accepts sample_weight
++            # sample_weight is forwarded to the scorer if it's set and the scorer
++            # accepts it (for _MultimetricScorer, if any scorer accepts it).
++            score_kwargs = {}
+             if (
+                 params.get("sample_weight") is not None
+                 and self._check_scorers_accept_sample_weight()
+             ):
+-                routed_params.scorer.score["sample_weight"] = params["sample_weight"]
++                score_kwargs["sample_weight"] = params["sample_weight"]
++            routed_params = _manual_routing(
++                {
++                    "estimator": {"fit": params},
++                    "splitter": {"split": {"groups": groups}},
++                    "scorer": {"score": score_kwargs},
++                }
++            )
+         return routed_params
+ 
+     @_fit_context(
+diff --git a/sklearn/model_selection/_validation.py b/sklearn/model_selection/_validation.py
+index dc10bd803ecb6..1690228bb01b6 100644
+--- a/sklearn/model_selection/_validation.py
++++ b/sklearn/model_selection/_validation.py
+@@ -25,7 +25,7 @@
+ from sklearn.metrics._scorer import _MultimetricScorer
+ from sklearn.model_selection._split import check_cv
+ from sklearn.preprocessing import LabelEncoder
+-from sklearn.utils import Bunch, _safe_indexing, check_random_state, indexable
++from sklearn.utils import _safe_indexing, check_random_state, indexable
+ from sklearn.utils._array_api import (
+     device,
+     get_namespace,
+@@ -42,6 +42,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _routing_enabled,
+     process_routing,
+ )
+@@ -356,10 +357,13 @@ def cross_validate(
+                 routed_params=e.routed_params,
+             )
+     else:
+-        routed_params = Bunch()
+-        routed_params.splitter = Bunch(split={"groups": groups})
+-        routed_params.estimator = Bunch(fit=params)
+-        routed_params.scorer = Bunch(score={})
++        routed_params = _manual_routing(
++            {
++                "splitter": {"split": {"groups": groups}},
++                "estimator": {"fit": params},
++                "scorer": {},
++            }
++        )
+ 
+     indices = cv.split(X, y, **routed_params.splitter.split)
+     if return_indices:
+@@ -1203,9 +1207,12 @@ def cross_val_predict(
+                 routed_params=e.routed_params,
+             )
+     else:
+-        routed_params = Bunch()
+-        routed_params.splitter = Bunch(split={"groups": groups})
+-        routed_params.estimator = Bunch(fit=params)
++        routed_params = _manual_routing(
++            {
++                "splitter": {"split": {"groups": groups}},
++                "estimator": {"fit": params},
++            }
++        )
+ 
+     cv = check_cv(cv, y, classifier=is_classifier(estimator))
+     splits = list(cv.split(X, y, **routed_params.splitter.split))
+@@ -1676,10 +1683,13 @@ def permutation_test_score(
+             )
+ 
+     else:
+-        routed_params = Bunch()
+-        routed_params.estimator = Bunch(fit=params)
+-        routed_params.splitter = Bunch(split={"groups": groups})
+-        routed_params.scorer = Bunch(score={})
++        routed_params = _manual_routing(
++            {
++                "estimator": {"fit": params},
++                "splitter": {"split": {"groups": groups}},
++                "scorer": {},
++            }
++        )
+ 
+     # We clone the estimator to make sure that all the folds are
+     # independent, and that it is pickle-able.
+@@ -2012,10 +2022,13 @@ def learning_curve(
+             )
+ 
+     else:
+-        routed_params = Bunch()
+-        routed_params.estimator = Bunch(fit=params, partial_fit=params)
+-        routed_params.splitter = Bunch(split={"groups": groups})
+-        routed_params.scorer = Bunch(score={})
++        routed_params = _manual_routing(
++            {
++                "estimator": {"fit": params, "partial_fit": params},
++                "splitter": {"split": {"groups": groups}},
++                "scorer": {},
++            }
++        )
+ 
+     # Store cv as list as we will be iterating over the list multiple times
+     cv_iter = list(cv.split(X, y, **routed_params.splitter.split))
+@@ -2464,10 +2477,13 @@ def validation_curve(
+             )
+ 
+     else:
+-        routed_params = Bunch()
+-        routed_params.estimator = Bunch(fit=params)
+-        routed_params.splitter = Bunch(split={"groups": groups})
+-        routed_params.scorer = Bunch(score={})
++        routed_params = _manual_routing(
++            {
++                "estimator": {"fit": params},
++                "splitter": {"split": {"groups": groups}},
++                "scorer": {},
++            }
++        )
+ 
+     parallel = Parallel(n_jobs=n_jobs, pre_dispatch=pre_dispatch, verbose=verbose)
+     results = parallel(
+diff --git a/sklearn/multioutput.py b/sklearn/multioutput.py
+index 18b2ddcc3e1a7..996de8b0c6ccb 100644
+--- a/sklearn/multioutput.py
++++ b/sklearn/multioutput.py
+@@ -24,7 +24,7 @@
+     is_classifier,
+ )
+ from sklearn.model_selection import cross_val_predict
+-from sklearn.utils import Bunch, check_random_state, get_tags
++from sklearn.utils import check_random_state, get_tags
+ from sklearn.utils._param_validation import HasMethods, StrOptions
+ from sklearn.utils._response import _get_response_values
+ from sklearn.utils._sparse import _align_api_if_sparse
+@@ -32,6 +32,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -179,12 +180,8 @@ def partial_fit(self, X, y, classes=None, sample_weight=None, **partial_fit_para
+                     "Underlying estimator does not support sample weights."
+                 )
+ 
+-            if sample_weight is not None:
+-                routed_params = Bunch(
+-                    estimator=Bunch(partial_fit=Bunch(sample_weight=sample_weight))
+-                )
+-            else:
+-                routed_params = Bunch(estimator=Bunch(partial_fit=Bunch()))
++            sw = {"sample_weight": sample_weight} if sample_weight is not None else {}
++            routed_params = _manual_routing({"estimator": {"partial_fit": sw}})
+ 
+         self.estimators_ = Parallel(n_jobs=self.n_jobs)(
+             delayed(_partial_fit_estimator)(
+@@ -266,10 +263,10 @@ def fit(self, X, y, sample_weight=None, **fit_params):
+                     "Underlying estimator does not support sample weights."
+                 )
+ 
+-            fit_params_validated = _check_method_params(X, params=fit_params)
+-            routed_params = Bunch(estimator=Bunch(fit=fit_params_validated))
++            fit_kwargs = dict(_check_method_params(X, params=fit_params))
+             if sample_weight is not None:
+-                routed_params.estimator.fit["sample_weight"] = sample_weight
++                fit_kwargs["sample_weight"] = sample_weight
++            routed_params = _manual_routing({"estimator": {"fit": fit_kwargs}})
+ 
+         self.estimators_ = Parallel(n_jobs=self.n_jobs)(
+             delayed(_fit_estimator)(
+@@ -776,7 +773,7 @@ def fit(self, X, Y, **fit_params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(fit=fit_params))
++            routed_params = _manual_routing({"estimator": {"fit": fit_params}})
+ 
+         if hasattr(self, "chain_method"):
+             chain_method = _check_response_method(
+diff --git a/sklearn/pipeline.py b/sklearn/pipeline.py
+index 69107814e6072..f87aec9c8f497 100644
+--- a/sklearn/pipeline.py
++++ b/sklearn/pipeline.py
+@@ -16,7 +16,6 @@
+ from sklearn.preprocessing import FunctionTransformer
+ from sklearn.utils import Bunch
+ from sklearn.utils._array_api import get_namespace, get_namespace_and_device
+-from sklearn.utils._metadata_requests import METHODS
+ from sklearn.utils._param_validation import HasMethods, Hidden
+ from sklearn.utils._repr_html.estimator import _VisualBlock
+ from sklearn.utils._set_output import _get_container_adapter, _safe_set_output
+@@ -25,6 +24,7 @@
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     get_routing_for_object,
+@@ -411,32 +411,28 @@ def _log_message(self, step_idx):
+ 
+     def _check_method_params(self, method, props, **kwargs):
+         if _routing_enabled():
+-            routed_params = process_routing(self, method, **props, **kwargs)
+-            return routed_params
+-        else:
+-            fit_params_steps = Bunch(
+-                **{
+-                    name: Bunch(**{method: {} for method in METHODS})
+-                    for name, step in self.steps
+-                    if step is not None
+-                }
+-            )
+-            for pname, pval in props.items():
+-                if "__" not in pname:
+-                    raise ValueError(
+-                        "Pipeline.fit does not accept the {} parameter. "
+-                        "You can pass parameters to specific steps of your "
+-                        "pipeline using the stepname__parameter format, e.g. "
+-                        "`Pipeline.fit(X, y, logisticregression__sample_weight"
+-                        "=sample_weight)`.".format(pname)
+-                    )
+-                step, param = pname.split("__", 1)
+-                fit_params_steps[step]["fit"][param] = pval
+-                # without metadata routing, fit_transform and fit_predict
+-                # get all the same params and pass it to the last fit.
+-                fit_params_steps[step]["fit_transform"][param] = pval
+-                fit_params_steps[step]["fit_predict"][param] = pval
+-            return fit_params_steps
++            return process_routing(self, method, **props, **kwargs)
++        # Routing disabled: fit_params for a step are forwarded to whichever
++        # of fit/fit_transform/fit_predict the step's caller invokes.
++        per_step = {
++            name: {"fit": {}, "fit_transform": {}, "fit_predict": {}}
++            for name, step in self.steps
++            if step is not None
++        }
++        for pname, pval in props.items():
++            if "__" not in pname:
++                raise ValueError(
++                    "Pipeline.fit does not accept the {} parameter. "
++                    "You can pass parameters to specific steps of your "
++                    "pipeline using the stepname__parameter format, e.g. "
++                    "`Pipeline.fit(X, y, logisticregression__sample_weight"
++                    "=sample_weight)`.".format(pname)
++                )
++            step, param = pname.split("__", 1)
++            per_step[step]["fit"][param] = pval
++            per_step[step]["fit_transform"][param] = pval
++            per_step[step]["fit_predict"][param] = pval
++        return _manual_routing(per_step)
+ 
+     def _get_metadata_for_step(self, *, step_idx, step_params, all_params):
+         """Get params (metadata) for step `name`.
+@@ -1547,7 +1543,7 @@ def _transform_one(transformer, X, y, weight, params):
+ 
+         This should be of the form ``process_routing()["step_name"]``.
+     """
+-    res = transformer.transform(X, **params.transform)
++    res = transformer.transform(X, **params["transform"])
+     # if we have a weight for this transformer, multiply output
+     if weight is None:
+         return res
+@@ -1962,10 +1958,9 @@ def fit(self, X, y=None, **fit_params):
+             routed_params = process_routing(self, "fit", **fit_params)
+         else:
+             # TODO(SLEP6): remove when metadata routing cannot be disabled.
+-            routed_params = Bunch()
+-            for name, _ in self.transformer_list:
+-                routed_params[name] = Bunch(fit={})
+-                routed_params[name].fit = fit_params
++            routed_params = _manual_routing(
++                {name: {"fit": fit_params} for name, _ in self.transformer_list}
++            )
+ 
+         transformers = self._parallel_func(X, y, _fit_one, routed_params)
+ 
+@@ -2011,15 +2006,14 @@ def fit_transform(self, X, y=None, **params):
+             routed_params = process_routing(self, "fit_transform", **params)
+         else:
+             # TODO(SLEP6): remove when metadata routing cannot be disabled.
+-            routed_params = Bunch()
+-            for name, obj in self.transformer_list:
+-                if hasattr(obj, "fit_transform"):
+-                    routed_params[name] = Bunch(fit_transform={})
+-                    routed_params[name].fit_transform = params
+-                else:
+-                    routed_params[name] = Bunch(fit={})
+-                    routed_params[name] = Bunch(transform={})
+-                    routed_params[name].fit = params
++            # Forward params to whichever of fit_transform / fit the child's
++            # _fit_transform_one path ends up reading.
++            routed_params = _manual_routing(
++                {
++                    name: {"fit": params, "fit_transform": params}
++                    for name, _ in self.transformer_list
++                }
++            )
+ 
+         results = self._parallel_func(X, y, _fit_transform_one, routed_params)
+         if not results:
+@@ -2085,9 +2079,9 @@ def transform(self, X, **params):
+             routed_params = process_routing(self, "transform", **params)
+         else:
+             # TODO(SLEP6): remove when metadata routing cannot be disabled.
+-            routed_params = Bunch()
+-            for name, _ in self.transformer_list:
+-                routed_params[name] = Bunch(transform={})
++            routed_params = _manual_routing(
++                {name: {} for name, _ in self.transformer_list}
++            )
+ 
+         Xs = Parallel(n_jobs=self.n_jobs)(
+             delayed(_transform_one)(trans, X, None, weight, params=routed_params[name])
+diff --git a/sklearn/preprocessing/_target_encoder.py b/sklearn/preprocessing/_target_encoder.py
+index c83ac38b3091a..9d5cd051a91e5 100644
+--- a/sklearn/preprocessing/_target_encoder.py
++++ b/sklearn/preprocessing/_target_encoder.py
+@@ -12,10 +12,11 @@
+     _fit_encoding_fast,
+     _fit_encoding_fast_auto_smooth,
+ )
+-from sklearn.utils import Bunch, indexable
++from sklearn.utils import indexable
+ from sklearn.utils._metadata_requests import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -366,7 +367,7 @@ def fit_transform(self, X, y, **params):
+                 X, y, params["groups"] = indexable(X, y, params["groups"])
+             routed_params = process_routing(self, "fit_transform", **params)
+         else:
+-            routed_params = Bunch(splitter=Bunch(split={}))
++            routed_params = _manual_routing({"splitter": {}})
+ 
+         # The internal cross-fitting is only well-defined when each sample index
+         # appears in exactly one validation fold. Skip the validation check for
+diff --git a/sklearn/semi_supervised/_self_training.py b/sklearn/semi_supervised/_self_training.py
+index 4bdfc9a181dc5..a69a5b0102816 100644
+--- a/sklearn/semi_supervised/_self_training.py
++++ b/sklearn/semi_supervised/_self_training.py
+@@ -10,11 +10,12 @@
+     _fit_context,
+     clone,
+ )
+-from sklearn.utils import Bunch, get_tags, safe_mask
++from sklearn.utils import get_tags, safe_mask
+ from sklearn.utils._param_validation import HasMethods, Interval, StrOptions
+ from sklearn.utils.metadata_routing import (
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _raise_for_params,
+     _routing_enabled,
+     process_routing,
+@@ -258,7 +259,7 @@ def fit(self, X, y, **params):
+         if _routing_enabled():
+             routed_params = process_routing(self, "fit", **params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(fit={}))
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         self.transduction_ = np.copy(y)
+         self.labeled_iter_ = np.full_like(y, -1)
+@@ -355,7 +356,7 @@ def predict(self, X, **params):
+             # metadata routing is enabled.
+             routed_params = process_routing(self, "predict", **params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(predict={}))
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         X = validate_data(
+             self,
+@@ -398,7 +399,7 @@ def predict_proba(self, X, **params):
+             # metadata routing is enabled.
+             routed_params = process_routing(self, "predict_proba", **params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(predict_proba={}))
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         X = validate_data(
+             self,
+@@ -441,7 +442,7 @@ def decision_function(self, X, **params):
+             # metadata routing is enabled.
+             routed_params = process_routing(self, "decision_function", **params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(decision_function={}))
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         X = validate_data(
+             self,
+@@ -486,7 +487,7 @@ def predict_log_proba(self, X, **params):
+             # metadata routing is enabled.
+             routed_params = process_routing(self, "predict_log_proba", **params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(predict_log_proba={}))
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         X = validate_data(
+             self,
+@@ -533,7 +534,7 @@ def score(self, X, y, **params):
+             # metadata routing is enabled.
+             routed_params = process_routing(self, "score", **params)
+         else:
+-            routed_params = Bunch(estimator=Bunch(score={}))
++            routed_params = _manual_routing({"estimator": {}})
+ 
+         X = validate_data(
+             self,
+diff --git a/sklearn/tests/test_pipeline.py b/sklearn/tests/test_pipeline.py
+index a4890682177bc..1d7980f9b288d 100644
+--- a/sklearn/tests/test_pipeline.py
++++ b/sklearn/tests/test_pipeline.py
+@@ -45,7 +45,13 @@
+ from sklearn.metrics import accuracy_score, r2_score
+ from sklearn.model_selection import train_test_split
+ from sklearn.neighbors import LocalOutlierFactor
+-from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline, make_union
++from sklearn.pipeline import (
++    FeatureUnion,
++    Pipeline,
++    _transform_one,
++    make_pipeline,
++    make_union,
++)
+ from sklearn.preprocessing import FunctionTransformer, StandardScaler
+ from sklearn.svm import SVC
+ from sklearn.tests.metadata_routing_common import (
+@@ -2602,6 +2608,24 @@ def test_feature_union_metadata_routing(transformer):
+             )
+ 
+ 
++def test_transform_one_accepts_plain_dict_params():
++    """Regression test for #34005.
++
++    Some joblib backends (notably dask) downgrade ``Bunch`` to plain ``dict``
++    when serializing task kwargs. ``_transform_one`` must keep working after
++    that downgrade, so it must use item access on ``params``, not attribute
++    access.
++    """
++    from sklearn.preprocessing import StandardScaler
++
++    X = np.array([[0.0, 1.0], [2.0, 3.0]])
++    scaler = StandardScaler().fit(X)
++
++    # Pass a plain dict (not a Bunch) to simulate the post-dask shape.
++    out = _transform_one(scaler, X, None, weight=None, params={"transform": {}})
++    np.testing.assert_allclose(out, scaler.transform(X))
++
++
+ # End of routing tests
+ # ====================
+ 
+diff --git a/sklearn/utils/_metadata_requests.py b/sklearn/utils/_metadata_requests.py
+index b146cd6c135b1..6128380fd3d63 100644
+--- a/sklearn/utils/_metadata_requests.py
++++ b/sklearn/utils/_metadata_requests.py
+@@ -1782,7 +1782,11 @@ def process_routing(_obj, _method, /, **kwargs):
+ 
+     The output of this function is a :class:`~sklearn.utils.Bunch` that has a key for
+     each consuming object and those hold keys for their consuming methods, which then
+-    contain keys for the metadata which should be routed to them.
++    contain keys for the metadata which should be routed to them. Consumers should
++    use item access (``routed_params[child][method]``) rather than attribute access,
++    so that the structure remains usable after crossing process boundaries (e.g.
++    :class:`joblib.Parallel` with the dask backend), where serializers may downgrade
++    :class:`~sklearn.utils.Bunch` to plain :class:`dict`.
+ 
+     Read more on developing custom estimators that can route metadata in the
+     :ref:`Metadata Routing Developing Guide
+@@ -1859,3 +1863,42 @@ def __getattr__(self, name):
+     routed_params = request_routing.route_params(params=kwargs, caller=_method)
+ 
+     return routed_params
++
++
++def _manual_routing(routing):
++    """Manually build a routed_params Bunch outside the ``process_routing`` path.
++
++    Use in meta-estimators that need to construct routing by hand — typically in
++    the ``else`` branch of ``if _routing_enabled()``, where pre-SLEP6 forwarding
++    behaviour is preserved. Returns the same nested ``Bunch`` shape that
++    :func:`process_routing` produces, so consumer code doesn't need to branch
++    on which path produced ``routed_params``.
++
++    Every child in ``routing`` is populated with a :class:`~sklearn.utils.Bunch`
++    containing every name in ``METHODS``. Methods listed in the per-child
++    sub-mapping carry the provided kwargs; methods not listed default to ``{}``.
++
++    Parameters
++    ----------
++    routing : dict[str, dict[str, dict] | None]
++        Mapping ``child_name -> (method_name -> kwargs)``. Pass ``{}`` (or
++        ``None``) for a child with no methods to forward to; every method in
++        the returned Bunch will be an empty dict.
++
++    Returns
++    -------
++    routed_params : Bunch
++        A :class:`~sklearn.utils.Bunch` of the form
++        ``{"child_name": {"method_name": {metadata: value}}}``. Consumers must
++        use item access (``result[child][method]``); attribute access is not
++        guaranteed to survive cross-process serialization (e.g. the joblib
++        dask backend downgrades :class:`Bunch` to plain :class:`dict`).
++    """
++    return Bunch(
++        **{
++            child: Bunch(
++                **{method: dict((methods or {}).get(method, {})) for method in METHODS}
++            )
++            for child, methods in routing.items()
++        }
++    )
+diff --git a/sklearn/utils/metadata_routing.py b/sklearn/utils/metadata_routing.py
+index fda45fbd213a0..2e98e84784482 100644
+--- a/sklearn/utils/metadata_routing.py
++++ b/sklearn/utils/metadata_routing.py
+@@ -12,6 +12,7 @@
+     MetadataRequest,
+     MetadataRouter,
+     MethodMapping,
++    _manual_routing,
+     _MetadataRequester,
+     _raise_for_params,
+     _raise_for_unsupported_routing,

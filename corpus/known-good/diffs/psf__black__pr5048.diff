@@ -1,0 +1,472 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 584d2318c66..4063d0d3a65 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -13,6 +13,9 @@
+ 
+ <!-- Changes that affect Black's stable style -->
+ 
++- Add support for unpacking in comprehensions (PEP 798) and for lazy imports (PEP 810),
++  both new syntactic features in Python 3.15 (#5048)
++
+ ### Preview style
+ 
+ <!-- Changes that affect Black's preview style -->
+diff --git a/src/black/__init__.py b/src/black/__init__.py
+index 60f02861e4a..7ac01f7cc6e 100644
+--- a/src/black/__init__.py
++++ b/src/black/__init__.py
+@@ -1377,6 +1377,8 @@ def get_features_used(
+     - match statements;
+     - except* clause;
+     - variadic generics;
++    - lazy imports;
++    - starred or double-starred comprehensions.
+     """
+     features: set[Feature] = set()
+     if future_imports:
+@@ -1413,12 +1415,18 @@ def get_features_used(
+         elif n.type == token.COLONEQUAL:
+             features.add(Feature.ASSIGNMENT_EXPRESSIONS)
+ 
++        elif n.type == token.LAZY:
++            features.add(Feature.LAZY_IMPORTS)
++
+         elif n.type == syms.decorator:
+             if len(n.children) > 1 and not is_simple_decorator_expression(
+                 n.children[1]
+             ):
+                 features.add(Feature.RELAXED_DECORATORS)
+ 
++        elif is_unpacking_comprehension(n):
++            features.add(Feature.UNPACKING_IN_COMPREHENSIONS)
++
+         elif (
+             n.type in {syms.typedargslist, syms.arglist}
+             and n.children
+@@ -1520,6 +1528,19 @@ def get_features_used(
+     return features
+ 
+ 
++def is_unpacking_comprehension(node: LN) -> bool:
++    if node.type not in {syms.listmaker, syms.testlist_gexp, syms.dictsetmaker}:
++        return False
++
++    if not any(
++        child.type in {syms.comp_for, syms.old_comp_for} for child in node.children
++    ):
++        return False
++
++    first_child = node.children[0]
++    return first_child.type == syms.star_expr or first_child.type == token.DOUBLESTAR
++
++
+ def _contains_asexpr(node: Node | Leaf) -> bool:
+     """Return True if `node` contains an as-pattern."""
+     if node.type == syms.asexpr_test:
+@@ -1585,6 +1606,9 @@ def get_imports_from_children(children: list[LN]) -> Generator[str, None, None]:
+             break
+ 
+         elif first_child.type == syms.import_from:
++            if first_child.children[0].type == token.LAZY:
++                break
++
+             module_name = first_child.children[1]
+             if not isinstance(module_name, Leaf) or module_name.value != "__future__":
+                 break
+diff --git a/src/black/mode.py b/src/black/mode.py
+index 2ed82d55885..6fe5bc25e1c 100644
+--- a/src/black/mode.py
++++ b/src/black/mode.py
+@@ -26,6 +26,7 @@ class TargetVersion(Enum):
+     PY312 = 12
+     PY313 = 13
+     PY314 = 14
++    PY315 = 15
+ 
+     def pretty(self) -> str:
+         assert self.name[:2] == "PY"
+@@ -56,6 +57,8 @@ class Feature(Enum):
+     TYPE_PARAM_DEFAULTS = 20
+     UNPARENTHESIZED_EXCEPT_TYPES = 21
+     T_STRINGS = 22
++    LAZY_IMPORTS = 23
++    UNPACKING_IN_COMPREHENSIONS = 24
+     FORCE_OPTIONAL_PARENTHESES = 50
+ 
+     # __future__ flags
+@@ -209,6 +212,30 @@ class Feature(Enum):
+         Feature.UNPARENTHESIZED_EXCEPT_TYPES,
+         Feature.T_STRINGS,
+     },
++    TargetVersion.PY315: {
++        Feature.F_STRINGS,
++        Feature.DEBUG_F_STRINGS,
++        Feature.NUMERIC_UNDERSCORES,
++        Feature.TRAILING_COMMA_IN_CALL,
++        Feature.TRAILING_COMMA_IN_DEF,
++        Feature.ASYNC_KEYWORDS,
++        Feature.FUTURE_ANNOTATIONS,
++        Feature.ASSIGNMENT_EXPRESSIONS,
++        Feature.RELAXED_DECORATORS,
++        Feature.POS_ONLY_ARGUMENTS,
++        Feature.UNPACKING_ON_FLOW,
++        Feature.ANN_ASSIGN_EXTENDED_RHS,
++        Feature.PARENTHESIZED_CONTEXT_MANAGERS,
++        Feature.PATTERN_MATCHING,
++        Feature.EXCEPT_STAR,
++        Feature.VARIADIC_GENERICS,
++        Feature.TYPE_PARAMS,
++        Feature.TYPE_PARAM_DEFAULTS,
++        Feature.UNPARENTHESIZED_EXCEPT_TYPES,
++        Feature.T_STRINGS,
++        Feature.LAZY_IMPORTS,
++        Feature.UNPACKING_IN_COMPREHENSIONS,
++    },
+ }
+ 
+ 
+diff --git a/src/black/nodes.py b/src/black/nodes.py
+index 3558b181b58..d5f48c89fde 100644
+--- a/src/black/nodes.py
++++ b/src/black/nodes.py
+@@ -918,10 +918,13 @@ def is_import(leaf: Leaf) -> bool:
+     t = leaf.type
+     v = leaf.value
+     return bool(
+-        t == token.NAME
+-        and (
+-            (v == "import" and p and p.type == syms.import_name)
+-            or (v == "from" and p and p.type == syms.import_from)
++        (t == token.LAZY and p and p.type == syms.lazy_import)
++        or (
++            t == token.NAME
++            and (
++                (v == "import" and p and p.type == syms.import_name)
++                or (v == "from" and p and p.type == syms.import_from)
++            )
+         )
+     )
+ 
+diff --git a/src/black/resources/black.schema.json b/src/black/resources/black.schema.json
+index b2b1a03cbac..ed65d36e5cf 100644
+--- a/src/black/resources/black.schema.json
++++ b/src/black/resources/black.schema.json
+@@ -29,7 +29,8 @@
+           "py311",
+           "py312",
+           "py313",
+-          "py314"
++          "py314",
++          "py315"
+         ]
+       },
+       "description": "Python versions that should be supported by Black's output. You should include all versions that your code supports. By default, Black will infer target versions from the project metadata in pyproject.toml. If this does not yield conclusive results, Black will use per-file auto-detection."
+diff --git a/src/blib2to3/Grammar.txt b/src/blib2to3/Grammar.txt
+index a2161dab86e..2bd54bdc27b 100644
+--- a/src/blib2to3/Grammar.txt
++++ b/src/blib2to3/Grammar.txt
+@@ -97,7 +97,8 @@ continue_stmt: 'continue'
+ return_stmt: 'return' [testlist_star_expr]
+ yield_stmt: yield_expr
+ raise_stmt: 'raise' [test ['from' test | ',' test [',' test]]]
+-import_stmt: import_name | import_from
++import_stmt: import_name | import_from | lazy_import
++lazy_import: LAZY (import_name | import_from)
+ import_name: 'import' dotted_as_names
+ import_from: ('from' ('.'* dotted_name | '.'+)
+               'import' ('*' | '(' import_as_names ')' | import_as_names))
+diff --git a/src/blib2to3/pgen2/token.py b/src/blib2to3/pgen2/token.py
+index 8b531ee5c64..0a7d57395e7 100644
+--- a/src/blib2to3/pgen2/token.py
++++ b/src/blib2to3/pgen2/token.py
+@@ -64,16 +64,17 @@
+ RARROW: Final = 55
+ AWAIT: Final = 56
+ ASYNC: Final = 57
+-ERRORTOKEN: Final = 58
+-COLONEQUAL: Final = 59
+-FSTRING_START: Final = 60
+-FSTRING_MIDDLE: Final = 61
+-FSTRING_END: Final = 62
+-BANG: Final = 63
+-TSTRING_START: Final = 64
+-TSTRING_MIDDLE: Final = 65
+-TSTRING_END: Final = 66
+-N_TOKENS: Final = 67
++LAZY: Final = 58
++ERRORTOKEN: Final = 59
++COLONEQUAL: Final = 60
++FSTRING_START: Final = 61
++FSTRING_MIDDLE: Final = 62
++FSTRING_END: Final = 63
++BANG: Final = 64
++TSTRING_START: Final = 65
++TSTRING_MIDDLE: Final = 66
++TSTRING_END: Final = 67
++N_TOKENS: Final = 68
+ NT_OFFSET: Final = 256
+ # --end constants--
+ 
+diff --git a/src/blib2to3/pgen2/tokenize.py b/src/blib2to3/pgen2/tokenize.py
+index 4e3761f3028..45423fcd8d6 100644
+--- a/src/blib2to3/pgen2/tokenize.py
++++ b/src/blib2to3/pgen2/tokenize.py
+@@ -41,6 +41,7 @@
+     FSTRING_MIDDLE,
+     FSTRING_START,
+     INDENT,
++    LAZY,
+     NAME,
+     NEWLINE,
+     NL,
+@@ -70,6 +71,7 @@
+ 
+ Coord = tuple[int, int]
+ TokenInfo = tuple[int, str, Coord, Coord, str]
++LazyStash = tuple[pytokens.Token, str, str]
+ 
+ TOKEN_TYPE_MAP = {
+     TokenType.indent: INDENT,
+@@ -147,6 +149,24 @@ def tokenize(source: str, grammar: Grammar | None = None) -> Iterator[TokenInfo]
+     line, column = 1, 0
+ 
+     prev_token: pytokens.Token | None = None
++    lazy_stashed: LazyStash | None = None
++    stmt_start = True
++
++    def emit_stashed_lazy(*, as_keyword: bool) -> Iterator[TokenInfo]:
++        nonlocal lazy_stashed
++        if lazy_stashed is None:
++            return
++
++        stashed_token, stashed_str, stashed_line = lazy_stashed
++        yield (
++            LAZY if as_keyword else NAME,
++            stashed_str,
++            (stashed_token.start_line, stashed_token.start_col),
++            (stashed_token.end_line, stashed_token.end_col),
++            stashed_line,
++        )
++        lazy_stashed = None
++
+     try:
+         for token in pytokens.tokenize(source):
+             token = transform_whitespace(token, source, prev_token)
+@@ -165,6 +185,24 @@ def tokenize(source: str, grammar: Grammar | None = None) -> Iterator[TokenInfo]
+ 
+             source_line = lines[token.start_line - 1]
+ 
++            if lazy_stashed is not None and not (
++                token.type == TokenType.identifier and token_str in ("import", "from")
++            ):
++                yield from emit_stashed_lazy(as_keyword=False)
++
++            if (
++                token.type == TokenType.identifier
++                and token_str == "lazy"
++                and stmt_start
++            ):
++                lazy_stashed = (token, token_str, source_line)
++                prev_token = token
++                stmt_start = False
++                continue
++
++            if lazy_stashed is not None:
++                yield from emit_stashed_lazy(as_keyword=True)
++
+             if token.type == TokenType.identifier and token_str in ("async", "await"):
+                 # Black uses `async` and `await` token types just for those two keywords
+                 yield (
+@@ -202,6 +240,19 @@ def tokenize(source: str, grammar: Grammar | None = None) -> Iterator[TokenInfo]
+                 )
+             prev_token = token
+ 
++            if token.type in {
++                TokenType.indent,
++                TokenType.dedent,
++                TokenType.newline,
++                TokenType.semicolon,
++                TokenType.colon,
++            }:
++                stmt_start = True
++            elif token.type not in {TokenType.comment, TokenType.nl}:
++                stmt_start = False
++
++        yield from emit_stashed_lazy(as_keyword=False)
++
+     except pytokens.UnexpectedEOF:
+         raise TokenError("Unexpected EOF in multi-line statement", (line, column))
+     except pytokens.TokenizeError as exc:
+diff --git a/src/blib2to3/pygram.py b/src/blib2to3/pygram.py
+index 7fd701ff426..ebe5edf7ea6 100644
+--- a/src/blib2to3/pygram.py
++++ b/src/blib2to3/pygram.py
+@@ -83,6 +83,7 @@ class _python_symbols(Symbols):
+     import_from: int
+     import_name: int
+     import_stmt: int
++    lazy_import: int
+     lambdef: int
+     listmaker: int
+     match_stmt: int
+diff --git a/tests/data/cases/python315.py b/tests/data/cases/python315.py
+new file mode 100644
+index 00000000000..127eca2efb9
+--- /dev/null
++++ b/tests/data/cases/python315.py
+@@ -0,0 +1,52 @@
++# flags: --fast
++lazy import json
++lazy from package.subpackage import (
++    alpha,
++    beta,
++    gamma,
++)
++from .lazy import thing
++
++lazy = "still an identifier"
++
++
++def eager():
++    lazy = "still an identifier"
++    return lazy
++
++
++flattened = [*item for item in items]
++generator = (*item for item in items)
++combined = {*members for members in groups}
++merged = {**mapping for mapping in mappings}
++
++
++async def collect():
++    return [*item async for item in items_async]
++
++
++# output
++lazy import json
++lazy from package.subpackage import (
++    alpha,
++    beta,
++    gamma,
++)
++from .lazy import thing
++
++lazy = "still an identifier"
++
++
++def eager():
++    lazy = "still an identifier"
++    return lazy
++
++
++flattened = [*item for item in items]
++generator = (*item for item in items)
++combined = {*members for members in groups}
++merged = {**mapping for mapping in mappings}
++
++
++async def collect():
++    return [*item async for item in items_async]
+diff --git a/tests/test_black.py b/tests/test_black.py
+index ee04a7e9408..f0fcf1ff0ec 100644
+--- a/tests/test_black.py
++++ b/tests/test_black.py
+@@ -272,6 +272,19 @@ def test_pep_696_version_detection(self) -> None:
+             features = black.get_features_used(root)
+             self.assertIn(black.Feature.TYPE_PARAM_DEFAULTS, features)
+ 
++    def test_python315_version_detection(self) -> None:
++        source, _ = read_data("cases", "python315")
++        root = black.lib2to3_parse(source)
++        features = black.get_features_used(root)
++        self.assertIn(black.Feature.LAZY_IMPORTS, features)
++        self.assertIn(black.Feature.UNPACKING_IN_COMPREHENSIONS, features)
++        self.assertNotIn(
++            black.Feature.LAZY_IMPORTS,
++            black.get_features_used(black.lib2to3_parse("lazy = 1\n")),
++        )
++        versions = black.detect_target_versions(root)
++        self.assertIn(black.TargetVersion.PY315, versions)
++
+     def test_expression_ff(self) -> None:
+         source, expected = read_data("cases", "expression.py")
+         tmp_file = Path(black.dump_to_file(source))
+@@ -433,6 +446,17 @@ def test_python37(self) -> None:
+         # ensure black can parse this when the target is 3.7
+         self.invokeBlack([str(source_path), "--target-version", "py37"])
+ 
++    @patch("black.dump_to_file", dump_to_stderr)
++    def test_python315(self) -> None:
++        source_path = get_case_path("cases", "python315")
++        _, source, expected = read_data_from_file(source_path)
++        actual = fs(source)
++        self.assertFormatEqual(expected, actual)
++        if sys.version_info >= (3, 15):
++            black.assert_equivalent(source, actual)
++        black.assert_stable(source, actual, DEFAULT_MODE)
++        self.invokeBlack([str(source_path), "--target-version", "py315", "--fast"])
++
+     def test_tab_comment_indentation(self) -> None:
+         contents_tab = "if 1:\n\tif 2:\n\t\tpass\n\t# comment\n\tpass\n"
+         contents_spc = "if 1:\n    if 2:\n        pass\n    # comment\n    pass\n"
+@@ -1524,6 +1548,7 @@ def test_infer_target_version(self) -> None:
+                     TargetVersion.PY312,
+                     TargetVersion.PY313,
+                     TargetVersion.PY314,
++                    TargetVersion.PY315,
+                 ],
+             ),
+             (
+@@ -1534,6 +1559,7 @@ def test_infer_target_version(self) -> None:
+                     TargetVersion.PY312,
+                     TargetVersion.PY313,
+                     TargetVersion.PY314,
++                    TargetVersion.PY315,
+                 ],
+             ),
+             ("<3.6", [TargetVersion.PY33, TargetVersion.PY34, TargetVersion.PY35]),
+@@ -1546,6 +1572,7 @@ def test_infer_target_version(self) -> None:
+                     TargetVersion.PY312,
+                     TargetVersion.PY313,
+                     TargetVersion.PY314,
++                    TargetVersion.PY315,
+                 ],
+             ),
+             (
+@@ -1557,6 +1584,7 @@ def test_infer_target_version(self) -> None:
+                     TargetVersion.PY312,
+                     TargetVersion.PY313,
+                     TargetVersion.PY314,
++                    TargetVersion.PY315,
+                 ],
+             ),
+             (
+@@ -1572,6 +1600,7 @@ def test_infer_target_version(self) -> None:
+                     TargetVersion.PY312,
+                     TargetVersion.PY313,
+                     TargetVersion.PY314,
++                    TargetVersion.PY315,
+                 ],
+             ),
+             (
+@@ -1589,6 +1618,7 @@ def test_infer_target_version(self) -> None:
+                     TargetVersion.PY312,
+                     TargetVersion.PY313,
+                     TargetVersion.PY314,
++                    TargetVersion.PY315,
+                 ],
+             ),
+             ("==3.8.*", [TargetVersion.PY38]),
+diff --git a/tests/util.py b/tests/util.py
+index 0acce4bed2b..26fd5aae720 100644
+--- a/tests/util.py
++++ b/tests/util.py
+@@ -34,6 +34,7 @@
+     TargetVersion.PY37,
+     TargetVersion.PY38,
+     TargetVersion.PY39,
++    TargetVersion.PY315,
+ }
+ 
+ DEFAULT_MODE = black.Mode()

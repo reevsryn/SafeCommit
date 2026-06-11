@@ -1,0 +1,186 @@
+diff --git a/news/12018.bugfix.rst b/news/12018.bugfix.rst
+new file mode 100644
+index 00000000000..7958376c7a0
+--- /dev/null
++++ b/news/12018.bugfix.rst
+@@ -0,0 +1,3 @@
++Allow unpinned requirements to use hashes from constraints. Constraints
++like ``{name}=={version} --hash=...`` feeds into hash verification for
++a corresponding requirement.
+diff --git a/src/pip/_internal/resolution/resolvelib/base.py b/src/pip/_internal/resolution/resolvelib/base.py
+index 03877b6c2dd..5ef61aff2cd 100644
+--- a/src/pip/_internal/resolution/resolvelib/base.py
++++ b/src/pip/_internal/resolution/resolvelib/base.py
+@@ -26,16 +26,23 @@ def format_name(project: NormalizedName, extras: frozenset[NormalizedName]) -> s
+ class Constraint:
+     specifier: SpecifierSet
+     hashes: Hashes
++    hash_options: dict[str, list[str]]
+     links: frozenset[Link]
+ 
+     @classmethod
+     def empty(cls) -> Constraint:
+-        return Constraint(SpecifierSet(), Hashes(), frozenset())
++        return Constraint(SpecifierSet(), Hashes(), {}, frozenset())
+ 
+     @classmethod
+     def from_ireq(cls, ireq: InstallRequirement) -> Constraint:
+         links = frozenset([ireq.link]) if ireq.link else frozenset()
+-        return Constraint(ireq.specifier, ireq.hashes(trust_internet=False), links)
++        hash_options = {alg: list(v) for alg, v in ireq.hash_options.items()}
++        return Constraint(
++            ireq.specifier,
++            ireq.hashes(trust_internet=False),
++            hash_options,
++            links,
++        )
+ 
+     def __bool__(self) -> bool:
+         return bool(self.specifier) or bool(self.hashes) or bool(self.links)
+@@ -45,10 +52,19 @@ def __and__(self, other: InstallRequirement) -> Constraint:
+             return NotImplemented
+         specifier = self.specifier & other.specifier
+         hashes = self.hashes & other.hashes(trust_internet=False)
++        if not self.hash_options:
++            hash_options = {alg: list(v) for alg, v in other.hash_options.items()}
++        elif not other.hash_options:
++            hash_options = {alg: list(v) for alg, v in self.hash_options.items()}
++        else:
++            hash_options = {
++                alg: [v for v in other.hash_options[alg] if v in self.hash_options[alg]]
++                for alg in self.hash_options.keys() & other.hash_options.keys()
++            }
+         links = self.links
+         if other.link:
+             links = links.union([other.link])
+-        return Constraint(specifier, hashes, links)
++        return Constraint(specifier, hashes, hash_options, links)
+ 
+     def is_satisfied_by(self, candidate: Candidate) -> bool:
+         # Reject if there are any mismatched URL constraints on this package.
+diff --git a/src/pip/_internal/resolution/resolvelib/candidates.py b/src/pip/_internal/resolution/resolvelib/candidates.py
+index aa126d4888e..d01610faca7 100644
+--- a/src/pip/_internal/resolution/resolvelib/candidates.py
++++ b/src/pip/_internal/resolution/resolvelib/candidates.py
+@@ -58,10 +58,17 @@ def as_base_candidate(candidate: Candidate) -> BaseCandidate | None:
+ 
+ 
+ def make_install_req_from_link(
+-    link: Link, template: InstallRequirement
++    link: Link,
++    template: InstallRequirement,
++    version: Version | None = None,
+ ) -> InstallRequirement:
+     assert not template.editable, "template is editable"
+-    if template.req:
++    if version is not None and template.req and template.hash_options:
++        # When hashes are provided via constraints for an unpinned requirement,
++        # the resulting install requirement must appear pinned so that the
++        # hash-checking logic does not reject it as HashUnpinned.
++        line = f"{template.req.name}=={version}"
++    elif template.req:
+         line = str(template.req)
+     else:
+         line = link.url
+@@ -288,7 +295,7 @@ def __init__(
+         if cache_entry is not None:
+             logger.debug("Using cached wheel link: %s", cache_entry.link)
+             link = cache_entry.link
+-        ireq = make_install_req_from_link(link, template)
++        ireq = make_install_req_from_link(link, template, version=version)
+         assert ireq.link == link
+         if ireq.link.is_wheel and not ireq.link.is_file:
+             wheel = Wheel(ireq.link.filename)
+diff --git a/src/pip/_internal/resolution/resolvelib/factory.py b/src/pip/_internal/resolution/resolvelib/factory.py
+index ede3e6b2b94..99404d707a2 100644
+--- a/src/pip/_internal/resolution/resolvelib/factory.py
++++ b/src/pip/_internal/resolution/resolvelib/factory.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import contextlib
++import copy
+ import functools
+ import logging
+ from collections.abc import Iterable, Iterator, Mapping, Sequence
+@@ -248,6 +249,7 @@ def _iter_found_candidates(
+         hashes: Hashes,
+         prefers_installed: bool,
+         incompatible_ids: set[int],
++        constraint_hash_options: dict[str, list[str]] | None = None,
+     ) -> Iterable[Candidate]:
+         if not ireqs:
+             return ()
+@@ -258,6 +260,16 @@ def _iter_found_candidates(
+         # Hopefully the Project model can correct this mismatch in the future.
+         template = ireqs[0]
+         assert template.req, "Candidates found on index must be PEP 508"
++        if (
++            constraint_hash_options
++            and not template.hash_options
++            and any(constraint_hash_options.values())
++        ):
++            template = copy.copy(template)
++            template.hash_options = {
++                k: list(v) for k, v in constraint_hash_options.items()
++            }
++        assert template.req  # to prevent mypy from being confused by the copy
+         name = canonicalize_name(template.req.name)
+ 
+         extras: frozenset[str] = frozenset()
+@@ -453,6 +465,7 @@ def find_candidates(
+                 constraint.hashes,
+                 prefers_installed,
+                 incompat_ids,
++                constraint.hash_options,
+             )
+ 
+         return (
+diff --git a/tests/functional/test_new_resolver_hashes.py b/tests/functional/test_new_resolver_hashes.py
+index b9d4d7c4adf..8cdab713809 100644
+--- a/tests/functional/test_new_resolver_hashes.py
++++ b/tests/functional/test_new_resolver_hashes.py
+@@ -292,6 +292,43 @@ def test_new_resolver_hash_requirement_and_url_constraint_can_fail(
+     script.assert_not_installed("base", "other")
+ 
+ 
++def test_new_resolver_unpinned_requirement_with_pinned_hash_constraint(
++    script: PipTestEnvironment,
++) -> None:
++    """Regression test for https://github.com/pypa/pip/issues/9243.
++
++    An unpinned requirement combined with a constraints file that supplies both an
++    ``==`` pin and ``--hash`` for that distribution used to fail with ``HashUnpinned``:
++
++    > In --require-hashes mode, all requirements must have their versions pinned with ==
++
++    This was because "is_pinned" could not be true for the unpinned requirement, even
++    though the constraint did have a pin that was being enforced.
++    """
++    find_links = _create_find_links(script)
++
++    requirements_txt = script.scratch_path / "requirements.txt"
++    requirements_txt.write_text("base\n")
++
++    constraints_txt = script.scratch_path / "constraints.txt"
++    constraints_txt.write_text(f"base==0.1.0 --hash=sha256:{find_links.wheel_hash}\n")
++
++    script.pip(
++        "install",
++        "--no-cache-dir",
++        "--no-deps",
++        "--no-index",
++        "--find-links",
++        find_links.index_html,
++        "--constraint",
++        constraints_txt,
++        "--requirement",
++        requirements_txt,
++    )
++
++    script.assert_installed(base="0.1.0")
++
++
+ def test_new_resolver_hash_with_extras(script: PipTestEnvironment) -> None:
+     parent_with_extra_path = create_basic_wheel_for_package(
+         script, "parent_with_extra", "0.1.0", depends=["child[extra]"]

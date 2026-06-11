@@ -1,0 +1,444 @@
+diff --git a/django/conf/__init__.py b/django/conf/__init__.py
+index 020047ffd806..b3daea5b7b9f 100644
+--- a/django/conf/__init__.py
++++ b/django/conf/__init__.py
+@@ -16,10 +16,10 @@
+ from django.core.exceptions import ImproperlyConfigured
+ from django.utils.deprecation import (
+     RemovedInDjango70Warning,
+-    django_file_prefixes,
+     warn_about_external_use,
+ )
+ from django.utils.functional import LazyObject, empty
++from django.utils.warnings import django_file_prefixes
+ 
+ ENVIRONMENT_VARIABLE = "DJANGO_SETTINGS_MODULE"
+ DEFAULT_STORAGE_ALIAS = "default"
+diff --git a/django/contrib/admin/options.py b/django/contrib/admin/options.py
+index b4713c2f1598..b593da0b8a73 100644
+--- a/django/contrib/admin/options.py
++++ b/django/contrib/admin/options.py
+@@ -63,7 +63,7 @@
+ from django.template.response import SimpleTemplateResponse, TemplateResponse
+ from django.urls import reverse
+ from django.utils.decorators import method_decorator
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.html import format_html
+ from django.utils.http import urlencode
+ from django.utils.inspect import get_func_args
+@@ -77,6 +77,7 @@
+ )
+ from django.utils.translation import gettext as _
+ from django.utils.translation import ngettext
++from django.utils.warnings import django_file_prefixes
+ from django.views.decorators.csrf import csrf_protect
+ from django.views.generic import RedirectView
+ 
+diff --git a/django/core/mail/deprecation.py b/django/core/mail/deprecation.py
+index ec9fce591bce..71687ba3288e 100644
+--- a/django/core/mail/deprecation.py
++++ b/django/core/mail/deprecation.py
+@@ -4,10 +4,8 @@
+ import warnings
+ 
+ from django.conf import DEPRECATED_EMAIL_SETTINGS, settings
+-from django.utils.deprecation import (
+-    RemovedInDjango70Warning,
+-    django_file_prefixes,
+-)
++from django.utils.deprecation import RemovedInDjango70Warning
++from django.utils.warnings import django_file_prefixes
+ 
+ FAIL_SILENTLY_ARG_WARNING = (
+     "The 'fail_silently' argument is deprecated. See 'Migrating email to "
+diff --git a/django/core/signing.py b/django/core/signing.py
+index 56b2c35a021f..174b7c34b8a7 100644
+--- a/django/core/signing.py
++++ b/django/core/signing.py
+@@ -43,10 +43,11 @@
+ 
+ from django.conf import settings
+ from django.utils.crypto import constant_time_compare, salted_hmac
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.encoding import force_bytes
+ from django.utils.module_loading import import_string
+ from django.utils.regex_helper import _lazy_re_compile
++from django.utils.warnings import django_file_prefixes
+ 
+ _SEP_UNSAFE = _lazy_re_compile(r"^[A-z0-9-_=]*$")
+ BASE62_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py
+index 16f1071396d0..0a12d3631cc1 100644
+--- a/django/db/models/fields/__init__.py
++++ b/django/db/models/fields/__init__.py
+@@ -32,12 +32,13 @@
+     parse_duration,
+     parse_time,
+ )
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.duration import duration_string
+ from django.utils.functional import Promise, cached_property
+ from django.utils.ipv6 import MAX_IPV6_ADDRESS_LENGTH, clean_ipv6_address
+ from django.utils.text import capfirst
+ from django.utils.translation import gettext_lazy as _
++from django.utils.warnings import django_file_prefixes
+ 
+ __all__ = [
+     "AutoField",
+diff --git a/django/db/models/fields/json.py b/django/db/models/fields/json.py
+index 6478c57aaed8..2d5f51d4f320 100644
+--- a/django/db/models/fields/json.py
++++ b/django/db/models/fields/json.py
+@@ -12,8 +12,9 @@
+     PostgresOperatorLookup,
+     Transform,
+ )
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.translation import gettext_lazy as _
++from django.utils.warnings import django_file_prefixes
+ 
+ from . import Field
+ from .mixins import CheckFieldDefaultMixin
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index a2068044691e..e4b37d1c52bf 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -37,8 +37,9 @@
+     resolve_callables,
+ )
+ from django.utils import timezone
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.functional import cached_property
++from django.utils.warnings import django_file_prefixes
+ 
+ # The maximum number of results to fetch in a get() query.
+ MAX_GET_RESULTS = 21
+diff --git a/django/db/models/sql/compiler.py b/django/db/models/sql/compiler.py
+index bcf28f9ae16d..2ce6edefe5c6 100644
+--- a/django/db/models/sql/compiler.py
++++ b/django/db/models/sql/compiler.py
+@@ -24,10 +24,11 @@
+ )
+ from django.db.models.sql.query import Query, get_order_dir
+ from django.db.transaction import TransactionManagementError
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.functional import cached_property
+ from django.utils.hashable import make_hashable
+ from django.utils.regex_helper import _lazy_re_compile
++from django.utils.warnings import django_file_prefixes
+ 
+ 
+ class PositionRef(Ref):
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 22dd479d67d9..adf0663bebaa 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -43,10 +43,11 @@
+ from django.db.models.sql.constants import INNER, LOUTER, ORDER_DIR, SINGLE
+ from django.db.models.sql.datastructures import BaseTable, Empty, Join, MultiJoin
+ from django.db.models.sql.where import AND, OR, ExtraWhere, NothingNode, WhereNode
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.functional import cached_property
+ from django.utils.regex_helper import _lazy_re_compile
+ from django.utils.tree import Node
++from django.utils.warnings import django_file_prefixes
+ 
+ __all__ = ["Query", "RawQuery"]
+ 
+diff --git a/django/db/transaction.py b/django/db/transaction.py
+index 269fb1c56e1c..fe6d3fed3214 100644
+--- a/django/db/transaction.py
++++ b/django/db/transaction.py
+@@ -8,7 +8,8 @@
+     ProgrammingError,
+     connections,
+ )
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
++from django.utils.warnings import django_file_prefixes
+ 
+ 
+ class TransactionManagementError(ProgrammingError):
+diff --git a/django/http/response.py b/django/http/response.py
+index fe267f700ff9..29d0ea6aba87 100644
+--- a/django/http/response.py
++++ b/django/http/response.py
+@@ -20,10 +20,7 @@
+ from django.http.cookie import SimpleCookie
+ from django.utils import timezone
+ from django.utils.datastructures import CaseInsensitiveMapping
+-from django.utils.deprecation import (
+-    RemovedInDjango71Warning,
+-    django_file_prefixes,
+-)
++from django.utils.deprecation import RemovedInDjango71Warning
+ from django.utils.encoding import iri_to_uri
+ from django.utils.functional import cached_property
+ from django.utils.http import (
+@@ -32,6 +29,7 @@
+     http_date,
+ )
+ from django.utils.regex_helper import _lazy_re_compile
++from django.utils.warnings import django_file_prefixes
+ 
+ _charset_from_content_type_re = _lazy_re_compile(
+     r";\s*charset=(?P<charset>[^\s;]+)", re.I
+diff --git a/django/template/base.py b/django/template/base.py
+index ddfb150cd9a0..d180b6816514 100644
+--- a/django/template/base.py
++++ b/django/template/base.py
+@@ -57,7 +57,7 @@
+ from enum import Enum
+ 
+ from django.template.context import BaseContext
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.formats import localize
+ from django.utils.html import conditional_escape
+ from django.utils.inspect import getfullargspec, signature
+@@ -66,6 +66,7 @@
+ from django.utils.text import get_text_list, smart_split, unescape_string_literal
+ from django.utils.timezone import template_localtime
+ from django.utils.translation import gettext_lazy, pgettext_lazy
++from django.utils.warnings import django_file_prefixes
+ 
+ from .exceptions import TemplateSyntaxError
+ 
+diff --git a/django/utils/crypto.py b/django/utils/crypto.py
+index beadb146cb0c..519eedc1152c 100644
+--- a/django/utils/crypto.py
++++ b/django/utils/crypto.py
+@@ -8,8 +8,9 @@
+ import warnings
+ 
+ from django.conf import settings
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.encoding import force_bytes
++from django.utils.warnings import django_file_prefixes
+ 
+ 
+ class InvalidAlgorithm(ValueError):
+diff --git a/django/utils/deprecation.py b/django/utils/deprecation.py
+index 2832b98b59d5..9b15b4e2e76a 100644
+--- a/django/utils/deprecation.py
++++ b/django/utils/deprecation.py
+@@ -1,22 +1,13 @@
+ import functools
+ import inspect
+-import os
+ import warnings
+ from collections import Counter
+ from inspect import iscoroutinefunction, markcoroutinefunction
+ 
+ from asgiref.sync import sync_to_async
+ 
+-import django
+ from django.utils.inspect import signature
+-
+-
+-@functools.cache
+-def django_file_prefixes():
+-    file = getattr(django, "__file__", None)
+-    if file is None:
+-        return ()
+-    return (os.path.join(os.path.dirname(file), ""),)
++from django.utils.warnings import django_file_prefixes
+ 
+ 
+ class RemovedInDjango70Warning(DeprecationWarning):
+diff --git a/django/utils/log.py b/django/utils/log.py
+index 6df00498bf6a..d37a9f530f8d 100644
+--- a/django/utils/log.py
++++ b/django/utils/log.py
+@@ -7,8 +7,9 @@
+ from django.core import mail
+ from django.core.exceptions import ImproperlyConfigured
+ from django.core.management.color import color_style
+-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
++from django.utils.deprecation import RemovedInDjango70Warning
+ from django.utils.module_loading import import_string
++from django.utils.warnings import django_file_prefixes
+ 
+ request_logger = logging.getLogger("django.request")
+ 
+diff --git a/django/utils/warnings.py b/django/utils/warnings.py
+new file mode 100644
+index 000000000000..ef052d0030df
+--- /dev/null
++++ b/django/utils/warnings.py
+@@ -0,0 +1,12 @@
++import functools
++import os
++
++import django
++
++
++@functools.cache
++def django_file_prefixes():
++    file = getattr(django, "__file__", None)
++    if file is None:
++        return ()
++    return (os.path.join(os.path.dirname(file), ""),)
+diff --git a/docs/internals/contributing/writing-code/submitting-patches.txt b/docs/internals/contributing/writing-code/submitting-patches.txt
+index 288a50fc76b4..a038de53f7d3 100644
+--- a/docs/internals/contributing/writing-code/submitting-patches.txt
++++ b/docs/internals/contributing/writing-code/submitting-patches.txt
+@@ -352,7 +352,8 @@ previous behavior, or standalone items that are unnecessary or unused when the
+ deprecation ends. For example::
+ 
+     import warnings
+-    from django.utils.deprecation import RemovedInDjangoXXWarning, django_file_prefixes
++    from django.utils.deprecation import RemovedInDjangoXXWarning
++    from django.utils.warnings import django_file_prefixes
+ 
+ 
+     # RemovedInDjangoXXWarning.
+diff --git a/docs/ref/utils.txt b/docs/ref/utils.txt
+index 1c42784d1394..0f38105713c3 100644
+--- a/docs/ref/utils.txt
++++ b/docs/ref/utils.txt
+@@ -1187,3 +1187,31 @@ For a complete discussion on the usage of the following see the
+     Turns a Django template into something that is understood by ``xgettext``.
+     It does so by translating the Django translation tags into standard
+     ``gettext`` function invocations.
++
++``django.utils.warnings``
++=========================
++
++.. module:: django.utils.warnings
++   :synopsis: Helpers for issuing warnings.
++
++.. function:: django_file_prefixes()
++
++    .. versionadded:: 6.2
++
++    Returns a tuple of file path prefixes for the Django package directory.
++    This is used as the ``skip_file_prefixes`` argument to
++    :func:`warnings.warn` so that warnings are attributed to the *caller*
++    (your project or third-party library) rather than to Django internals.
++
++    The result is cached after the first call.
++
++    Usage example::
++
++        import warnings
++        from django.utils.warnings import django_file_prefixes
++
++        warnings.warn(
++            "Your custom warning message.",
++            category=RuntimeWarning,
++            skip_file_prefixes=django_file_prefixes(),
++        )
+diff --git a/docs/releases/6.2.txt b/docs/releases/6.2.txt
+index 09dab3a93db3..74ba31f17150 100644
+--- a/docs/releases/6.2.txt
++++ b/docs/releases/6.2.txt
+@@ -232,7 +232,10 @@ URLs
+ Utilities
+ ~~~~~~~~~
+ 
+-* ...
++* The new ``django.utils.warnings`` module provides
++  :func:`~django.utils.warnings.django_file_prefixes`, which returns the file
++  path prefix of the Django package for use as the ``skip_file_prefixes``
++  argument of :func:`warnings.warn`.
+ 
+ Validators
+ ~~~~~~~~~~
+diff --git a/tests/deprecation/tests.py b/tests/deprecation/tests.py
+index 0993e8a450d5..e3a2f872f0f2 100644
+--- a/tests/deprecation/tests.py
++++ b/tests/deprecation/tests.py
+@@ -1,44 +1,12 @@
+-import os
+ import warnings
+-from pathlib import Path
+ 
+-import django
+ from django.test import SimpleTestCase
+ from django.utils.deprecation import (
+     RemovedAfterNextVersionWarning,
+     RenameMethodsBase,
+-    django_file_prefixes,
+ )
+ 
+ 
+-class DjangoFilePrefixesTests(SimpleTestCase):
+-    def setUp(self):
+-        django_file_prefixes.cache_clear()
+-        self.addCleanup(django_file_prefixes.cache_clear)
+-
+-    def test_no_file(self):
+-        orig_file = django.__file__
+-        try:
+-            # Depending on the cwd, Python might give a local checkout
+-            # precedence over installed Django, producing None.
+-            django.__file__ = None
+-            self.assertEqual(django_file_prefixes(), ())
+-            del django.__file__
+-            self.assertEqual(django_file_prefixes(), ())
+-        finally:
+-            django.__file__ = orig_file
+-
+-    def test_with_file(self):
+-        prefixes = django_file_prefixes()
+-        self.assertIsInstance(prefixes, tuple)
+-        self.assertEqual(len(prefixes), 1)
+-        self.assertTrue(prefixes[0].endswith(f"{os.path.sep}django{os.path.sep}"))
+-
+-    def test_does_not_match_packages_prefixed_with_django(self):
+-        other_file = Path(django.__file__).parent.parent / "djangoextra" / "__init__.py"
+-        self.assertFalse(str(other_file).startswith(django_file_prefixes()))
+-
+-
+ class RenameManagerMethods(RenameMethodsBase):
+     renamed_methods = (("old", "new", DeprecationWarning),)
+ 
+diff --git a/tests/utils_tests/test_warnings.py b/tests/utils_tests/test_warnings.py
+new file mode 100644
+index 000000000000..0c98e8ebe4b7
+--- /dev/null
++++ b/tests/utils_tests/test_warnings.py
+@@ -0,0 +1,34 @@
++import os
++from pathlib import Path
++
++import django
++from django.test import SimpleTestCase
++from django.utils.warnings import django_file_prefixes
++
++
++class DjangoFilePrefixesTests(SimpleTestCase):
++    def setUp(self):
++        django_file_prefixes.cache_clear()
++        self.addCleanup(django_file_prefixes.cache_clear)
++
++    def test_no_file(self):
++        orig_file = django.__file__
++        try:
++            # Depending on the cwd, Python might give a local checkout
++            # precedence over installed Django, producing None.
++            django.__file__ = None
++            self.assertEqual(django_file_prefixes(), ())
++            del django.__file__
++            self.assertEqual(django_file_prefixes(), ())
++        finally:
++            django.__file__ = orig_file
++
++    def test_with_file(self):
++        prefixes = django_file_prefixes()
++        self.assertIsInstance(prefixes, tuple)
++        self.assertEqual(len(prefixes), 1)
++        self.assertTrue(prefixes[0].endswith(f"{os.path.sep}django{os.path.sep}"))
++
++    def test_does_not_match_packages_prefixed_with_django(self):
++        other_file = Path(django.__file__).parent.parent / "djangoextra" / "__init__.py"
++        self.assertFalse(str(other_file).startswith(django_file_prefixes()))

@@ -17,8 +17,12 @@ We build the measuring stick *before* any detector, because the whole thesis is
 - [x] **Step 1 — harness core + dummy tools + fixtures + tests** (this commit).
       The precision/recall math is proven on dummy tools against a tiny
       synthetic fixture corpus.
-- [ ] Step 2 — mine 50–100 real merged Python PRs into `corpus/known-good/`
-      (`bench mine`; needs `GITHUB_TOKEN`).
+- [x] Step 2 — mined 96 real merged Python PRs (12 each from 8 major repos,
+      seven selection gates) into `corpus/known-good/`; `bench verify` QA pass
+      quarantined 1 case, restored by owner adjudication (string-literal
+      fixture — see `PHASE1-NOTES.md` R1). Final: **96 known-good cases**.
+      Per-gate counts: `corpus/known-good/mining-report.json`; name
+      resolutions: `corpus/known-good/verification-report.json`.
 - [ ] Step 3 — author ~20 seeded-hallucination diffs into `corpus/seeded/`
       (methodology: see [`corpus/README.md`](corpus/README.md)).
 
@@ -70,6 +74,23 @@ python3 -m bench eval \
 
 Swap `fixed_list.py` for `never_fire.py` (0 noise, 0 recall) or `always_fire.py`
 (max recall, heavy noise) to see the contrast. Add `--json` for machine output.
+
+Mine and QA-verify the real known-good corpus (step 2; needs `GITHUB_TOKEN`,
+e.g. in a gitignored `.env`):
+
+```sh
+python3 -m bench mine --repo django/django --repo pandas-dev/pandas --count 12
+python3 -m bench verify --corpus corpus/known-good
+```
+
+`verify` resolves every added import/requirement (stdlib → first-party → PyPI)
+and quarantines anything unresolved to `corpus/review/` for human judgment.
+It QAs the mining; it is **not** the cleanliness guarantee — see
+[`corpus/README.md`](corpus/README.md) for why (oracle circularity).
+
+**macOS note:** with a python.org-installed Python, urllib may fail SSL
+verification (`CERTIFICATE_VERIFY_FAILED`). Point it at the system CA bundle:
+`export SSL_CERT_FILE=/etc/ssl/cert.pem`. No package installs needed.
 
 ## Integrity rules (followed in this repo)
 

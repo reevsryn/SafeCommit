@@ -1,0 +1,1251 @@
+{
+  "generated": "2026-06-11",
+  "corpus": "corpus/known-good",
+  "framing": "Survivorship (merged + CI in a major repo) is the cleanliness guarantee. This report is QA on the mining. Its PyPI oracle is the same oracle the Phase 1 detector uses, so it must not be cited as independent proof of corpus cleanliness.",
+  "occurrences": {
+    "stdlib": 156,
+    "first-party": 220,
+    "relative": 22,
+    "pypi": 29,
+    "adjudicated-keep": 1
+  },
+  "names": [
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": ".base_protocol",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "aio-libs__aiohttp__pr12830",
+        "aio-libs__aiohttp__pr12854",
+        "aio-libs__aiohttp__pr12855"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": ".http_exceptions",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "aio-libs__aiohttp__pr12228",
+        "aio-libs__aiohttp__pr12227",
+        "aio-libs__aiohttp__pr12208"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "aiohttp",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "aio-libs__aiohttp__pr12884",
+        "aio-libs__aiohttp__pr12823",
+        "aio-libs__aiohttp__pr12228",
+        "aio-libs__aiohttp__pr12227",
+        "aio-libs__aiohttp__pr12208",
+        "aio-libs__aiohttp__pr12830",
+        "aio-libs__aiohttp__pr12854",
+        "aio-libs__aiohttp__pr12855",
+        "aio-libs__aiohttp__pr12845",
+        "aio-libs__aiohttp__pr12849"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "aio-libs__aiohttp__pr12823"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "contextlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "aio-libs__aiohttp__pr12845"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "dataclasses",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "aio-libs__aiohttp__pr12884",
+        "aio-libs__aiohttp__pr12823"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "ipaddress",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "aio-libs__aiohttp__pr12849"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "itertools",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "aio-libs__aiohttp__pr12849"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "aio-libs__aiohttp__pr12746",
+        "aio-libs__aiohttp__pr12798"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "ssl",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "aio-libs__aiohttp__pr12884",
+        "aio-libs__aiohttp__pr12823"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "aio-libs__aiohttp__pr12884",
+        "aio-libs__aiohttp__pr12823",
+        "aio-libs__aiohttp__pr12228"
+      ]
+    },
+    {
+      "repo": "aio-libs/aiohttp",
+      "name": "zlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "aio-libs__aiohttp__pr12845"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": ".",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "django__django__pr21439"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr16012"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "dataclasses",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr16012"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "django",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "django__django__pr21424",
+        "django__django__pr21439",
+        "django__django__pr21438",
+        "django__django__pr21427",
+        "django__django__pr21437",
+        "django__django__pr16012",
+        "django__django__pr21041",
+        "django__django__pr21092",
+        "django__django__pr20587"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "django",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "django__django__pr21424"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "functools",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr21424"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "gc",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr21445"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "itertools",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr21197"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "operator",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr21092"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr21424"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "pathlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr21424",
+        "django__django__pr21439"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "random",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr20583"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr21197"
+      ]
+    },
+    {
+      "repo": "django/django",
+      "name": "warnings",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "django__django__pr16012",
+        "django__django__pr20587"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": ".._config",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "encode__httpx__pr3319",
+        "encode__httpx__pr3394"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": ".._types",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "encode__httpx__pr3319",
+        "encode__httpx__pr3419"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "._config",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "encode__httpx__pr3319"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "._types",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "encode__httpx__pr3319",
+        "encode__httpx__pr3419"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "._utils",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "encode__httpx__pr3389",
+        "encode__httpx__pr3387"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "asyncio",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3319"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "brotli",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "encode__httpx__pr3319"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "brotlicffi",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "encode__httpx__pr3319"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "certifi",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "encode__httpx__pr3394",
+        "encode__httpx__pr3377"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "codecs",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3387"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "collections",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3394"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "httpcore",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "encode__httpx__pr3377"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "httpx",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "encode__httpx__pr3367",
+        "encode__httpx__pr3389"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "httpx",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "encode__httpx__pr3377"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "mimetypes",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3388"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "mypy",
+      "kind": "requirement",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "encode__httpx__pr3654"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3419"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "re",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3387",
+        "encode__httpx__pr3388"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "ruff",
+      "kind": "requirement",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "encode__httpx__pr3651"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "sniffio",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "encode__httpx__pr3319"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "ssl",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3319",
+        "encode__httpx__pr3401",
+        "encode__httpx__pr3394",
+        "encode__httpx__pr3377"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3319",
+        "encode__httpx__pr3377"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "time",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3319"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "typing",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3670",
+        "encode__httpx__pr3319"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "warnings",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "encode__httpx__pr3319",
+        "encode__httpx__pr3419",
+        "encode__httpx__pr3394"
+      ]
+    },
+    {
+      "repo": "encode/httpx",
+      "name": "zstandard",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "encode__httpx__pr3319"
+      ]
+    },
+    {
+      "repo": "pandas-dev/pandas",
+      "name": "numpy",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "pandas-dev__pandas__pr63887"
+      ]
+    },
+    {
+      "repo": "pandas-dev/pandas",
+      "name": "pandas",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "pandas-dev__pandas__pr65853",
+        "pandas-dev__pandas__pr65848",
+        "pandas-dev__pandas__pr65265",
+        "pandas-dev__pandas__pr65164",
+        "pandas-dev__pandas__pr65466",
+        "pandas-dev__pandas__pr65683",
+        "pandas-dev__pandas__pr65790",
+        "pandas-dev__pandas__pr65606",
+        "pandas-dev__pandas__pr65097",
+        "pandas-dev__pandas__pr65742"
+      ]
+    },
+    {
+      "repo": "pandas-dev/pandas",
+      "name": "pandas",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "pandas-dev__pandas__pr65788"
+      ]
+    },
+    {
+      "repo": "pandas-dev/pandas",
+      "name": "pyarrow",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "pandas-dev__pandas__pr65097"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": ".lazy",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "psf__black__pr5048"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "aiohttp",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "psf__black__pr5039"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "asyncio",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5039"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "black",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "psf__black__pr5107",
+        "psf__black__pr5129",
+        "psf__black__pr5080",
+        "psf__black__pr5021",
+        "psf__black__pr5038"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "click",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "psf__black__pr5066"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5171",
+        "psf__black__pr5039",
+        "psf__black__pr5038"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "concurrent",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5039"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "datetime",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5039"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "m",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "psf__black__pr5161"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5129",
+        "psf__black__pr5039"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "pytest",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "psf__black__pr5038"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "re",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5068"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "string",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5038"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5158",
+        "psf__black__pr5021"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "threading",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5039"
+      ]
+    },
+    {
+      "repo": "psf/black",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "psf__black__pr5158",
+        "psf__black__pr5021"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "__future__",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876",
+        "pypa__pip__pr13945",
+        "pypa__pip__pr13870"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876",
+        "pypa__pip__pr13923",
+        "pypa__pip__pr13817"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "contextlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13923"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "copy",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13887"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "importlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13973"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "json",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876",
+        "pypa__pip__pr13817"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "pathlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "pip",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "pypa__pip__pr13946",
+        "pypa__pip__pr13876",
+        "pypa__pip__pr13923",
+        "pypa__pip__pr13817",
+        "pypa__pip__pr13917",
+        "pypa__pip__pr13916",
+        "pypa__pip__pr13912"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "pip",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "pypa__pip__pr13912"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "pip_unexpected_module_xyz",
+      "kind": "import",
+      "status": "adjudicated-keep",
+      "evidence": "PyPI 404 (cached 2026-06-11); owner adjudication on file in manifest",
+      "cases": [
+        "pypa__pip__pr13912"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "pypa__pip__pr13876"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "re",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "setuptools",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "pypa__pip__pr13888"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876",
+        "pypa__pip__pr13945",
+        "pypa__pip__pr13912"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "tests",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "pypa__pip__pr13876"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876",
+        "pypa__pip__pr13945",
+        "pypa__pip__pr13817",
+        "pypa__pip__pr13912"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "typing_extensions",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "pypa__pip__pr13945"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "unittest",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13923",
+        "pypa__pip__pr13870"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "urllib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13876"
+      ]
+    },
+    {
+      "repo": "pypa/pip",
+      "name": "warnings",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pypa__pip__pr13912"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "__future__",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14520"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "_pytest",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "pytest-dev__pytest__pr14567",
+        "pytest-dev__pytest__pr14573",
+        "pytest-dev__pytest__pr14520",
+        "pytest-dev__pytest__pr14126",
+        "pytest-dev__pytest__pr14170"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14521",
+        "pytest-dev__pytest__pr14520",
+        "pytest-dev__pytest__pr14080"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "collections",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14520"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "dataclasses",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14520"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "difflib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14520"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "difflib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14520"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "gc",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14499"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "getpass",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14506"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "pprint",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14520"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "pytest",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "pytest-dev__pytest__pr14567",
+        "pytest-dev__pytest__pr14540",
+        "pytest-dev__pytest__pr14566",
+        "pytest-dev__pytest__pr14499",
+        "pytest-dev__pytest__pr14210"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14567",
+        "pytest-dev__pytest__pr14520"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "unittest",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14210"
+      ]
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "name": "warnings",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "pytest-dev__pytest__pr14499",
+        "pytest-dev__pytest__pr14126"
+      ]
+    },
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "name": "inspect",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "scikit-learn__scikit-learn__pr30859"
+      ]
+    },
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "name": "matplotlib",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "scikit-learn__scikit-learn__pr33888"
+      ]
+    },
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "name": "matplotlib",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "scikit-learn__scikit-learn__pr33849"
+      ]
+    },
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "name": "numpy",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "scikit-learn__scikit-learn__pr33892"
+      ]
+    },
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "name": "sklearn",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "scikit-learn__scikit-learn__pr33150",
+        "scikit-learn__scikit-learn__pr34077",
+        "scikit-learn__scikit-learn__pr34092",
+        "scikit-learn__scikit-learn__pr34224",
+        "scikit-learn__scikit-learn__pr30859",
+        "scikit-learn__scikit-learn__pr34192",
+        "scikit-learn__scikit-learn__pr30562",
+        "scikit-learn__scikit-learn__pr33952"
+      ]
+    },
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "name": "threading",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "scikit-learn__scikit-learn__pr34187"
+      ]
+    },
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "scikit-learn__scikit-learn__pr30859"
+      ]
+    }
+  ],
+  "unresolved": {}
+}

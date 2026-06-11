@@ -1,0 +1,75 @@
+diff --git a/changelog/13885.bugfix.rst b/changelog/13885.bugfix.rst
+new file mode 100644
+index 00000000000..c4b7ebe4b4e
+--- /dev/null
++++ b/changelog/13885.bugfix.rst
+@@ -0,0 +1 @@
++Fixed autouse fixtures defined inside a :class:`unittest.TestCase` class running even when the class is decorated with :func:`unittest.skip` or :func:`unittest.skipIf` -- regression since pytest 8.1.0.
+diff --git a/src/_pytest/unittest.py b/src/_pytest/unittest.py
+index 31be8847821..9de620f9254 100644
+--- a/src/_pytest/unittest.py
++++ b/src/_pytest/unittest.py
+@@ -100,6 +100,8 @@ def collect(self) -> Iterable[Item | Collector]:
+             self._register_unittest_setup_method_fixture(cls)
+             self._register_unittest_setup_class_fixture(cls)
+             self._register_setup_class_fixture()
++        else:
++            self._register_unittest_skip_fixture(cls)
+ 
+         self.session._fixturemanager.parsefactories(self.newinstance(), self.nodeid)
+ 
+@@ -175,6 +177,22 @@ def unittest_setup_class_fixture(
+             autouse=True,
+         )
+ 
++    def _register_unittest_skip_fixture(self, cls: type) -> None:
++        """Register an auto-use fixture to skip tests for a class decorated
++        with @unittest.skip or @unittest.skipIf (#13885)."""
++
++        def unittest_skip_fixture(request: FixtureRequest) -> None:
++            reason = getattr(cls, "__unittest_skip_why__", "")
++            raise skip.Exception(reason, _use_item_location=True)
++
++        self.session._fixturemanager._register_fixture(
++            name=f"_unittest_skip_fixture_{cls.__qualname__}",
++            func=unittest_skip_fixture,
++            nodeid=self.nodeid,
++            scope="class",
++            autouse=True,
++        )
++
+     def _register_unittest_setup_method_fixture(self, cls: type) -> None:
+         """Register an auto-use fixture to invoke setup_method and
+         teardown_method (#517)."""
+diff --git a/testing/test_unittest.py b/testing/test_unittest.py
+index 395c9fe647e..5d74d514c3c 100644
+--- a/testing/test_unittest.py
++++ b/testing/test_unittest.py
+@@ -244,6 +244,27 @@ def tearDownClass(self):
+     reprec.assertoutcome(skipped=1)
+ 
+ 
++def test_unittest_skip_with_autouse_fixture(pytester: Pytester) -> None:
++    """Autouse fixtures inside a @unittest.skipIf class should not run (#13885)."""
++    pytester.makepyfile(
++        """
++        import unittest
++        import pytest
++
++        @unittest.skipIf(True, "skip reason")
++        class TestSkipped(unittest.TestCase):
++            @pytest.fixture(autouse=True)
++            def my_fixture(self):
++                raise RuntimeError("fixture should not run")
++
++            def test_one(self):
++                pass
++    """
++    )
++    reprec = pytester.inline_run()
++    reprec.assertoutcome(skipped=1)
++
++
+ def test_method_and_teardown_failing_reporting(pytester: Pytester) -> None:
+     pytester.makepyfile(
+         """

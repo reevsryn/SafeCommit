@@ -1,0 +1,40 @@
+diff --git a/tests/admin_views/test_multidb.py b/tests/admin_views/test_multidb.py
+index 0f18aeb31550..870d434b02d5 100644
+--- a/tests/admin_views/test_multidb.py
++++ b/tests/admin_views/test_multidb.py
+@@ -3,6 +3,7 @@
+ from django.contrib import admin
+ from django.contrib.auth.models import User
+ from django.contrib.contenttypes.models import ContentType
++from django.contrib.sites.models import Site
+ from django.http import HttpResponse
+ from django.test import TestCase, override_settings
+ from django.urls import path, reverse
+@@ -193,6 +194,11 @@ def allow_migrate(self, db, app_label, **hints):
+ class ViewOnSiteTests(TestCase):
+     databases = {"default", "other"}
+ 
++    def tearDown(self):
++        # Reads via ViewOnSiteRouter may prime the global SITE_CACHE using the
++        # "other" db, which is problematic for other tests that do not use it.
++        Site.objects.clear_cache()
++
+     def test_contenttype_in_separate_db(self):
+         ContentType.objects.using("other").all().delete()
+         book = Book.objects.using("other").create(name="other book")
+diff --git a/tests/sites_tests/tests.py b/tests/sites_tests/tests.py
+index 32bc8f65f9cb..686ff289d17b 100644
+--- a/tests/sites_tests/tests.py
++++ b/tests/sites_tests/tests.py
+@@ -270,8 +270,9 @@ class CreateDefaultSiteTests(TestCase):
+ 
+     @classmethod
+     def setUpTestData(cls):
+-        # Delete the site created as part of the default migration process.
+-        Site.objects.all().delete()
++        # Delete the sites created in post_migrate signals on test db creation.
++        for using in cls.databases:
++            Site.objects.all().using(using).delete()
+ 
+     def setUp(self):
+         self.app_config = apps.get_app_config("sites")

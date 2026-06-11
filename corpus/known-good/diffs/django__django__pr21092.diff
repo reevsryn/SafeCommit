@@ -1,0 +1,700 @@
+diff --git a/django/contrib/postgres/aggregates/general.py b/django/contrib/postgres/aggregates/general.py
+index 76dc7e263398..be43e899be1e 100644
+--- a/django/contrib/postgres/aggregates/general.py
++++ b/django/contrib/postgres/aggregates/general.py
+@@ -1,16 +1,20 @@
+ import warnings
+ 
+ from django.contrib.postgres.fields import ArrayField
+-from django.db.models import Aggregate, BooleanField, JSONField
++from django.db.models import Aggregate
++from django.db.models import BitAnd as _BitAnd
++from django.db.models import BitOr as _BitOr
++from django.db.models import BitXor as _BitXor
++from django.db.models import BooleanField, JSONField
+ from django.db.models import StringAgg as _StringAgg
+ from django.db.models import Value
+ from django.utils.deprecation import RemovedInDjango70Warning
+ 
+ __all__ = [
+     "ArrayAgg",
+-    "BitAnd",
+-    "BitOr",
+-    "BitXor",
++    "BitAnd",  # RemovedInDjango70Warning
++    "BitOr",  # RemovedInDjango70Warning
++    "BitXor",  # RemovedInDjango70Warning
+     "BoolAnd",
+     "BoolOr",
+     "JSONBAgg",
+@@ -28,16 +32,37 @@ def output_field(self):
+         return ArrayField(self.source_expressions[0].output_field)
+ 
+ 
+-class BitAnd(Aggregate):
+-    function = "BIT_AND"
++class BitAnd(_BitAnd):
++    def __init__(self, expression, **extra):
++        warnings.warn(
++            "The PostgreSQL-specific BitAnd function is deprecated. Use "
++            "django.db.models.aggregates.BitAnd instead.",
++            category=RemovedInDjango70Warning,
++            stacklevel=2,
++        )
++        super().__init__(expression, **extra)
+ 
+ 
+-class BitOr(Aggregate):
+-    function = "BIT_OR"
++class BitOr(_BitOr):
++    def __init__(self, expression, **extra):
++        warnings.warn(
++            "The PostgreSQL-specific BitOr function is deprecated. Use "
++            "django.db.models.aggregates.BitOr instead.",
++            category=RemovedInDjango70Warning,
++            stacklevel=2,
++        )
++        super().__init__(expression, **extra)
+ 
+ 
+-class BitXor(Aggregate):
+-    function = "BIT_XOR"
++class BitXor(_BitXor):
++    def __init__(self, expression, **extra):
++        warnings.warn(
++            "The PostgreSQL-specific BitXor function is deprecated. Use "
++            "django.db.models.aggregates.BitXor instead.",
++            category=RemovedInDjango70Warning,
++            stacklevel=2,
++        )
++        super().__init__(expression, **extra)
+ 
+ 
+ class BoolAnd(Aggregate):
+diff --git a/django/db/backends/base/features.py b/django/db/backends/base/features.py
+index 0d9178dae812..6770c177c172 100644
+--- a/django/db/backends/base/features.py
++++ b/django/db/backends/base/features.py
+@@ -274,6 +274,12 @@ class BaseDatabaseFeatures:
+     # Does the database support SQL 2023 ANY_VALUE in GROUP BY?
+     supports_any_value = False
+ 
++    # Does the database support bitwise aggregations: BIT_AND, BIT_OR, and
++    # BIT_XOR?
++    supports_bit_aggregations = True
++    # Does the backend support the default parameter in bitwise aggregations?
++    supports_default_in_bit_aggregations = True
++
+     # Does the backend support indexing a TextField?
+     supports_index_on_text_field = True
+ 
+diff --git a/django/db/backends/mysql/features.py b/django/db/backends/mysql/features.py
+index eb9601bcef44..e7970cb063fa 100644
+--- a/django/db/backends/mysql/features.py
++++ b/django/db/backends/mysql/features.py
+@@ -28,6 +28,7 @@ class DatabaseFeatures(BaseDatabaseFeatures):
+     supports_over_clause = True
+     supports_frame_range_fixed_distance = True
+     supports_update_conflicts = True
++    supports_default_in_bit_aggregations = False
+     can_rename_index = True
+     delete_can_self_reference_subquery = False
+     create_test_procedure_without_params_sql = """
+diff --git a/django/db/backends/oracle/features.py b/django/db/backends/oracle/features.py
+index 39d857be5934..55c64a818d18 100644
+--- a/django/db/backends/oracle/features.py
++++ b/django/db/backends/oracle/features.py
+@@ -79,6 +79,7 @@ class DatabaseFeatures(BaseDatabaseFeatures):
+     supports_collation_on_textfield = False
+     supports_on_delete_db_default = False
+     supports_no_precision_decimalfield = True
++    supports_default_in_bit_aggregations = False
+     test_now_utc_template = "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'"
+     django_test_expected_failures = {
+         # A bug in Django/oracledb with respect to string handling (#23843).
+@@ -240,3 +241,7 @@ def supports_uuid4_function(self):
+     @cached_property
+     def supports_stored_generated_columns(self):
+         return self.connection.oracle_version >= (23, 7)
++
++    @cached_property
++    def supports_bit_aggregations(self):
++        return self.connection.oracle_version >= (21,)
+diff --git a/django/db/backends/sqlite3/_functions.py b/django/db/backends/sqlite3/_functions.py
+index aa4100e83fd9..73a5f4d987e8 100644
+--- a/django/db/backends/sqlite3/_functions.py
++++ b/django/db/backends/sqlite3/_functions.py
+@@ -3,6 +3,7 @@
+ """
+ 
+ import functools
++import operator
+ import random
+ import statistics
+ import zoneinfo
+@@ -86,6 +87,9 @@ def register(connection):
+     connection.create_aggregate("VAR_POP", 1, VarPop)
+     connection.create_aggregate("VAR_SAMP", 1, VarSamp)
+     connection.create_aggregate("ANY_VALUE", 1, AnyValue)
++    connection.create_aggregate("BIT_AND", 1, BitAnd)
++    connection.create_aggregate("BIT_OR", 1, BitOr)
++    connection.create_aggregate("BIT_XOR", 1, BitXor)
+     connection.create_function("UUIDV4", 0, _sqlite_uuid4)
+     if PY314:
+         connection.create_function("UUIDV7", 0, _sqlite_uuid7)
+@@ -535,3 +539,27 @@ class VarSamp(ListAggregate):
+ class AnyValue(ListAggregate):
+     def finalize(self):
+         return self[0]
++
++
++class BitAggregate(ListAggregate):
++    bit_operator = None
++
++    def finalize(self):
++        items = (item for item in self if item is not None)
++        try:
++            return functools.reduce(self.bit_operator, items)
++        except TypeError:
++            # items may be an empty iterator when all elements are None.
++            return None
++
++
++class BitAnd(BitAggregate):
++    bit_operator = operator.and_
++
++
++class BitOr(BitAggregate):
++    bit_operator = operator.or_
++
++
++class BitXor(BitAggregate):
++    bit_operator = operator.xor
+diff --git a/django/db/models/aggregates.py b/django/db/models/aggregates.py
+index d1139e8bcc3c..efbf7e5b0c69 100644
+--- a/django/db/models/aggregates.py
++++ b/django/db/models/aggregates.py
+@@ -24,6 +24,9 @@
+     "Aggregate",
+     "AnyValue",
+     "Avg",
++    "BitAnd",
++    "BitOr",
++    "BitXor",
+     "Count",
+     "Max",
+     "Min",
+@@ -241,6 +244,54 @@ class Avg(FixDurationInputMixin, NumericOutputFieldMixin, Aggregate):
+     arity = 1
+ 
+ 
++class BitAggregate(Aggregate):
++    arity = 1
++
++    def __init__(self, expression, **extra):
++        super().__init__(expression, **extra)
++        # self.default is reset in Aggregate.resolve_expression(). Store the
++        # information for the later check in as_sql().
++        self._has_default = self.default is not None
++
++    def as_sql(self, compiler, connection, **extra_context):
++        if not connection.features.supports_bit_aggregations:
++            raise NotSupportedError(
++                f"{self.name} is not supported on {connection.vendor}."
++            )
++        if (
++            self._has_default
++            and not connection.features.supports_default_in_bit_aggregations
++        ):
++            raise NotSupportedError(
++                f"{self.name} does not support the default parameter on "
++                f"{connection.vendor}."
++            )
++        return super().as_sql(compiler, connection, **extra_context)
++
++    def as_oracle(self, compiler, connection, **extra_context):
++        return self.as_sql(
++            compiler,
++            connection,
++            function=f"{self.function}_AGG",
++            **extra_context,
++        )
++
++
++class BitAnd(BitAggregate):
++    function = "BIT_AND"
++    name = "BitAnd"
++
++
++class BitOr(BitAggregate):
++    function = "BIT_OR"
++    name = "BitOr"
++
++
++class BitXor(BitAggregate):
++    function = "BIT_XOR"
++    name = "BitXor"
++
++
+ class Count(Aggregate):
+     function = "COUNT"
+     name = "Count"
+diff --git a/docs/internals/deprecation.txt b/docs/internals/deprecation.txt
+index b0d62e987912..799c35533479 100644
+--- a/docs/internals/deprecation.txt
++++ b/docs/internals/deprecation.txt
+@@ -69,6 +69,10 @@ details on these changes.
+ 
+ * The ``SQLCompiler.quote_name_unless_alias()`` method will be removed.
+ 
++* The ``django.contrib.postgres.aggregates.BitAnd``,
++  ``django.contrib.postgres.aggregates.BitOr``, and
++  ``django.contrib.postgres.aggregates.BitXor`` classes will be removed.
++
+ .. _deprecation-removed-in-6.1:
+ 
+ 6.1
+diff --git a/docs/ref/contrib/postgres/aggregates.txt b/docs/ref/contrib/postgres/aggregates.txt
+index 040e57c5af0c..6381f0f7ebb5 100644
+--- a/docs/ref/contrib/postgres/aggregates.txt
++++ b/docs/ref/contrib/postgres/aggregates.txt
+@@ -62,6 +62,11 @@ General-purpose aggregation functions
+     Returns an ``int`` of the bitwise ``AND`` of all non-null input values, or
+     ``default`` if all values are null.
+ 
++    .. deprecated:: 6.1
++
++        This class is deprecated in favor of the generally available
++        :class:`~django.db.models.BitAnd` class.
++
+ ``BitOr``
+ ---------
+ 
+@@ -70,6 +75,11 @@ General-purpose aggregation functions
+     Returns an ``int`` of the bitwise ``OR`` of all non-null input values, or
+     ``default`` if all values are null.
+ 
++    .. deprecated:: 6.1
++
++        This class is deprecated in favor of the generally available
++        :class:`~django.db.models.BitOr` class.
++
+ ``BitXor``
+ ----------
+ 
+@@ -78,6 +88,11 @@ General-purpose aggregation functions
+     Returns an ``int`` of the bitwise ``XOR`` of all non-null input values, or
+     ``default`` if all values are null.
+ 
++    .. deprecated:: 6.1
++
++        This class is deprecated in favor of the generally available
++        :class:`~django.db.models.BitXor` class.
++
+ ``BoolAnd``
+ -----------
+ 
+diff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt
+index 6a76fc2703a7..ee401a569d0e 100644
+--- a/docs/ref/models/querysets.txt
++++ b/docs/ref/models/querysets.txt
+@@ -4085,6 +4085,42 @@ by the aggregate.
+         unique values. This is the SQL equivalent of ``AVG(DISTINCT <field>)``.
+         The default value is ``False``.
+ 
++``BitAnd``
++~~~~~~~~~~
++
++.. class:: BitAnd(expression, filter=None, default=None, **extra)
++
++    .. versionadded:: 6.1
++
++    Returns an ``int`` of the bitwise ``AND`` of all non-null input values, or
++    ``default`` if all values are null.
++
++    The ``default`` parameter is not supported on MariaDB, MySQL, and Oracle.
++
++``BitOr``
++~~~~~~~~~
++
++.. class:: BitOr(expression, filter=None, default=None, **extra)
++
++    .. versionadded:: 6.1
++
++    Returns an ``int`` of the bitwise ``OR`` of all non-null input values, or
++    ``default`` if all values are null.
++
++    The ``default`` parameter is not supported on MariaDB, MySQL, and Oracle.
++
++``BitXor``
++~~~~~~~~~~
++
++.. class:: BitXor(expression, filter=None, default=None, **extra)
++
++    .. versionadded:: 6.1
++
++    Returns an ``int`` of the bitwise ``XOR`` of all non-null input values, or
++    ``default`` if all values are null.
++
++    The ``default`` parameter is not supported on MariaDB, MySQL, and Oracle.
++
+ ``Count``
+ ~~~~~~~~~
+ 
+diff --git a/docs/releases/6.1.txt b/docs/releases/6.1.txt
+index 77188e0c8ef2..477117c00466 100644
+--- a/docs/releases/6.1.txt
++++ b/docs/releases/6.1.txt
+@@ -315,6 +315,11 @@ Models
+   :class:`~django.db.models.query.QuerySet` is ordered and the ordering is
+   deterministic.
+ 
++* The new :class:`~django.db.models.BitAnd`, :class:`~django.db.models.BitOr`,
++  and :class:`~django.db.models.BitXor` aggregates return the bitwise ``AND``,
++  ``OR``, ``XOR``, respectively. These aggregates were previously included only
++  in ``contrib.postgres``.
++
+ Pagination
+ ~~~~~~~~~~
+ 
+@@ -420,6 +425,9 @@ backends.
+   ``get_geom_placeholder_sql`` and is expected to return a two-elements tuple
+   composed of an SQL format string and a tuple of associated parameters.
+ 
++* Set the new ``DatabaseFeatures.supports_bit_aggregations`` attribute to
++  ``False`` if the database doesn't support bitwise aggregations.
++
+ :mod:`django.contrib.admin`
+ ---------------------------
+ 
+@@ -539,6 +547,12 @@ Miscellaneous
+   :ref:`expressions <writing-your-own-query-expressions>`, is deprecated in
+   favor of the newly introduced ``quote_name()`` method.
+ 
++* The ``BitAnd``, ``BitOr``, and ``BitXor`` classes in
++  ``django.contrib.postgres.aggregates`` are deprecated in favor of the
++  generally available :class:`~django.db.models.BitAnd`,
++  :class:`~django.db.models.BitOr`, and :class:`~django.db.models.BitXor`
++  classes.
++
+ Features removed in 6.1
+ =======================
+ 
+diff --git a/tests/aggregation/models.py b/tests/aggregation/models.py
+index 6eed9b22fb99..bbfeb1016e33 100644
+--- a/tests/aggregation/models.py
++++ b/tests/aggregation/models.py
+@@ -13,7 +13,7 @@ def __str__(self):
+ 
+ class Publisher(models.Model):
+     name = models.CharField(max_length=255)
+-    num_awards = models.IntegerField()
++    num_awards = models.IntegerField(null=True)
+     duration = models.DurationField(blank=True, null=True)
+ 
+     def __str__(self):
+diff --git a/tests/aggregation/tests.py b/tests/aggregation/tests.py
+index 0a975dcb529e..af46e616095b 100644
+--- a/tests/aggregation/tests.py
++++ b/tests/aggregation/tests.py
+@@ -10,6 +10,9 @@
+ from django.db.models import (
+     AnyValue,
+     Avg,
++    BitAnd,
++    BitOr,
++    BitXor,
+     Case,
+     CharField,
+     Count,
+@@ -1957,7 +1960,20 @@ def test_aggregation_default_unsupported_by_count(self):
+             Count("age", default=0)
+ 
+     def test_aggregation_default_unset(self):
+-        for Aggregate in [Avg, Max, Min, StdDev, Sum, Variance]:
++        test_aggregates = [Avg, Max, Min, StdDev, Sum, Variance]
++        if (
++            connection.features.supports_bit_aggregations
++            and connection.features.supports_default_in_bit_aggregations
++        ):
++            # Some databases (e.g. Oracle, MySQL, MariaDB) don't return NULL on
++            # empty sets:
++            # - BitAnd on MySQL and MariaDB returns 18446744073709551615 (all
++            #   bits set to 1),
++            # - BitAnd on Oracle returns 0
++            # - BitOr and BitXor on Oracle, MySQL, and MariaDB return 0
++            # As a consequence, they don't support the default parameter.
++            test_aggregates.extend([BitAnd, BitOr, BitXor])
++        for Aggregate in test_aggregates:
+             with self.subTest(Aggregate):
+                 result = Author.objects.filter(age__gt=100).aggregate(
+                     value=Aggregate("age"),
+@@ -1965,7 +1981,13 @@ def test_aggregation_default_unset(self):
+                 self.assertIsNone(result["value"])
+ 
+     def test_aggregation_default_zero(self):
+-        for Aggregate in [Avg, Max, Min, StdDev, Sum, Variance]:
++        test_aggregates = [Avg, Max, Min, StdDev, Sum, Variance]
++        if (
++            connection.features.supports_bit_aggregations
++            and connection.features.supports_default_in_bit_aggregations
++        ):
++            test_aggregates.extend([BitAnd, BitOr, BitXor])
++        for Aggregate in test_aggregates:
+             with self.subTest(Aggregate):
+                 result = Author.objects.filter(age__gt=100).aggregate(
+                     value=Aggregate("age", default=0),
+@@ -1973,7 +1995,13 @@ def test_aggregation_default_zero(self):
+                 self.assertEqual(result["value"], 0)
+ 
+     def test_aggregation_default_integer(self):
+-        for Aggregate in [Avg, Max, Min, StdDev, Sum, Variance]:
++        test_aggregates = [Avg, Max, Min, StdDev, Sum, Variance]
++        if (
++            connection.features.supports_bit_aggregations
++            and connection.features.supports_default_in_bit_aggregations
++        ):
++            test_aggregates.extend([BitAnd, BitOr, BitXor])
++        for Aggregate in test_aggregates:
+             with self.subTest(Aggregate):
+                 result = Author.objects.filter(age__gt=100).aggregate(
+                     value=Aggregate("age", default=21),
+@@ -2354,6 +2382,101 @@ def test_aggregate_arity(self):
+                 with self.assertRaisesMessage(TypeError, msg):
+                     super(function, func_instance).__init__(Value(1), Value(2))
+ 
++    @skipIfDBFeature("supports_bit_aggregations")
++    def test_bit_aggregations_not_supported(self):
++        for BitAggregate in [BitAnd, BitOr, BitXor]:
++            msg = f"{BitAggregate.name} is not supported on {connection.vendor}."
++            with (
++                self.subTest(BitAggregate.name),
++                self.assertRaisesMessage(NotSupportedError, msg),
++            ):
++                Publisher.objects.aggregate(BitAggregate("num_awards"))
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    @skipIfDBFeature("supports_default_in_bit_aggregations")
++    def test_bit_aggregations_default_not_supported(self):
++        for BitAggregate in [BitAnd, BitOr, BitXor]:
++            msg = (
++                f"{BitAggregate.name} does not support the default parameter on "
++                f"{connection.vendor}."
++            )
++            with (
++                self.subTest(BitAggregate.name),
++                self.assertRaisesMessage(NotSupportedError, msg),
++            ):
++                Publisher.objects.aggregate(BitAggregate("num_awards", default=21))
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_and(self):
++        Publisher.objects.create(name="Albatros", num_awards=0)
++        Publisher.objects.create(name="Newish")
++        values = Publisher.objects.filter(
++            Q(num_awards__in=[0, 1]) | Q(num_awards__isnull=True)
++        ).aggregate(bitand=BitAnd("num_awards"))
++        self.assertEqual(values, {"bitand": 0})
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_and_on_only_true_values(self):
++        values = Publisher.objects.filter(num_awards=1).aggregate(
++            bitand=BitAnd("num_awards")
++        )
++        self.assertEqual(values, {"bitand": 1})
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_and_on_only_false_values(self):
++        Publisher.objects.create(name="Albatros", num_awards=0)
++        values = Publisher.objects.filter(num_awards=0).aggregate(
++            bitand=BitAnd("num_awards")
++        )
++        self.assertEqual(values, {"bitand": 0})
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_or(self):
++        Publisher.objects.create(name="Albatros", num_awards=0)
++        Publisher.objects.create(name="Newish")
++        values = Publisher.objects.filter(
++            Q(num_awards__in=[0, 1]) | Q(num_awards__isnull=True)
++        ).aggregate(bitor=BitOr("num_awards"))
++        self.assertEqual(values, {"bitor": 1})
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_or_on_only_true_values(self):
++        values = Publisher.objects.filter(num_awards=1).aggregate(
++            bitor=BitOr("num_awards")
++        )
++        self.assertEqual(values, {"bitor": 1})
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_or_on_only_false_values(self):
++        Publisher.objects.create(name="Albatros", num_awards=0)
++        values = Publisher.objects.filter(num_awards=0).aggregate(
++            bitor=BitOr("num_awards")
++        )
++        self.assertEqual(values, {"bitor": 0})
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_xor(self):
++        Publisher.objects.create(name="Newish")
++        values = Publisher.objects.filter(
++            Q(num_awards__in=[1, 3]) | Q(num_awards__isnull=True)
++        ).aggregate(bitxor=BitXor("num_awards"))
++        self.assertEqual(values, {"bitxor": 2})
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_xor_on_only_true_values(self):
++        values = Publisher.objects.filter(
++            num_awards=1,
++        ).aggregate(bitxor=BitXor("num_awards"))
++        self.assertEqual(values, {"bitxor": 1})
++
++    @skipUnlessDBFeature("supports_bit_aggregations")
++    def test_bit_xor_on_only_false_values(self):
++        Publisher.objects.create(name="Albatros", num_awards=0)
++        values = Publisher.objects.filter(
++            num_awards=0,
++        ).aggregate(bitxor=BitXor("num_awards"))
++        self.assertEqual(values, {"bitxor": 0})
++
+     def test_string_agg_requires_delimiter(self):
+         with self.assertRaises(TypeError):
+             Book.objects.aggregate(stringagg=StringAgg("name"))
+diff --git a/tests/postgres_tests/test_aggregates.py b/tests/postgres_tests/test_aggregates.py
+index 4355eb2f9882..bd57b8e3383c 100644
+--- a/tests/postgres_tests/test_aggregates.py
++++ b/tests/postgres_tests/test_aggregates.py
+@@ -21,14 +21,14 @@
+ from .models import AggregateTestModel, HotelReservation, Room, StatTestModel
+ 
+ try:
++    from django.contrib.postgres.aggregates import BitAnd  # RemovedInDjango70Warning
++    from django.contrib.postgres.aggregates import BitOr  # RemovedInDjango70Warning
++    from django.contrib.postgres.aggregates import BitXor  # RemovedInDjango70Warning
+     from django.contrib.postgres.aggregates import (
+         StringAgg,  # RemovedInDjango70Warning.
+     )
+     from django.contrib.postgres.aggregates import (
+         ArrayAgg,
+-        BitAnd,
+-        BitOr,
+-        BitXor,
+         BoolAnd,
+         BoolOr,
+         Corr,
+@@ -91,12 +91,9 @@ def test_empty_result_set(self):
+             ArrayAgg("char_field"),
+             ArrayAgg("integer_field"),
+             ArrayAgg("boolean_field"),
+-            BitAnd("integer_field"),
+-            BitOr("integer_field"),
+             BoolAnd("boolean_field"),
+             BoolOr("boolean_field"),
+             JSONBAgg("integer_field"),
+-            BitXor("integer_field"),
+         ]
+         for aggregation in tests:
+             with self.subTest(aggregation=aggregation):
+@@ -119,8 +116,6 @@ def test_default_argument(self):
+             (ArrayAgg("char_field", default=["<empty>"]), ["<empty>"]),
+             (ArrayAgg("integer_field", default=[0]), [0]),
+             (ArrayAgg("boolean_field", default=[False]), [False]),
+-            (BitAnd("integer_field", default=0), 0),
+-            (BitOr("integer_field", default=0), 0),
+             (BoolAnd("boolean_field", default=False), False),
+             (BoolOr("boolean_field", default=False), False),
+             (JSONBAgg("integer_field", default=["<empty>"]), ["<empty>"]),
+@@ -128,7 +123,6 @@ def test_default_argument(self):
+                 JSONBAgg("integer_field", default=Value(["<empty>"], JSONField())),
+                 ["<empty>"],
+             ),
+-            (BitXor("integer_field", default=0), 0),
+         ]
+         for aggregation, expected_result in tests:
+             with self.subTest(aggregation=aggregation):
+@@ -334,61 +328,6 @@ def test_array_agg_with_order_by_outer_ref(self):
+             )
+         )
+ 
+-    def test_bit_and_general(self):
+-        values = AggregateTestModel.objects.filter(integer_field__in=[0, 1]).aggregate(
+-            bitand=BitAnd("integer_field")
+-        )
+-        self.assertEqual(values, {"bitand": 0})
+-
+-    def test_bit_and_on_only_true_values(self):
+-        values = AggregateTestModel.objects.filter(integer_field=1).aggregate(
+-            bitand=BitAnd("integer_field")
+-        )
+-        self.assertEqual(values, {"bitand": 1})
+-
+-    def test_bit_and_on_only_false_values(self):
+-        values = AggregateTestModel.objects.filter(integer_field=0).aggregate(
+-            bitand=BitAnd("integer_field")
+-        )
+-        self.assertEqual(values, {"bitand": 0})
+-
+-    def test_bit_or_general(self):
+-        values = AggregateTestModel.objects.filter(integer_field__in=[0, 1]).aggregate(
+-            bitor=BitOr("integer_field")
+-        )
+-        self.assertEqual(values, {"bitor": 1})
+-
+-    def test_bit_or_on_only_true_values(self):
+-        values = AggregateTestModel.objects.filter(integer_field=1).aggregate(
+-            bitor=BitOr("integer_field")
+-        )
+-        self.assertEqual(values, {"bitor": 1})
+-
+-    def test_bit_or_on_only_false_values(self):
+-        values = AggregateTestModel.objects.filter(integer_field=0).aggregate(
+-            bitor=BitOr("integer_field")
+-        )
+-        self.assertEqual(values, {"bitor": 0})
+-
+-    def test_bit_xor_general(self):
+-        AggregateTestModel.objects.create(integer_field=3)
+-        values = AggregateTestModel.objects.filter(
+-            integer_field__in=[1, 3],
+-        ).aggregate(bitxor=BitXor("integer_field"))
+-        self.assertEqual(values, {"bitxor": 2})
+-
+-    def test_bit_xor_on_only_true_values(self):
+-        values = AggregateTestModel.objects.filter(
+-            integer_field=1,
+-        ).aggregate(bitxor=BitXor("integer_field"))
+-        self.assertEqual(values, {"bitxor": 1})
+-
+-    def test_bit_xor_on_only_false_values(self):
+-        values = AggregateTestModel.objects.filter(
+-            integer_field=0,
+-        ).aggregate(bitxor=BitXor("integer_field"))
+-        self.assertEqual(values, {"bitxor": 0})
+-
+     def test_bool_and_general(self):
+         values = AggregateTestModel.objects.aggregate(booland=BoolAnd("boolean_field"))
+         self.assertEqual(values, {"booland": False})
+@@ -651,6 +590,22 @@ def test_string_agg_deprecation(self):
+             self.assertEqual(values, {"stringagg": "Foo1'Foo2'Foo4'Foo3"})
+         self.assertEqual(ctx.filename, __file__)
+ 
++    def test_bit_agg_deprecation(self):
++        for BitAggregate in [BitAnd, BitOr, BitXor]:
++            msg = (
++                f"The PostgreSQL-specific {BitAggregate.__name__} function is "
++                f"deprecated. Use django.db.models.aggregates.{BitAggregate.__name__} "
++                "instead."
++            )
++            with (
++                self.subTest(BitAggregate.__name__),
++                self.assertWarnsMessage(RemovedInDjango70Warning, msg) as ctx,
++            ):
++                AggregateTestModel.objects.aggregate(
++                    bitagg=BitAggregate("integer_field")
++                )
++        self.assertEqual(ctx.filename, __file__)
++
+ 
+ class TestAggregateDistinct(PostgreSQLTestCase):
+     @classmethod

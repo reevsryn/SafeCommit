@@ -1,0 +1,437 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 3fd3f73c48d..dd7b67bdb0c 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -41,6 +41,10 @@
+ 
+ <!-- Changes to blackd -->
+ 
++- Disable browser-originated requests by default, add configurable origin allowlisting
++  and request body limits, and bound executor submissions to improve backpressure
++  (#5039)
++
+ ### Integrations
+ 
+ <!-- For example, Docker, GitHub Actions, pre-commit, editors -->
+diff --git a/docs/usage_and_configuration/black_as_a_server.md b/docs/usage_and_configuration/black_as_a_server.md
+index 84e8ff82bf3..1bd4d5615be 100644
+--- a/docs/usage_and_configuration/black_as_a_server.md
++++ b/docs/usage_and_configuration/black_as_a_server.md
+@@ -51,12 +51,17 @@ if __name__ == "__main__":
+     asyncio.run(main())
+ ```
+ 
++Cross-origin browser requests are rejected by default. If you need to access `blackd`
++from a browser-based client, pass one or more `--cors-allow-origin` options to allow
++specific origins.
++
+ ## Protocol
+ 
+ `blackd` only accepts `POST` requests at the `/` path. The body of the request should
+ contain the python source code to be formatted, encoded according to the `charset` field
+ in the `Content-Type` request header. If no `charset` is specified, `blackd` assumes
+-`UTF-8`.
++`UTF-8`. Request bodies are limited to 5 MiB by default; use `--max-body-size` to change
++that limit.
+ 
+ There are a few HTTP headers that control how the source code is formatted. These
+ correspond to command line flags for _Black_. There is one exception to this:
+diff --git a/src/blackd/__init__.py b/src/blackd/__init__.py
+index bca223ee090..4646e919735 100644
+--- a/src/blackd/__init__.py
++++ b/src/blackd/__init__.py
+@@ -1,5 +1,6 @@
+ import asyncio
+ import logging
++import os
+ from concurrent.futures import Executor, ProcessPoolExecutor
+ from datetime import datetime, timezone
+ from functools import cache, partial
+@@ -55,6 +56,8 @@
+ 
+ # Response headers
+ BLACK_VERSION_HEADER = "X-Black-Version"
++DEFAULT_MAX_BODY_SIZE = 5 * 1024 * 1024
++DEFAULT_WORKERS = os.cpu_count() or 1
+ 
+ 
+ class HeaderError(Exception):
+@@ -76,10 +79,28 @@ class InvalidVariantHeader(Exception):
+ @click.option(
+     "--bind-port", type=int, help="Port to listen on", default=45484, show_default=True
+ )
++@click.option(
++    "--cors-allow-origin",
++    "cors_allow_origins",
++    multiple=True,
++    help="Origin allowed to access blackd over CORS. Can be passed multiple times.",
++)
++@click.option(
++    "--max-body-size",
++    type=click.IntRange(min=1),
++    default=DEFAULT_MAX_BODY_SIZE,
++    show_default=True,
++    help="Maximum request body size in bytes.",
++)
+ @click.version_option(version=black.__version__)
+-def main(bind_host: str, bind_port: int) -> None:
++def main(
++    bind_host: str,
++    bind_port: int,
++    cors_allow_origins: tuple[str, ...],
++    max_body_size: int,
++) -> None:
+     logging.basicConfig(level=logging.INFO)
+-    app = make_app()
++    app = make_app(cors_allow_origins=cors_allow_origins, max_body_size=max_body_size)
+     ver = black.__version__
+     black.out(f"blackd version {ver} listening on {bind_host} port {bind_port}")
+     loop = maybe_use_uvloop()
+@@ -99,18 +120,42 @@ def main(bind_host: str, bind_port: int) -> None:
+ 
+ @cache
+ def executor() -> Executor:
+-    return ProcessPoolExecutor()
++    return ProcessPoolExecutor(max_workers=DEFAULT_WORKERS)
+ 
+ 
+-def make_app() -> web.Application:
++def make_app(
++    *,
++    cors_allow_origins: tuple[str, ...] = (),
++    max_body_size: int = DEFAULT_MAX_BODY_SIZE,
++) -> web.Application:
+     app = web.Application(
+-        middlewares=[cors(allow_headers=(*BLACK_HEADERS, "Content-Type"))]
++        client_max_size=max_body_size,
++        middlewares=[
++            cors(
++                allow_headers=(*BLACK_HEADERS, "Content-Type"),
++                allow_origins=frozenset(cors_allow_origins),
++                expose_headers=(BLACK_VERSION_HEADER,),
++            )
++        ],
+     )
+-    app.add_routes([web.post("/", partial(handle, executor=executor()))])
++    app.add_routes([
++        web.post(
++            "/",
++            partial(
++                handle,
++                executor=executor(),
++                executor_semaphore=asyncio.BoundedSemaphore(DEFAULT_WORKERS),
++            ),
++        )
++    ])
+     return app
+ 
+ 
+-async def handle(request: web.Request, executor: Executor) -> web.Response:
++async def handle(
++    request: web.Request,
++    executor: Executor,
++    executor_semaphore: asyncio.BoundedSemaphore,
++) -> web.Response:
+     headers = {BLACK_VERSION_HEADER: __version__}
+     try:
+         if request.headers.get(PROTOCOL_VERSION_HEADER, "1") != "1":
+@@ -125,7 +170,7 @@ async def handle(request: web.Request, executor: Executor) -> web.Response:
+             mode = parse_mode(request.headers)
+         except HeaderError as e:
+             return web.Response(status=400, text=e.args[0])
+-        req_bytes = await request.content.read()
++        req_bytes = await request.read()
+         charset = request.charset if request.charset is not None else "utf8"
+         req_str = req_bytes.decode(charset)
+         then = datetime.now(timezone.utc)
+@@ -136,27 +181,21 @@ async def handle(request: web.Request, executor: Executor) -> web.Response:
+             header = req_str[:first_newline_position]
+             req_str = req_str[first_newline_position:]
+ 
+-        loop = asyncio.get_event_loop()
+-        formatted_str = await loop.run_in_executor(
+-            executor, partial(black.format_file_contents, req_str, fast=fast, mode=mode)
++        only_diff = bool(request.headers.get(DIFF_HEADER, False))
++        formatted_str = await format_code(
++            req_str=req_str,
++            fast=fast,
++            mode=mode,
++            then=then,
++            only_diff=only_diff,
++            executor=executor,
++            executor_semaphore=executor_semaphore,
+         )
+ 
+         # Put the source first line back
+         req_str = header + req_str
+         formatted_str = header + formatted_str
+ 
+-        # Only output the diff in the HTTP response
+-        only_diff = bool(request.headers.get(DIFF_HEADER, False))
+-        if only_diff:
+-            now = datetime.now(timezone.utc)
+-            src_name = f"In\t{then}"
+-            dst_name = f"Out\t{now}"
+-            loop = asyncio.get_event_loop()
+-            formatted_str = await loop.run_in_executor(
+-                executor,
+-                partial(black.diff, req_str, formatted_str, src_name, dst_name),
+-            )
+-
+         return web.Response(
+             content_type=request.content_type,
+             charset=charset,
+@@ -167,11 +206,41 @@ async def handle(request: web.Request, executor: Executor) -> web.Response:
+         return web.Response(status=204, headers=headers)
+     except black.InvalidInput as e:
+         return web.Response(status=400, headers=headers, text=str(e))
++    except web.HTTPException:
++        raise
+     except Exception as e:
+         logging.exception("Exception during handling a request")
+         return web.Response(status=500, headers=headers, text=str(e))
+ 
+ 
++async def format_code(
++    *,
++    req_str: str,
++    fast: bool,
++    mode: black.FileMode,
++    then: datetime,
++    only_diff: bool,
++    executor: Executor,
++    executor_semaphore: asyncio.BoundedSemaphore,
++) -> str:
++    async with executor_semaphore:
++        loop = asyncio.get_event_loop()
++        formatted_str = await loop.run_in_executor(
++            executor, partial(black.format_file_contents, req_str, fast=fast, mode=mode)
++        )
++
++        if not only_diff:
++            return formatted_str
++
++        now = datetime.now(timezone.utc)
++        src_name = f"In\t{then}"
++        dst_name = f"Out\t{now}"
++        return await loop.run_in_executor(
++            executor,
++            partial(black.diff, req_str, formatted_str, src_name, dst_name),
++        )
++
++
+ def parse_mode(headers: MultiMapping[str]) -> black.Mode:
+     try:
+         line_length = int(headers.get(LINE_LENGTH_HEADER, black.DEFAULT_LINE_LENGTH))
+diff --git a/src/blackd/middlewares.py b/src/blackd/middlewares.py
+index 43448c2514a..4b2ccc9e3a5 100644
+--- a/src/blackd/middlewares.py
++++ b/src/blackd/middlewares.py
+@@ -1,5 +1,6 @@
+-from collections.abc import Awaitable, Callable, Iterable
++from collections.abc import Awaitable, Callable, Collection, Iterable
+ 
++from aiohttp import web
+ from aiohttp.typedefs import Middleware
+ from aiohttp.web_middlewares import middleware
+ from aiohttp.web_request import Request
+@@ -8,9 +9,21 @@
+ Handler = Callable[[Request], Awaitable[StreamResponse]]
+ 
+ 
+-def cors(allow_headers: Iterable[str]) -> Middleware:
++def cors(
++    *,
++    allow_headers: Iterable[str],
++    allow_origins: Collection[str],
++    expose_headers: Iterable[str],
++) -> Middleware:
+     @middleware
+     async def impl(request: Request, handler: Handler) -> StreamResponse:
++        origin = request.headers.get("Origin")
++        if not origin:
++            return await handler(request)
++
++        if origin not in allow_origins:
++            return web.Response(status=403, text="CORS origin is not allowed")
++
+         is_options = request.method == "OPTIONS"
+         is_preflight = is_options and "Access-Control-Request-Method" in request.headers
+         if is_preflight:
+@@ -18,12 +31,9 @@ async def impl(request: Request, handler: Handler) -> StreamResponse:
+         else:
+             resp = await handler(request)
+ 
+-        origin = request.headers.get("Origin")
+-        if not origin:
+-            return resp
+-
+-        resp.headers["Access-Control-Allow-Origin"] = "*"
+-        resp.headers["Access-Control-Expose-Headers"] = "*"
++        resp.headers["Access-Control-Allow-Origin"] = origin
++        if expose_headers:
++            resp.headers["Access-Control-Expose-Headers"] = ", ".join(expose_headers)
+         if is_options:
+             resp.headers["Access-Control-Allow-Headers"] = ", ".join(allow_headers)
+             resp.headers["Access-Control-Allow-Methods"] = ", ".join(
+diff --git a/tests/test_blackd.py b/tests/test_blackd.py
+index a64715cd6d2..3030ee96d0e 100644
+--- a/tests/test_blackd.py
++++ b/tests/test_blackd.py
+@@ -1,5 +1,9 @@
++import asyncio
+ import gc
+ import re
++from concurrent.futures import ThreadPoolExecutor
++from datetime import datetime, timezone
++from threading import Event
+ from unittest.mock import patch
+ 
+ import pytest
+@@ -188,19 +192,76 @@ async def test_cors_preflight(self) -> None:
+             "/",
+             headers={
+                 "Access-Control-Request-Method": "POST",
+-                "Origin": "*",
++                "Origin": "https://example.com",
+                 "Access-Control-Request-Headers": "Content-Type",
+             },
+         )
+-        self.assertEqual(response.status, 200)
+-        self.assertIsNotNone(response.headers.get("Access-Control-Allow-Origin"))
+-        self.assertIsNotNone(response.headers.get("Access-Control-Allow-Headers"))
+-        self.assertIsNotNone(response.headers.get("Access-Control-Allow-Methods"))
++        self.assertEqual(response.status, 403)
++        self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
++        self.assertIsNone(response.headers.get("Access-Control-Allow-Headers"))
++        self.assertIsNone(response.headers.get("Access-Control-Allow-Methods"))
+ 
+-    async def test_cors_headers_present(self) -> None:
+-        response = await self.client.post("/", headers={"Origin": "*"})
+-        self.assertIsNotNone(response.headers.get("Access-Control-Allow-Origin"))
+-        self.assertIsNotNone(response.headers.get("Access-Control-Expose-Headers"))
++    async def test_cors_requests_rejected_by_default(self) -> None:
++        response = await self.client.post(
++            "/", headers={"Origin": "https://example.com"}
++        )
++        self.assertEqual(response.status, 403)
++        self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
++        self.assertIsNone(response.headers.get("Access-Control-Expose-Headers"))
++
++    async def test_blackd_format_code_limits_executor_queue(self) -> None:
++        started = Event()
++        release = Event()
++        calls: list[str] = []
++        executor = ThreadPoolExecutor(max_workers=2)
++        executor_semaphore = asyncio.BoundedSemaphore(1)
++
++        def slow_format(src: str, *, fast: bool, mode: black.Mode) -> str:
++            calls.append(src)
++            started.set()
++            release.wait(timeout=1)
++            return src
++
++        try:
++            with patch("blackd.black.format_file_contents", side_effect=slow_format):
++                task1 = asyncio.create_task(
++                    blackd.format_code(
++                        req_str="print(1)\n",
++                        fast=False,
++                        mode=black.Mode(),
++                        then=datetime.now(timezone.utc),
++                        only_diff=False,
++                        executor=executor,
++                        executor_semaphore=executor_semaphore,
++                    )
++                )
++
++                for _ in range(20):
++                    if started.is_set():
++                        break
++                    await asyncio.sleep(0.01)
++                self.assertTrue(started.is_set())
++
++                task2 = asyncio.create_task(
++                    blackd.format_code(
++                        req_str="print(2)\n",
++                        fast=False,
++                        mode=black.Mode(),
++                        then=datetime.now(timezone.utc),
++                        only_diff=False,
++                        executor=executor,
++                        executor_semaphore=executor_semaphore,
++                    )
++                )
++                await asyncio.sleep(0.05)
++                self.assertEqual(len(calls), 1)
++
++                release.set()
++                self.assertEqual(await task1, "print(1)\n")
++                self.assertEqual(await task2, "print(2)\n")
++                self.assertEqual(len(calls), 2)
++        finally:
++            executor.shutdown(wait=True)
+ 
+     async def test_preserves_line_endings(self) -> None:
+         for data in (b"c\r\nc\r\n", b"l\nl\n"):
+@@ -223,6 +284,60 @@ async def test_single_character(self) -> None:
+         self.assertEqual(response.status, 200)
+ 
+ 
++@pytest.mark.blackd
++class BlackDConfiguredCorsTestCase(AioHTTPTestCase):
++    def tearDown(self) -> None:
++        gc.collect()
++        super().tearDown()
++
++    async def get_application(self) -> web.Application:
++        return blackd.make_app(cors_allow_origins=("https://example.com",))
++
++    async def test_cors_preflight(self) -> None:
++        response = await self.client.options(
++            "/",
++            headers={
++                "Access-Control-Request-Method": "POST",
++                "Origin": "https://example.com",
++                "Access-Control-Request-Headers": "Content-Type",
++            },
++        )
++        self.assertEqual(response.status, 200)
++        self.assertEqual(
++            response.headers.get("Access-Control-Allow-Origin"),
++            "https://example.com",
++        )
++        self.assertIsNotNone(response.headers.get("Access-Control-Allow-Headers"))
++        self.assertIsNotNone(response.headers.get("Access-Control-Allow-Methods"))
++
++    async def test_cors_headers_present(self) -> None:
++        response = await self.client.post(
++            "/", headers={"Origin": "https://example.com"}
++        )
++        self.assertEqual(
++            response.headers.get("Access-Control-Allow-Origin"),
++            "https://example.com",
++        )
++        self.assertIn(
++            blackd.BLACK_VERSION_HEADER,
++            response.headers.get("Access-Control-Expose-Headers", ""),
++        )
++
++
++@pytest.mark.blackd
++class BlackDSmallBodyLimitTestCase(AioHTTPTestCase):
++    def tearDown(self) -> None:
++        gc.collect()
++        super().tearDown()
++
++    async def get_application(self) -> web.Application:
++        return blackd.make_app(max_body_size=16)
++
++    async def test_blackd_rejects_large_request_body(self) -> None:
++        response = await self.client.post("/", data=b"x" * 17)
++        self.assertEqual(response.status, 413)
++
++
+ @pytest.mark.blackd
+ class BlackDClientTestCase(AioHTTPTestCase):
+     def tearDown(self) -> None:

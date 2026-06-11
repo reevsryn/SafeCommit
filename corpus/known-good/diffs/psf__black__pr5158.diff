@@ -1,0 +1,396 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index dadb51306c6..ca0904d1319 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -31,6 +31,8 @@
+   instead. This fixes the awkward break that was showing up in comprehension `if`
+   clauses (#4514) as well as the same shape inside `if`, `elif`, `assert`, and
+   parenthesized expressions (#5135)
++- In `.pyi` stub files, enforce a blank line after a function or method that has a
++  docstring-only body when another comment or statement follows it (#5158)
+ 
+ ### Configuration
+ 
+diff --git a/docs/the_black_code_style/future_style.md b/docs/the_black_code_style/future_style.md
+index 446c7e246d0..e5bd70e7527 100644
+--- a/docs/the_black_code_style/future_style.md
++++ b/docs/the_black_code_style/future_style.md
+@@ -31,6 +31,9 @@ Currently, the following features are included in the preview style:
+ - `pyi_blank_line_before_decorated_class`: In `.pyi` stub files, enforce a blank line
+   before a decorated class definition when it follows a function definition.
+   ([see below](labels/pyi-blank-line-before-decorated-class))
++- `pyi_blank_line_after_function_docstring`: In `.pyi` stub files, enforce a blank line
++  after a function or method body that consists of a docstring.
++  ([see below](labels/pyi-blank-line-after-function-docstring))
+ - `hug_comparator`: Don't break a comparator (`not in`, `==`, `is`, ...) away from its
+   left operand when the right operand is a bracketed expression that has to break
+   anyway; let the bracket explode instead. ([see below](labels/hug-comparator))
+@@ -233,6 +236,42 @@ classes are handled:
+   class Spam: ...
+ ```
+ 
++(labels/pyi-blank-line-after-function-docstring)=
++
++### Blank line after function docstrings in stub files
++
++In `.pyi` stub files, functions and methods sometimes use a docstring as their whole
++body. Black already separated these definitions from a following function definition,
++but did not consistently do the same before a following comment, conditional block,
++variable annotation, or other statement:
++
++```python
++# Before
++
++class Example:
++    def method(self) -> None:
++        """Documentation."""
++    # comment for the next member
++    attr: int
++```
++
++With this feature enabled, the docstring-only function body is consistently separated
++from the next comment or statement:
++
++```python
++# After (with --preview)
++
++class Example:
++    def method(self) -> None:
++        """Documentation."""
++
++    # comment for the next member
++    attr: int
++```
++
++Black still keeps same-name decorated functions, such as `@overload` groups and property
++setters, together without inserting blank lines between them.
++
+ (labels/hug-comparator)=
+ 
+ ### Keep comparators next to their left operand
+diff --git a/src/black/lines.py b/src/black/lines.py
+index 4012781e195..9debf041dfb 100644
+--- a/src/black/lines.py
++++ b/src/black/lines.py
+@@ -606,6 +606,19 @@ def _find_adjacent_decorated(
+                 return None
+         return None
+ 
++    @staticmethod
++    def _get_suite_first_decorated_funcname(suite: Node) -> str | None:
++        """Return the function name of the first decorated function in a suite."""
++        for child in suite.children:
++            if isinstance(child, Node) and child.type == syms.decorated:
++                for sub in child.children:
++                    if sub.type in (syms.funcdef, syms.async_funcdef):
++                        return EmptyLineTracker._get_funcdef_name(sub)
++                break
++            if child.type not in (token.NEWLINE, token.NL, token.INDENT, token.DEDENT):
++                break
++        return None
++
+     @staticmethod
+     def _if_stmt_branch_has_func_named(
+         if_stmt: Node, exclude_suite: Node, name: str
+@@ -687,6 +700,41 @@ def _decorator_decorates_class(line: Line) -> bool:
+             return False
+         return any(child.type == syms.classdef for child in decorated.children)
+ 
++    @staticmethod
++    def _def_is_followed_by_same_name_decorated_func(
++        line: Line, *, include_conditional_blocks: bool = False
++    ) -> bool:
++        """Check if a decorated function is followed by a same-name decorated func.
++
++        If *include_conditional_blocks* is true, the next decorated function may
++        be inside an adjacent conditional block.
++        """
++        name = EmptyLineTracker._get_def_name(line)
++        decorated = EmptyLineTracker._find_decorated_node(line)
++        if name is None or decorated is None:
++            return False
++
++        sibling = decorated.next_sibling
++        while sibling is not None and sibling.type in _WHITESPACE_TOKENS:
++            sibling = sibling.next_sibling
++
++        if sibling is None or not isinstance(sibling, Node):
++            return False
++        if sibling.type == syms.decorated:
++            return EmptyLineTracker._decorated_node_has_func_named(sibling, name)
++        if not include_conditional_blocks or sibling.type != syms.if_stmt:
++            return False
++        for child in sibling.children:
++            if not isinstance(child, Node):
++                continue
++            if child.type != syms.suite:
++                continue
++            first_decorated_funcname = (
++                EmptyLineTracker._get_suite_first_decorated_funcname(child)
++            )
++            return first_decorated_funcname == name
++        return False
++
+     def _is_in_current_group(self, current_line: Line) -> bool:
+         """Check if current_line belongs to the same overload group being tracked."""
+         prev = self._pyi_previous_decorated_func
+@@ -750,15 +798,7 @@ def _get_block_first_decorated_funcname(line: Line) -> str | None:
+         suite = line.leaves[-1].next_sibling
+         if suite is None or not isinstance(suite, Node) or suite.type != syms.suite:
+             return None
+-        for child in suite.children:
+-            if isinstance(child, Node) and child.type == syms.decorated:
+-                for sub in child.children:
+-                    if sub.type in (syms.funcdef, syms.async_funcdef):
+-                        return EmptyLineTracker._get_funcdef_name(sub)
+-                break
+-            if child.type not in (token.NEWLINE, token.NL, token.INDENT, token.DEDENT):
+-                break
+-        return None
++        return EmptyLineTracker._get_suite_first_decorated_funcname(suite)
+ 
+     @staticmethod
+     def _block_is_part_of_overload_group(line: Line) -> bool:
+@@ -1005,6 +1045,17 @@ def _maybe_empty_lines(self, current_line: Line) -> tuple[int, int]:
+                     # else/elif continuing a conditional overload group:
+                     # don't insert a blank line above.
+                     before = 0
++                elif (
++                    Preview.pyi_blank_line_after_function_docstring in self.mode
++                    and previous_def.is_def
++                    and self.previous_line.is_docstring
++                    and self.previous_line.depth == previous_def.depth + 1
++                    and not self._def_is_followed_by_same_name_decorated_func(
++                        previous_def,
++                        include_conditional_blocks=overload_groups,
++                    )
++                ):
++                    before = 1
+                 elif depth and not current_line.is_def and self.previous_line.is_def:
+                     if (
+                         overload_groups
+@@ -1129,9 +1180,9 @@ def _maybe_empty_lines_for_class_or_def(
+                     newlines = 0
+                 else:
+                     newlines = 1
+-            # Don't inspect the previous line if it's part of the body of the previous
+-            # statement in the same level, we always want a blank line if there's
+-            # something with a body preceding.
++            # Don't inspect only the previous line if it's part of the body of the
++            # preceding statement. We always want a blank line after something with a
++            # body.
+             elif self.previous_line.depth > current_line.depth:
+                 if overload_groups and self._is_in_current_group(current_line):
+                     newlines = 0
+diff --git a/src/black/mode.py b/src/black/mode.py
+index dbf05c1a7da..b94502c9e3a 100644
+--- a/src/black/mode.py
++++ b/src/black/mode.py
+@@ -259,6 +259,7 @@ class Preview(Enum):
+     fix_if_guard_explosion_in_case_statement = auto()
+     pyi_overload_group_blank_lines = auto()
+     pyi_blank_line_before_decorated_class = auto()
++    pyi_blank_line_after_function_docstring = auto()
+     hug_comparator = auto()
+ 
+ 
+diff --git a/src/black/resources/black.schema.json b/src/black/resources/black.schema.json
+index 0afaa3f1f02..3581d06d8c8 100644
+--- a/src/black/resources/black.schema.json
++++ b/src/black/resources/black.schema.json
+@@ -89,6 +89,7 @@
+           "fix_if_guard_explosion_in_case_statement",
+           "pyi_overload_group_blank_lines",
+           "pyi_blank_line_before_decorated_class",
++          "pyi_blank_line_after_function_docstring",
+           "hug_comparator"
+         ]
+       },
+diff --git a/tests/data/cases/pyi_docstring_blank_lines.py b/tests/data/cases/pyi_docstring_blank_lines.py
+new file mode 100644
+index 00000000000..88ddf3dbaa5
+--- /dev/null
++++ b/tests/data/cases/pyi_docstring_blank_lines.py
+@@ -0,0 +1,164 @@
++# flags: --preview --pyi
++import sys
++from typing import overload
++
++def top_level_comment() -> None:
++    """docs"""
++# leading comment for the next statement
++top_level_attr: int
++
++def top_level_if() -> None:
++    """docs"""
++if sys.version_info >= (3, 12):
++    top_level_if_attr: int
++
++class C:
++    def before_comment(self) -> None:
++        """docs"""
++    # leading comment for the next method
++    def after_comment(self) -> None: ...
++
++    def before_if(self) -> None:
++        """docs"""
++    if sys.version_info >= (3, 12):
++        if_attr: int
++
++    if sys.version_info >= (3, 12):
++        def conditional_before_attr(self) -> None:
++            """docs"""
++    conditional_attr: int
++
++    def before_attr(self) -> None:
++        """docs"""
++    attr: int
++
++    @decorator
++    def before_decorator(self) -> None:
++        """docs"""
++    @decorator
++    def after_decorator(self) -> None: ...
++
++    @decorator
++    def decorated_before_comment(self) -> None:
++        """docs"""
++    # leading comment for the next attribute
++    decorated_attr: int
++
++    @overload
++    def overloaded(self, value: int) -> int:
++        """Int overload."""
++    @overload
++    def overloaded(self, value: str) -> str: ...
++
++    @overload
++    def overloaded_with_comment(self, value: int) -> int:
++        """Int overload."""
++    # comment inside the overload group
++    @overload
++    def overloaded_with_comment(self, value: str) -> str: ...
++
++    @overload
++    def overloaded_with_commented_if(self, value: int) -> int:
++        """Int overload."""
++    # comment inside the conditional overload group
++    if sys.version_info >= (3, 12):
++        @overload
++        def overloaded_with_commented_if(self, value: str) -> str: ...
++
++    @property
++    def prop(self) -> int:
++        """Property docs."""
++    @prop.setter
++    def prop(self, value: int) -> None: ...
++
++class EndsWithDecoratedDocstringAndComment:
++    @decorator
++    def method(self) -> None:
++        """docs"""
++    # trailing member comment
++
++# output
++import sys
++from typing import overload
++
++def top_level_comment() -> None:
++    """docs"""
++
++# leading comment for the next statement
++top_level_attr: int
++
++def top_level_if() -> None:
++    """docs"""
++
++if sys.version_info >= (3, 12):
++    top_level_if_attr: int
++
++class C:
++    def before_comment(self) -> None:
++        """docs"""
++
++    # leading comment for the next method
++    def after_comment(self) -> None: ...
++    def before_if(self) -> None:
++        """docs"""
++
++    if sys.version_info >= (3, 12):
++        if_attr: int
++
++    if sys.version_info >= (3, 12):
++        def conditional_before_attr(self) -> None:
++            """docs"""
++
++    conditional_attr: int
++
++    def before_attr(self) -> None:
++        """docs"""
++
++    attr: int
++
++    @decorator
++    def before_decorator(self) -> None:
++        """docs"""
++
++    @decorator
++    def after_decorator(self) -> None: ...
++    @decorator
++    def decorated_before_comment(self) -> None:
++        """docs"""
++
++    # leading comment for the next attribute
++    decorated_attr: int
++
++    @overload
++    def overloaded(self, value: int) -> int:
++        """Int overload."""
++    @overload
++    def overloaded(self, value: str) -> str: ...
++
++    @overload
++    def overloaded_with_comment(self, value: int) -> int:
++        """Int overload."""
++    # comment inside the overload group
++    @overload
++    def overloaded_with_comment(self, value: str) -> str: ...
++
++    @overload
++    def overloaded_with_commented_if(self, value: int) -> int:
++        """Int overload."""
++    # comment inside the conditional overload group
++    if sys.version_info >= (3, 12):
++        @overload
++        def overloaded_with_commented_if(self, value: str) -> str: ...
++
++    @property
++    def prop(self) -> int:
++        """Property docs."""
++    @prop.setter
++    def prop(self, value: int) -> None: ...
++
++class EndsWithDecoratedDocstringAndComment:
++    @decorator
++    def method(self) -> None:
++        """docs"""
++
++    # trailing member comment
+diff --git a/tests/data/cases/pyi_docstring_blank_lines_no_preview.py b/tests/data/cases/pyi_docstring_blank_lines_no_preview.py
+new file mode 100644
+index 00000000000..56364cdacff
+--- /dev/null
++++ b/tests/data/cases/pyi_docstring_blank_lines_no_preview.py
+@@ -0,0 +1,12 @@
++# flags: --pyi
++import sys
++
++class C:
++    def before_comment(self) -> None:
++        """docs"""
++    # leading comment for the next method
++    def after_comment(self) -> None: ...
++    def before_if(self) -> None:
++        """docs"""
++    if sys.version_info >= (3, 12):
++        if_attr: int

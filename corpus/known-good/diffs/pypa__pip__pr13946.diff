@@ -1,0 +1,83 @@
+diff --git a/news/11608.bugfix.rst b/news/11608.bugfix.rst
+new file mode 100644
+index 00000000000..789538e2f05
+--- /dev/null
++++ b/news/11608.bugfix.rst
+@@ -0,0 +1 @@
++Handle BrokenPipeError when pip output is piped to a command that closes early.
+diff --git a/src/pip/_internal/cli/base_command.py b/src/pip/_internal/cli/base_command.py
+index eff71d7b05b..5484c4ffa04 100644
+--- a/src/pip/_internal/cli/base_command.py
++++ b/src/pip/_internal/cli/base_command.py
+@@ -20,6 +20,7 @@
+ from pip._internal.cli.command_context import CommandContextMixIn
+ from pip._internal.cli.parser import ConfigOptionParser, UpdatingDefaultsHelpFormatter
+ from pip._internal.cli.status_codes import (
++    BROKEN_STDOUT,
+     ERROR,
+     PREVIOUS_BUILD_DIR_ERROR,
+     UNKNOWN_ERROR,
+@@ -147,7 +148,15 @@ def _inner_run() -> int:
+             except OSError:
+                 pass
+ 
+-            return ERROR
++            # redirect stdout to os.devnull so that the exit cleanup doesn't
++            # produce "BrokenPipeError" when exiting.
++            devnull = os.open(os.devnull, os.O_WRONLY)
++            try:
++                os.dup2(devnull, 1)
++            finally:
++                os.close(devnull)
++
++            return BROKEN_STDOUT
+         except KeyboardInterrupt:
+             logger.critical("Operation cancelled by user")
+             logger.debug("Exception information:", exc_info=True)
+diff --git a/src/pip/_internal/cli/status_codes.py b/src/pip/_internal/cli/status_codes.py
+index 5e29502cddf..2b2ecabc327 100644
+--- a/src/pip/_internal/cli/status_codes.py
++++ b/src/pip/_internal/cli/status_codes.py
+@@ -4,3 +4,4 @@
+ VIRTUALENV_NOT_FOUND = 3
+ PREVIOUS_BUILD_DIR_ERROR = 4
+ NO_MATCHES_FOUND = 23
++BROKEN_STDOUT = 120
+diff --git a/tests/unit/test_base_command.py b/tests/unit/test_base_command.py
+index 810e207cc1e..0a8ad32d3ad 100644
+--- a/tests/unit/test_base_command.py
++++ b/tests/unit/test_base_command.py
+@@ -12,7 +12,7 @@
+ import pytest
+ 
+ from pip._internal.cli.base_command import Command
+-from pip._internal.cli.status_codes import SUCCESS
++from pip._internal.cli.status_codes import BROKEN_STDOUT, SUCCESS
+ from pip._internal.utils import temp_dir
+ from pip._internal.utils.logging import BrokenStdoutLoggingError
+ from pip._internal.utils.temp_dir import TempDirectory
+@@ -75,7 +75,7 @@ def raise_broken_stdout() -> NoReturn:
+ 
+         cmd = FakeCommand(run_func=raise_broken_stdout)
+         status = cmd.main(args)
+-        assert status == 1
++        assert status == BROKEN_STDOUT
+         stderr = capfd.readouterr().err
+ 
+         return stderr
+@@ -87,6 +87,7 @@ def test_raise_broken_stdout(self, capfd: pytest.CaptureFixture[str]) -> None:
+         stderr = self.call_main(capfd, [])
+ 
+         assert stderr.rstrip() == "ERROR: Pipe to stdout was broken"
++        assert "Exception ignored on flushing sys.stdout:" not in stderr
+ 
+     def test_raise_broken_stdout__debug_logging(
+         self, capfd: pytest.CaptureFixture[str]
+@@ -98,6 +99,7 @@ def test_raise_broken_stdout__debug_logging(
+ 
+         assert "ERROR: Pipe to stdout was broken" in stderr
+         assert "Traceback (most recent call last):" in stderr
++        assert "Exception ignored on flushing sys.stdout:" not in stderr
+ 
+ 
+ @patch("pip._internal.cli.index_command.Command.pip_version_check")

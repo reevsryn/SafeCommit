@@ -1,0 +1,80 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 6a6dfdd8f3b..f3fef48d0e8 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -23,6 +23,10 @@
+   lengths (#5147)
+ - Fix multiline docstring indentation when leading tabs are used inside indented
+   docstrings (#5148)
++- Respect `# fmt: skip` on a line that opens a bracket (e.g.
++  `from x import (  # fmt: skip`) when a standalone comment is among the bracket's
++  contents: the whole statement is now preserved instead of being reformatted (and
++  previously crashing) (#5161)
+ 
+ ### Preview style
+ 
+diff --git a/src/black/comments.py b/src/black/comments.py
+index 2e87e1207a6..782117ff10a 100644
+--- a/src/black/comments.py
++++ b/src/black/comments.py
+@@ -813,6 +813,27 @@ def _generate_ignored_nodes_from_fmt_skip(
+                 if header_nodes:
+                     ignored_nodes = header_nodes + ignored_nodes
+ 
++        # If the nodes captured for the comment's physical line leave a bracket
++        # open, the `# fmt: skip` sits inside a multi-line bracketed statement
++        # (e.g. on the `from x import (` line). Skipping only that line would
++        # reformat the rest of the statement, so preserve the whole enclosing
++        # statement instead.
++        bracket_depth = 0
++        for node in ignored_nodes:
++            for ignored_leaf in node.leaves():
++                if ignored_leaf.type in OPENING_BRACKETS:
++                    bracket_depth += 1
++                elif ignored_leaf.type in CLOSING_BRACKETS:
++                    bracket_depth -= 1
++        if bracket_depth > 0:
++            statement: LN = leaf
++            while statement.parent is not None and statement.parent.type not in (
++                syms.file_input,
++                syms.suite,
++            ):
++                statement = statement.parent
++            ignored_nodes = [statement]
++
+         leaf_is_ignored = any(
+             ignored is leaf
+             or (
+diff --git a/tests/data/cases/fmtskip_after_bracket_with_comment.py b/tests/data/cases/fmtskip_after_bracket_with_comment.py
+new file mode 100644
+index 00000000000..77f2fb54491
+--- /dev/null
++++ b/tests/data/cases/fmtskip_after_bracket_with_comment.py
+@@ -0,0 +1,27 @@
++# A `# fmt: skip` on a line that opens a bracket, combined with a standalone
++# comment among the bracket's contents, used to crash inside
++# `is_line_short_enough` with `AttributeError: 'Leaf' object has no attribute
++# 'bracket_depth'`. The whole statement should now be left untouched.
++
++from m import (
++# fmt: skip
++    # comment
++    a
++)
++
++f(
++# fmt: skip
++    # comment
++    a
++)
++
++x[
++# fmt: skip
++    # comment
++    a
++]
++
++from m import (  # fmt: skip
++    # comment
++    a
++)

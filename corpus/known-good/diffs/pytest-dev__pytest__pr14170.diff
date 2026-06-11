@@ -1,0 +1,78 @@
+diff --git a/changelog/8265.improvement.rst b/changelog/8265.improvement.rst
+new file mode 100644
+index 00000000000..e59b12052fe
+--- /dev/null
++++ b/changelog/8265.improvement.rst
+@@ -0,0 +1,4 @@
++Emit a ``PytestCollectionWarning`` when a module-level ``__getattr__`` returns ``None`` for ``pytestmark`` instead of raising ``AttributeError``.
++
++Previously this caused a cryptic ``TypeError: got None instead of Mark`` error.
++Now pytest issues a helpful warning and continues collecting the module normally.
+diff --git a/src/_pytest/mark/structures.py b/src/_pytest/mark/structures.py
+index 5c9e6601e8a..a21cdc9b769 100644
+--- a/src/_pytest/mark/structures.py
++++ b/src/_pytest/mark/structures.py
+@@ -30,6 +30,7 @@
+ from _pytest.outcomes import fail
+ from _pytest.raises import AbstractRaises
+ from _pytest.scope import ScopeName
++from _pytest.warning_types import PytestCollectionWarning
+ from _pytest.warning_types import PytestUnknownMarkWarning
+ 
+ 
+@@ -443,7 +444,18 @@ def get_unpacked_marks(
+                 mark_list.append(item)
+     else:
+         mark_attribute = getattr(obj, "pytestmark", [])
+-        if isinstance(mark_attribute, list):
++        if mark_attribute is None:
++            warnings.warn(
++                "Module defines a `__getattr__` which returns None for "
++                "'pytestmark' instead of raising AttributeError. "
++                "Make sure `__getattr__` raises AttributeError for "
++                "attributes it does not provide. "
++                "See https://github.com/pytest-dev/pytest/issues/8265",
++                PytestCollectionWarning,
++                stacklevel=2,
++            )
++            mark_list = []
++        elif isinstance(mark_attribute, list):
+             mark_list = mark_attribute
+         else:
+             mark_list = [mark_attribute]
+diff --git a/testing/test_mark.py b/testing/test_mark.py
+index 67219313183..4aca6d52085 100644
+--- a/testing/test_mark.py
++++ b/testing/test_mark.py
+@@ -1344,3 +1344,31 @@ def test_fixture_disallowed_between_marks() -> None:
+         @pytest.mark.usefixtures("tmp_path")
+         def foo():
+             raise NotImplementedError()
++
++
++def test_module_getattr_without_attributeerror(pytester: Pytester) -> None:
++    """
++    Test that a helpful warning is emitted when a module-level
++    __getattr__ returns None instead of raising AttributeError.
++
++    Regression test for https://github.com/pytest-dev/pytest/issues/8265
++    """
++    pytester.makepyfile(
++        """
++        def __getattr__(key):
++            # Bug: should raise AttributeError, but returns None
++            return None
++
++        def test_something():
++            assert True
++        """
++    )
++    result = pytester.runpytest("-W", "always::pytest.PytestCollectionWarning")
++    result.stdout.fnmatch_lines(
++        [
++            "*PytestCollectionWarning*__getattr__*returns None*AttributeError*",
++        ]
++    )
++    # The module is buggy (__getattr__ returns None for all attributes),
++    # so no tests are collected, but pytest should NOT crash with a TypeError.
++    assert result.ret != ExitCode.INTERNAL_ERROR

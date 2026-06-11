@@ -1,0 +1,149 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 3866861d89c..97c7ae5223d 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -5,6 +5,8 @@
+ <!-- PR authors:
+      Please include the PR number in the changelog entry, not the issue number -->
+ 
++- Add support for NO_COLOR environment variable to disable ANSI output (#5129)
++
+ ### Highlights
+ 
+ <!-- Include any especially major or disruptive changes here -->
+diff --git a/src/black/output.py b/src/black/output.py
+index 76c28c344a9..61d712e626e 100644
+--- a/src/black/output.py
++++ b/src/black/output.py
+@@ -4,6 +4,7 @@
+ """
+ 
+ import json
++import os
+ import re
+ import tempfile
+ from typing import Any
+@@ -17,7 +18,7 @@ def _out(message: str | None = None, nl: bool = True, **styles: Any) -> None:
+     if message is not None:
+         if "bold" not in styles:
+             styles["bold"] = True
+-        message = style(message, **styles)
++        message = style_output(message, **styles)
+     echo(message, nl=nl, err=True)
+ 
+ 
+@@ -26,7 +27,7 @@ def _err(message: str | None = None, nl: bool = True, **styles: Any) -> None:
+     if message is not None:
+         if "fg" not in styles:
+             styles["fg"] = "red"
+-        message = style(message, **styles)
++        message = style_output(message, **styles)
+     echo(message, nl=nl, err=True)
+ 
+ 
+@@ -95,6 +96,8 @@ def diff(a: str, b: str, a_name: str, b_name: str) -> str:
+ 
+ def color_diff(contents: str) -> str:
+     """Inject the ANSI color codes to the diff."""
++    if not _color_enabled():
++        return contents
+     lines = contents.split("\n")
+     for i, line in enumerate(lines):
+         if line.startswith("+++") or line.startswith("---"):
+@@ -109,6 +112,16 @@ def color_diff(contents: str) -> str:
+     return "\n".join(lines)
+ 
+ 
++def style_output(message: str, **styles: Any) -> str:
++    if not _color_enabled():
++        return message
++    return style(message, **styles)
++
++
++def _color_enabled() -> bool:
++    return "NO_COLOR" not in os.environ
++
++
+ @mypyc_attr(patchable=True)
+ def dump_to_file(*output: str, ensure_final_newline: bool = True) -> str:
+     """Dump `output` to a temporary file. Return path to the file."""
+diff --git a/src/black/report.py b/src/black/report.py
+index 89899f2f389..7b7a094a656 100644
+--- a/src/black/report.py
++++ b/src/black/report.py
+@@ -6,9 +6,7 @@
+ from enum import Enum
+ from pathlib import Path
+ 
+-from click import style
+-
+-from black.output import err, out
++from black.output import err, out, style_output
+ 
+ 
+ class Changed(Enum):
+@@ -94,14 +92,18 @@ def __str__(self) -> str:
+         if self.change_count:
+             s = "s" if self.change_count > 1 else ""
+             report.append(
+-                style(f"{self.change_count} file{s} ", bold=True, fg="blue")
+-                + style(f"{reformatted}", bold=True)
++                style_output(f"{self.change_count} file{s} ", bold=True, fg="blue")
++                + style_output(f"{reformatted}", bold=True)
+             )
+ 
+         if self.same_count:
+             s = "s" if self.same_count > 1 else ""
+-            report.append(style(f"{self.same_count} file{s} ", fg="blue") + unchanged)
++            report.append(
++                style_output(f"{self.same_count} file{s} ", fg="blue") + unchanged
++            )
+         if self.failure_count:
+             s = "s" if self.failure_count > 1 else ""
+-            report.append(style(f"{self.failure_count} file{s} {failed}", fg="red"))
++            report.append(
++                style_output(f"{self.failure_count} file{s} {failed}", fg="red")
++            )
+         return ", ".join(report) + "."
+diff --git a/tests/test_black.py b/tests/test_black.py
+index dcdc4c58b42..9ca6f5904e2 100644
+--- a/tests/test_black.py
++++ b/tests/test_black.py
+@@ -240,6 +240,23 @@ def test_piping_diff_with_color(self) -> None:
+         self.assertIn("\033[31m", actual)
+         self.assertIn("\033[0m", actual)
+ 
++    def test_piping_diff_with_color_respects_no_color(self) -> None:
++        source, _ = read_data("cases", "expression.py")
++        args = [
++            "-",
++            "--fast",
++            f"--line-length={black.DEFAULT_LINE_LENGTH}",
++            "--diff",
++            "--color",
++            f"--config={EMPTY_CONFIG}",
++        ]
++        with patch.dict(os.environ, {"NO_COLOR": "1"}):
++            result = BlackRunner().invoke(
++                black.main, args, input=BytesIO(source.encode("utf-8"))
++            )
++        actual = result.output
++        self.assertNotIn("\033[", actual)
++
+     def test_pep_572_version_detection(self) -> None:
+         source, _ = read_data("cases", "pep_572")
+         root = black.lib2to3_parse(source)
+@@ -795,6 +812,13 @@ def err(msg: str, **kwargs: Any) -> None:
+                 " files would fail to reformat.",
+             )
+ 
++    def test_report_respects_no_color(self) -> None:
++        report = Report()
++        report.done(Path("f1"), black.Changed.YES)
++        with patch.dict(os.environ, {"NO_COLOR": "1"}):
++            output = str(report)
++        self.assertEqual(output, unstyle(output))
++
+     def test_lib2to3_parse(self) -> None:
+         with self.assertRaises(black.InvalidInput):
+             black.lib2to3_parse("invalid syntax")
