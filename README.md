@@ -37,7 +37,16 @@ We build the measuring stick *before* any detector, because the whole thesis is
       establishes the harness boundary first, so every later step's effect on
       the benchmark is attributable to that step alone. Graded clean over all
       116 cases (0 findings, 0 contract violations).
-- [ ] Step 2 — unified-diff parser with real post-image line mapping.
+- [x] **Step 2 — unified-diff parser with real post-image line mapping.**
+      `internal/diff` parses files/hunks/lines and resolves the post-image line
+      number of every added line (R2 needs this; `bench/diffscan.py` has no line
+      numbers). Strict about hunk arithmetic: if the lines consumed disagree
+      with the `@@` header counts it errors rather than guessing, because a
+      silent mismatch misnumbers every later line in the file. Validated three
+      ways — unit tests incl. the deletion/context cursor cases, a parse of all
+      116 real corpus diffs (13,974 added lines, all with valid post-image
+      numbers), and a differential check against `bench/diffscan.py` that found
+      **0 mismatches across all 116 diffs**.
 - [ ] Step 3 — tree-sitter Python parsing + import extraction (replaces regex;
       see `PHASE1-NOTES.md` R1).
 - [ ] Step 4 — resolution cascade + cached registry oracle.

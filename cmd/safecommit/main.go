@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/reevsryn/safecommit/internal/diff"
 	"github.com/reevsryn/safecommit/internal/finding"
 )
 
@@ -130,9 +131,16 @@ func readDiff(path string) ([]byte, error) {
 // to resolve 427 of 428 real candidates correctly, so it is a conservative
 // lower bound on production precision rather than a crippled mode.
 //
-// Step 1 implements none of it and returns nothing.
-func scan(diff []byte, repoRoot string) ([]finding.Finding, error) {
-	_ = diff
+// Step 2 implements [1] only. The parsed result is deliberately unused: wiring
+// it in now means the benchmark exercises the parser against all 116 real
+// diffs through the real binary, so a parse failure surfaces as a tool error
+// in the harness rather than hiding until extraction lands.
+func scan(src []byte, repoRoot string) ([]finding.Finding, error) {
+	files, err := diff.Parse(src)
+	if err != nil {
+		return nil, fmt.Errorf("parsing diff: %w", err)
+	}
+	_ = files
 	_ = repoRoot
 	return nil, nil
 }
