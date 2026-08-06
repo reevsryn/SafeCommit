@@ -12,5 +12,8 @@ venv/
 # Local bench caches (registry snapshots, mining scratch)
 .bench-cache/
 
+# Go build artifacts
+bin/
+
 # OS
 .DS_Store

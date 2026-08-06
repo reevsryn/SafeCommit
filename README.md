@@ -30,7 +30,42 @@ We build the measuring stick *before* any detector, because the whole thesis is
       [`corpus/README.md`](corpus/README.md). Re-verify anytime:
       `python3 -m bench verify-seeded`.
 
-No detector code exists yet (that is Phase 1).
+**Phase 1 — the detector (in progress).** Engine in Go; target language Python.
+
+- [x] **Step 1 — engine skeleton + output contract + measured baseline.**
+      `cmd/safecommit` reads a diff and reports nothing, on purpose: it
+      establishes the harness boundary first, so every later step's effect on
+      the benchmark is attributable to that step alone. Graded clean over all
+      116 cases (0 findings, 0 contract violations).
+- [ ] Step 2 — unified-diff parser with real post-image line mapping.
+- [ ] Step 3 — tree-sitter Python parsing + import extraction (replaces regex;
+      see `PHASE1-NOTES.md` R1).
+- [ ] Step 4 — resolution cascade + cached registry oracle.
+- [ ] Step 5 — confidence gate + dependency-manifest parsing (R1, R3).
+- [ ] Step 6 — full benchmark run, recall split per detection path.
+
+**Prediction on record (before step 2):** once extraction is parser-based,
+SafeCommit should emit **0 findings on all 96 known-good cases** — not "few",
+zero. The only known-good candidate that survives the resolution cascade is
+`pip_unexpected_module_xyz`, which lives inside a `textwrap.dedent` string
+literal and must never become a candidate under a real parser. If step 3+
+emits anything here, something is wrong; this is written down so the benchmark
+can falsify it rather than be rationalized after the fact.
+
+## Building the engine
+
+```sh
+go build -o bin/safecommit ./cmd/safecommit
+```
+
+Grade it with the Phase 0 harness (`--no-repo-context` is required here: the
+harness runs the binary from *this* repo, and without the flag the detector
+would resolve first-party names against SafeCommit's own tree instead of the
+tree each diff actually came from):
+
+```sh
+python3 -m bench eval --tool "./bin/safecommit scan --no-repo-context" --corpus corpus/known-good --corpus corpus/seeded
+```
 
 ## What a "benchmark" is here
 
