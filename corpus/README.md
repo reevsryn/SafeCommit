@@ -159,3 +159,13 @@ our own names from the public patterns above and never claim or ingest that list
 - Suppression/classification rules are **not** tuned by peeking at seeded names.
   If we ever tune against the corpus during development, we hold out a slice and
   report on it separately.
+
+**Holdout decision (owner, 2026-08-06).** The known-good set has already been
+inspected during development: R1/R2/R3 in `PHASE1-NOTES.md` were derived from
+it, and a Phase 1 feasibility probe walked its unresolved candidates. It is
+therefore a **development set**, and the 0-noise number measured on it is a
+tuned number, not a held-out one. Rather than shrink an already-small 96-case
+set, we **mine a fresh, never-inspected known-good holdout at Phase 4**, before
+publishing any benchmark figure, using the same seven gates and different
+repos/date ranges. Published precision comes from the holdout; the development
+set's number may be reported alongside it but must be labelled as tuned.
