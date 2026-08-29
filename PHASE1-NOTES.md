@@ -122,3 +122,31 @@ the third `requirement`-kind truth, was "caught" only via the R2 accident
 above. So the import path's true recall on manifest truths is **0 of 3** — the
 blended number hides a completely unimplemented detection path, which is
 precisely what R3 exists to prevent.
+
+## R4 — Import name != distribution name is a standing precision risk
+*(discovered 2026-08-06, while building the step 4 cascade)*
+
+**Requirement.** `import yaml` is provided by a project called `PyYAML`; there
+is no PyPI project named `yaml`. Looking up import names directly against the
+registry therefore returns 404 — "hallucinated!" — for some of the most widely
+used packages in Python. `internal/resolve/aliases.go` maps the letter-level
+mismatches, and PEP 503 normalization already absorbs case and `-_.` variance
+(`flask_cors` -> `Flask-Cors` needs no entry).
+
+**Why this is not solved, only mitigated.** The table is finite; the real
+mapping is not. PyPI exposes no import-name -> distribution-name index, so
+there is no complete oracle to consult. Coverage is "mismatches common enough
+to appear in real diffs" — a judgement call, not a guarantee. Every missing
+entry is a latent false positive against correct code.
+
+**Evidence it currently holds.** 0 false positives across the 96-PR known-good
+corpus, with 31 candidates resolved via registry lookup (some through aliases).
+That is reassuring but the sample is small: only ~31 distinct third-party names
+reached the registry step at all.
+
+**What would falsify it.** A fresh holdout (Phase 4) drawn from different repos
+will exercise different third-party names. If false positives appear there,
+they will most likely be alias gaps, not extraction bugs. The step 5 confidence
+gate is the intended structural fix: hold back a name that is absent but shows
+no hallucination signal (no typo-distance to a real package, no composition
+shape), rather than firing on absence alone.

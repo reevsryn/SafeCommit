@@ -58,25 +58,63 @@ We build the measuring stick *before* any detector, because the whole thesis is
       expected — that one needs path-aware suppression in step 5, and a test
       pins the current behaviour so the distinction cannot silently drift.
       Benchmark: noise 380, recall 90.5% — **but see the caveat below.**
-- [ ] Step 4 — resolution cascade + cached registry oracle.
+- [x] **Step 4 — resolution cascade + cached registry oracle.**
+      `relative -> stdlib -> first-party -> alias -> PyPI`, cheapest first, with
+      the network last and an on-disk cache. Three verdicts, not two: Suppress
+      ("resolved, it's fine"), Fire ("ground truth proves absence"), and
+      **Silent** ("could not determine") — Silent never becomes Fire, so an
+      index outage or offline run produces no findings rather than a wave of
+      false accusations. **Benchmark: 0 noise, 100% precision, 85.7% recall.**
 - [ ] Step 5 — confidence gate + dependency-manifest parsing (R1, R3).
 - [ ] Step 6 — full benchmark run, recall split per detection path.
 
-**Recall figures are inflated until the scorer is tightened.** Step 3 scores
-90.5% recall (19/21), but one "hit" is credit for flagging an unrelated
-legitimate line: `seed-019`'s truth is a bad pin in `requirements.txt`, and we
-flagged the *valid* `from dateutil import parser` in a different file. Name-only
-matching cannot tell those apart. The honest located-truth figure is 18/21
-(85.7%), and the import path's recall on manifest truths is **0 of 3**. See
-`PHASE1-NOTES.md` R2 and R3, both now confirmed live against the real binary.
+## Current results (step 4, development set)
 
-**Prediction on record (before step 2):** once extraction is parser-based,
-SafeCommit should emit **0 findings on all 96 known-good cases** — not "few",
-zero. The only known-good candidate that survives the resolution cascade is
-`pip_unexpected_module_xyz`, which lives inside a `textwrap.dedent` string
-literal and must never become a candidate under a real parser. If step 3+
-emits anything here, something is wrong; this is written down so the benchmark
-can falsify it rather than be rationalized after the fact.
+```
+corpus           cases  findings   TP   FP   FN  precision   recall      F1
+known-good          96         0    0    0    0          —        —       —
+seeded              20        19   18    0    3     100.0%    85.7%   92.3%
+TOTAL              116        19   18    0    3     100.0%    85.7%   92.3%
+
+NOISE (findings on known-good): 0   ← target: 0
+```
+
+Recall **split by detection path** (R3 — a blended number would hide this):
+
+| path | recall | note |
+|---|---|---|
+| import (`internal/pyparse`) | **18/18 = 100%** | |
+| dependency manifest | **0/3 = 0%** | not implemented until step 5 |
+
+**The prediction made before step 2 held.** It was written down in advance:
+*"once extraction is parser-based, SafeCommit should emit 0 findings on all 96
+known-good cases — not 'few', zero."* It does. The only surviving candidate,
+`pip_unexpected_module_xyz`, sits inside a `textwrap.dedent` string literal and
+never becomes a candidate under a real parser.
+
+**0 findings is not the same as 0 confidence.** Every one of the 402 known-good
+candidates was suppressed for a *positive* reason, with no Silent verdicts at
+all — so the zero is genuine resolution rather than uncertainty hiding:
+
+```
+206 suppress  first-party      143 suppress  stdlib
+ 31 suppress  registry-hit      22 suppress  relative
+  0 SILENT                       0 FIRE
+```
+
+Reproduce either number: `--offline` against a warm cache gives byte-identical
+results to a live run.
+
+**Recall went DOWN from step 3 (90.5% -> 85.7%) because it got honest.** Step 3
+was credited a true positive on `seed-019` for flagging `from dateutil import
+parser` — a completely legitimate import — while the actual hallucination was a
+bad pin in `requirements.txt`. The alias table now resolves `dateutil` ->
+`python-dateutil` correctly, so that fake credit is gone. See `PHASE1-NOTES.md`
+R2.
+
+**These numbers come from the development set and are therefore tuned.** The
+published figure must come from the fresh Phase 4 holdout — see
+`corpus/README.md`.
 
 ## Building the engine
 

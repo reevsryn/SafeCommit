@@ -17,3 +17,4 @@ bin/
 
 # OS
 .DS_Store
+.safecommit-cache/
