@@ -10,7 +10,7 @@ that file is the source of truth.
 
 ## Status
 
-**Phase 0 — eval harness & corpus (in progress).**
+**Phase 0 — eval harness & corpus (COMPLETE).**
 We build the measuring stick *before* any detector, because the whole thesis is
 "low noise," which is unprovable without it.
 
