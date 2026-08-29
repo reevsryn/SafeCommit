@@ -83,3 +83,42 @@ parsing each get their own recall line.
 recall while structurally catching **0 of 2** manifest-only truths
 (`python-requests`, `matplotlib-pyplot`; it reached `dateutil` only via that
 case's coincidental legitimate import — the R2 problem compounding the R3 one).
+
+## R2 — CONFIRMED LIVE against the real detector (2026-08-06, step 3)
+
+R2 was predicted from the corpus; step 3's max-noise extractor demonstrates it
+for real. Running the actual binary over `corpus/seeded`:
+
+```
+CREDITED A TP ON THE WRONG FILE:
+  seed-019: truth 'dateutil' is in requirements.txt,
+            but we flagged reports/weekly.py:2
+```
+
+`reports/weekly.py:2` is `from dateutil import parser` — a **legitimate**
+import (the module exists once `python-dateutil` is installed). The
+hallucination is the `dateutil>=2.9` line in `requirements.txt`, which the
+step-3 detector cannot even see (it has no manifest path yet). Under name-only
+matching the scorer credits a true positive anyway.
+
+**Consequence for reporting:** step 3's headline recall of 90.5% (19/21) is
+inflated. The honest figure for truths we actually *located* is 18/21 (85.7%);
+one of the 19 "hits" is credit for flagging an unrelated legitimate line. Until
+`match_case` requires file agreement, **any recall number this project quotes
+must carry this caveat.** Tightening the scorer is a prerequisite for
+publication, not a nice-to-have.
+
+## R3 — CONFIRMED LIVE, same run
+
+The two false negatives are exactly the manifest-only truths R3 predicted:
+
+```
+  seed-018: python-requests   (requirements.txt)
+  seed-020: matplotlib-pyplot (pyproject.toml)
+```
+
+Both are invisible to the import-extraction path by construction. `dateutil`,
+the third `requirement`-kind truth, was "caught" only via the R2 accident
+above. So the import path's true recall on manifest truths is **0 of 3** — the
+blended number hides a completely unimplemented detection path, which is
+precisely what R3 exists to prevent.

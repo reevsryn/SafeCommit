@@ -1,11 +1,10 @@
 // Command safecommit scans a unified diff for references to things that do not
 // exist — hallucinated imports and fabricated dependencies in Python code.
 //
-// PHASE 1, STEP 1: skeleton and harness boundary only. It reads a diff and
-// reports nothing, on purpose. Establishing the contract first gives us a
-// measured baseline (0 findings / 0 noise, equivalent to tools/dummy/never_fire.py)
-// before any detection logic exists, so every later step's effect on the
-// benchmark is attributable to that step alone.
+// PHASE 1, STEP 3: parse and extract, with no verification yet. Every added
+// import becomes a finding, so the benchmark shows raw candidate volume before
+// any suppression exists to mask it. Step 4's resolution cascade must crush
+// that number toward zero.
 //
 // Usage:
 //
@@ -25,6 +24,7 @@ import (
 
 	"github.com/reevsryn/safecommit/internal/diff"
 	"github.com/reevsryn/safecommit/internal/finding"
+	"github.com/reevsryn/safecommit/internal/pyparse"
 )
 
 const usage = `safecommit — verify that a diff references things that actually exist
@@ -41,7 +41,7 @@ flags:
   --version           print version and exit
 `
 
-var version = "0.0.1-phase1-step1"
+var version = "0.0.3-phase1-step3"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -131,16 +131,41 @@ func readDiff(path string) ([]byte, error) {
 // to resolve 427 of 428 real candidates correctly, so it is a conservative
 // lower bound on production precision rather than a crippled mode.
 //
-// Step 2 implements [1] only. The parsed result is deliberately unused: wiring
-// it in now means the benchmark exercises the parser against all 116 real
-// diffs through the real binary, so a parse failure surfaces as a tool error
-// in the harness rather than hiding until extraction lands.
+// Step 3 implements [1]-[3]: parse, extract, and emit EVERYTHING extracted.
+//
+// This is deliberately max-noise — the Go equivalent of tools/dummy/always_fire.py.
+// No resolution or suppression exists yet, so every added import becomes a
+// finding. The point is to make extraction quality directly visible in the
+// benchmark before any suppression logic exists to mask it: noise here is the
+// raw candidate volume that step 4's cascade must then crush toward zero.
+//
+// Relative imports are skipped rather than suppressed: `from . import x` has
+// no package name to report, and the harness contract requires a name. That is
+// structural, not tuning.
 func scan(src []byte, repoRoot string) ([]finding.Finding, error) {
 	files, err := diff.Parse(src)
 	if err != nil {
 		return nil, fmt.Errorf("parsing diff: %w", err)
 	}
-	_ = files
-	_ = repoRoot
-	return nil, nil
+
+	ex := pyparse.NewExtractor()
+	defer ex.Close()
+
+	out := []finding.Finding{}
+	for i := range files {
+		for _, im := range ex.FromFile(&files[i]) {
+			if im.Kind == pyparse.KindRelative {
+				continue
+			}
+			out = append(out, finding.Finding{
+				Name:    im.Top,
+				File:    im.File,
+				Line:    im.Line,
+				Kind:    finding.KindImport,
+				Message: "extracted import " + im.Module + " (step 3: no verification yet)",
+			})
+		}
+	}
+	_ = repoRoot // stages [4]-[5] will use this
+	return out, nil
 }

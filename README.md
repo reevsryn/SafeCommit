@@ -47,11 +47,28 @@ We build the measuring stick *before* any detector, because the whole thesis is
       116 real corpus diffs (13,974 added lines, all with valid post-image
       numbers), and a differential check against `bench/diffscan.py` that found
       **0 mismatches across all 116 diffs**.
-- [ ] Step 3 — tree-sitter Python parsing + import extraction (replaces regex;
-      see `PHASE1-NOTES.md` R1).
+- [x] **Step 3 — tree-sitter Python parsing + import extraction.** Replaces
+      regex scanning with a real parse (`internal/pyparse`), then emits *every*
+      extracted import as a finding — deliberately max-noise, so raw candidate
+      volume is visible before any suppression exists to mask it.
+      **R1 case 1 solved on real data:** pypa/pip PR13912's
+      `import pip_unexpected_module_xyz` lives under `string_content -> string`
+      and produces no `import_statement` node at all, so it is never extracted.
+      R1 case 2 (psf/black PR5161's test-data import) *is* still extracted, as
+      expected — that one needs path-aware suppression in step 5, and a test
+      pins the current behaviour so the distinction cannot silently drift.
+      Benchmark: noise 380, recall 90.5% — **but see the caveat below.**
 - [ ] Step 4 — resolution cascade + cached registry oracle.
 - [ ] Step 5 — confidence gate + dependency-manifest parsing (R1, R3).
 - [ ] Step 6 — full benchmark run, recall split per detection path.
+
+**Recall figures are inflated until the scorer is tightened.** Step 3 scores
+90.5% recall (19/21), but one "hit" is credit for flagging an unrelated
+legitimate line: `seed-019`'s truth is a bad pin in `requirements.txt`, and we
+flagged the *valid* `from dateutil import parser` in a different file. Name-only
+matching cannot tell those apart. The honest located-truth figure is 18/21
+(85.7%), and the import path's recall on manifest truths is **0 of 3**. See
+`PHASE1-NOTES.md` R2 and R3, both now confirmed live against the real binary.
 
 **Prediction on record (before step 2):** once extraction is parser-based,
 SafeCommit should emit **0 findings on all 96 known-good cases** — not "few",
