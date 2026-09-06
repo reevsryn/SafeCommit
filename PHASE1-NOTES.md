@@ -306,3 +306,71 @@ protocol. The next published noise figure requires a newly mined holdout.
 
 **Also confirmed:** zero `SILENT` verdicts across 554 holdout candidates, so
 the resolution cascade is deciding rather than abstaining on unfamiliar repos.
+
+## R7 — Holdout #2 result: 3 findings / 150 cases, and a new failure mode
+*(2026-09-06, one-shot measurement WITH repo context — production mode)*
+
+**Result: 3 findings across 2 of 150 cases (1.3%), 2 distinct names.** Scored
+with captured repo context, which is the mode the CLI and the Action actually
+run in — a stricter test than holdout #1's degraded run, because the R6 fix had
+to work rather than being structurally unable to.
+
+```
+opentelemetry   2 findings   dbt-labs/dbt-core
+ray_release     1 finding    ray-project/ray
+```
+
+Repositories were chosen for monorepo and nested layouts precisely because
+holdout #1's failures all came from one such repo. The R6 fix held across all
+of them: dagster's `dagster_test`, `dagster_k8s_test_infra` and
+`docs_snippets_tests`, beam, prefect, mlflow, kedro and metaflow produced zero
+first-party failures.
+
+**Against the prediction: magnitude right, ranking wrong again.**
+
+- 0–6 false positives: **held** (3).
+- Predicted primary cause, **truncated trees**: did not occur. No repo's tree
+  was truncated, including ray (11,950 entries) and beam (22,520).
+- Predicted second, **PEP 420 namespace packages**: did not occur.
+- Predicted third, **R4 alias gaps**: occurred, 2 of the 3 findings.
+- The remaining finding is a cause I did not predict at all (below).
+
+This is now a pattern worth naming: across two holdouts the predicted *count*
+has been accurate and the predicted *ranking of causes* has been wrong both
+times. Predictions are still worth recording — they keep the result honest —
+but their causal ordering should not be treated as a roadmap.
+
+### Cause 1 — `opentelemetry`: R4, anticipated and deliberately unfixed
+
+The import `opentelemetry` is provided by the distributions
+`opentelemetry-api` and `opentelemetry-sdk` (both PyPI 200); the import name
+itself is 404. This was spotted during mining QA, adjudicated into the corpus
+as a legitimate merged PR, and the alias table was **deliberately left
+unchanged** so the false positive would count. R4 is now observed, not just
+theorised: 203 registry resolutions in holdout #1 produced none, and this one
+produced two.
+
+### Cause 2 — `ray_release`: the package-root heuristic's parent check
+
+`release/ray_release/__init__.py` exists, so `ray_release` looks like a package
+root — except `release/__init__.py` **also** exists, so the parent check
+classifies `ray_release` as a mere subpackage and excludes it from top-level.
+
+In reality `release/` is on sys.path when ray's release tests run, so the
+import resolves. The `release/__init__.py` file is incidental.
+
+This is the documented cost of that parent check, arriving in practice. Without
+it, every subpackage in a monorepo becomes a top-level name and a hallucination
+colliding with one is silently suppressed — a missed detection, which is worse
+than a false positive for this product. Dagster alone contributed 395 top-level
+names *with* the check; removing it would balloon that and blunt the detector.
+The trade was made deliberately and this is what it costs: roughly one false
+positive per 150 PRs.
+
+**Holdout #2 status: SPENT.** Both causes are now known, so any fix for either
+burns this corpus. A third holdout is required before the next published figure.
+
+**Not fixed here, on purpose.** The obvious repairs — add `opentelemetry` to the
+alias table, relax the parent check — are each a one-liner, and each would
+convert this measured result into a tuned one. They are left to an explicit
+decision rather than taken reflexively.

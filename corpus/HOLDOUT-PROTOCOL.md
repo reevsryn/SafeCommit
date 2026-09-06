@@ -148,3 +148,20 @@ If the count lands at zero I will say so, and also say plainly that a single
 clean holdout is weaker evidence than it looks — the honest read would be
 "no measured false positives on 2 sets totalling ~260 real PRs", not "zero
 false-positive rate".
+
+
+## Outcome (recorded 2026-09-06) — holdout #2 is now SPENT
+
+Scored once, **with repo context** (production mode). **3 findings across 2 of
+150 cases (1.3%), two distinct names**: `opentelemetry` (R4 alias gap, 2) and
+`ray_release` (package-root parent check, 1).
+
+Against the prediction: the 0–6 band held. The predicted primary cause
+(truncated trees) did not occur at all — no repo truncated. R4, ranked third,
+produced two of the three. The third finding came from a cause not on the list.
+
+That is twice now that the count was right and the ranking wrong. Full
+diagnosis: `PHASE1-NOTES.md` R7.
+
+Per the one-shot rule, both causes are now known, so a fix for either burns this
+corpus and a third holdout is required before the next published figure.

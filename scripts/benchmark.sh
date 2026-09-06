@@ -23,6 +23,7 @@ go build -o bin/safecommit ./cmd/safecommit
 TOOL="./bin/safecommit scan --no-repo-context --cache-dir corpus/registry-snapshot $OFFLINE"
 CORPORA="--corpus corpus/known-good --corpus corpus/seeded"
 HOLDOUT="--corpus corpus/holdout"
+HOLDOUT2="--corpus corpus/holdout2"
 
 SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DIRTY=""
@@ -34,6 +35,8 @@ VER=$(./bin/safecommit --version)
 
 MAIN=$(python3 -m bench eval --tool "$TOOL" $CORPORA 2>/dev/null)
 HOLD=$(python3 -m bench eval --tool "$TOOL" $HOLDOUT 2>/dev/null | sed -n '/^corpus/,/^NOISE/p')
+CTXTOOL="./bin/safecommit scan --repo-context {context} --cache-dir corpus/registry-snapshot $OFFLINE"
+HOLD2=$(python3 -m bench eval --tool "$CTXTOOL" $HOLDOUT2 2>/dev/null | sed -n '/^corpus/,/^NOISE/p')
 LOOSE=$(python3 -m bench eval --tool "$TOOL" $CORPORA --match name 2>/dev/null | sed -n '/^corpus/,/^NOISE/p')
 
 # Verdict distribution over the known-good corpus: proves a zero is genuine
@@ -112,7 +115,20 @@ $HOLD
 \`\`\`
 
 Every finding here is a false positive. See \`PHASE1-NOTES.md\` R6 for the
-diagnosis.
+diagnosis. Scored in the DEGRADED mode (no repo context), which is why the R6
+fix is invisible to this number; it is retained as a historical record.
+
+### Holdout #2 — scored WITH repo context (production mode)
+
+150 merged PRs from ten monorepo/nested-layout repositories (dagster, beam,
+ray, prefect, bokeh, mlflow, dbt-core, kedro, metaflow, ansible). No overlap
+with the development set or holdout #1.
+
+\`\`\`
+$HOLD2
+\`\`\`
+
+Diagnosis in \`PHASE1-NOTES.md\` R7. Both holdouts are now SPENT.
 
 ## Reference tools
 
