@@ -150,3 +150,64 @@ they will most likely be alias gaps, not extraction bugs. The step 5 confidence
 gate is the intended structural fix: hold back a name that is absent but shows
 no hallucination signal (no typo-distance to a real package, no composition
 shape), rather than firing on absence alone.
+
+## R1 case 2 — RESOLVED (2026-09-06, step 5)
+
+`internal/pathrules` suppresses candidates in fixture-data paths. The rule is
+keyed on a data/fixture path **component** (`tests/data/`, `testdata/`,
+`fixtures/`, `__snapshots__/`), never on a test root, exactly as R1's
+anti-overreach constraint requires.
+
+Verified both directions against the corpus:
+- `tests/data/cases/*.py` (psf/black) -> suppressed (13 candidates across the
+  known-good corpus now resolve as `fixture-data`).
+- `tests/test_schemas.py` (seed-008) -> still fires. This is the tripwire R1
+  asked for, and it works: suppressing `tests/` wholesale would drop it.
+
+Note what this fixed was *latent*, not measured. Black's `from m import` only
+escaped before because a PyPI project named `m` coincidentally exists.
+
+## R3 — RESOLVED (2026-09-06, step 5)
+
+`internal/manifest` adds the second detection path. Recall is now 18/18 on
+imports and 3/3 on manifests. The two paths remain reported separately, which
+is the point: they share almost no code (manifest entries are already
+distribution names, so no stdlib check, no first-party derivation and no
+import-name aliasing applies -- `ResolveDep` is registry-only).
+
+**pyproject.toml is scanned, not parsed.** A diff hunk is not valid TOML, and
+bench/verify.py rightly called regex-parsing TOML "itself a bug source". The
+scanner is a narrow state machine answering one question -- is this added line
+inside a dependency array? -- anchored on table headers and array openers taken
+from the hunk's own context lines, yielding nothing when it cannot tell.
+
+The refusals are tested against real merged PRs, because all three of these
+were added by PRs in the known-good corpus and would be false positives under a
+naive "any quoted string in any array" rule:
+
+```
+"testing/plugins_integration",   inside norecursedirs = [   (pytest #14540)
+omit = ["venv/*"]                coverage config            (httpx  #3319)
+scripts.pytest = "..."           entry point                (pytest #14126)
+```
+
+Manifest-path noise floor across the whole known-good corpus: 2 extracted names
+(`ruff`, `mypy`), both real.
+
+## R5 — Confidence gate DEFERRED to Phase 4, deliberately
+*(decision 2026-09-06, owner-approved)*
+
+Step 5 was originally scoped to include a hallucination-signal confidence gate
+(fire only when an absent name also looks like a hallucination -- typo distance
+to a real package, composition shape) as the structural mitigation for R4's
+alias-gap risk.
+
+**It was not built, on purpose.** There are currently zero measured false
+positives. Building a gate now would mean tuning against a corpus containing no
+errors to fix -- speculation, paid for in recall on novel hallucinations, which
+is the exact capability the product exists to provide.
+
+**Revisit when:** the Phase 4 fresh holdout produces real false positives. If it
+does, alias gaps (R4) are the most likely cause and the gate is the intended
+fix. If it does not, the gate should never be built at all. Either way the
+decision will rest on measurement rather than anticipation.

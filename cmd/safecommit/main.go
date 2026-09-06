@@ -1,10 +1,12 @@
 // Command safecommit scans a unified diff for references to things that do not
 // exist — hallucinated imports and fabricated dependencies in Python code.
 //
-// PHASE 1, STEP 4: extraction plus the resolution cascade. A finding is emitted
-// only when ground truth proves the name absent from the package registry.
-// Anything undetermined — an unreachable registry, an offline run, a name we
-// cannot map — produces silence, never a finding.
+// PHASE 1, STEP 5: two detection paths — Python imports and dependency
+// manifests — behind one resolution cascade. A finding is emitted only when
+// ground truth proves the name absent from the package registry. Anything
+// undetermined — an unreachable registry, an offline run, a name we cannot map,
+// an added line whose enclosing TOML context we cannot establish — produces
+// silence, never a finding.
 //
 // Usage:
 //
@@ -24,6 +26,8 @@ import (
 
 	"github.com/reevsryn/safecommit/internal/diff"
 	"github.com/reevsryn/safecommit/internal/finding"
+	"github.com/reevsryn/safecommit/internal/manifest"
+	"github.com/reevsryn/safecommit/internal/pathrules"
 	"github.com/reevsryn/safecommit/internal/pyparse"
 	"github.com/reevsryn/safecommit/internal/registry"
 	"github.com/reevsryn/safecommit/internal/resolve"
@@ -46,7 +50,7 @@ flags:
   --version           print version and exit
 `
 
-var version = "0.0.4-phase1-step4"
+var version = "0.0.5-phase1-step5"
 
 type options struct {
 	diffPath string
@@ -142,9 +146,12 @@ func readDiff(path string) ([]byte, error) {
 //	[5] confidence gate + dependency-manifest parsing        (step 5)
 //	[6] emit
 //
-// Step 4 implements [1]-[4] and [6]. The manifest path ([5], R3) does not
-// exist yet, so `requirement`-kind truths are structurally unreachable here —
-// that gap is expected and is exactly what R3 exists to keep visible.
+// Step 5 adds the second detection path (dependency manifests, R3) and
+// path-aware suppression of fixture data (R1 case 2). The hallucination-signal
+// confidence gate is deliberately NOT built: there are zero measured false
+// positives to tune against, so it would be speculation at the cost of recall
+// on novel hallucinations. Deferred to Phase 4, when the fresh holdout can say
+// whether alias gaps (R4) actually produce false positives.
 func scan(src []byte, opts options) ([]finding.Finding, error) {
 	files, err := diff.Parse(src)
 	if err != nil {
@@ -168,7 +175,40 @@ func scan(src []byte, opts options) ([]finding.Finding, error) {
 
 	out := []finding.Finding{}
 	for i := range files {
-		for _, im := range ex.FromFile(&files[i]) {
+		f := &files[i]
+
+		// R1 case 2: whole files that are fixture DATA parse as genuine code.
+		// Only the path can tell them apart. Deliberately narrow — see
+		// internal/pathrules; suppressing all of tests/ would drop seed-008.
+		if pathrules.IsFixtureData(f.NewPath) {
+			if opts.explain {
+				fmt.Fprintf(os.Stderr, "suppress\tfixture-data\t-\t%s\t-\n", f.NewPath)
+			}
+			continue
+		}
+
+		for _, dep := range manifest.FromFile(f) {
+			d := res.ResolveDep(dep.Name)
+			if opts.explain {
+				fmt.Fprintf(os.Stderr, "%s\t%s\t%s\t%s:%d\t%s\n",
+					verdictName(d.Verdict), d.Reason+"/manifest", dep.Name, dep.File, dep.Line, d.Detail)
+			}
+			if d.Verdict != resolve.Fire {
+				continue
+			}
+			out = append(out, finding.Finding{
+				Name: dep.Name,
+				File: dep.File,
+				Line: dep.Line,
+				Kind: finding.KindRequirement,
+				Message: fmt.Sprintf(
+					"dependency %q does not exist on PyPI (%s). "+
+						"This is the signature of a fabricated dependency.",
+					dep.Name, d.Detail),
+			})
+		}
+
+		for _, im := range ex.FromFile(f) {
 			d := res.Resolve(im)
 			if opts.explain {
 				// stderr only: stdout is the harness contract and must stay

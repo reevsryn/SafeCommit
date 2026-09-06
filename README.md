@@ -65,26 +65,60 @@ We build the measuring stick *before* any detector, because the whole thesis is
       **Silent** ("could not determine") — Silent never becomes Fire, so an
       index outage or offline run produces no findings rather than a wave of
       false accusations. **Benchmark: 0 noise, 100% precision, 85.7% recall.**
-- [ ] Step 5 — confidence gate + dependency-manifest parsing (R1, R3).
+- [x] **Step 5 — dependency-manifest parsing + fixture-path suppression.**
+      Adds the second detection path (`internal/manifest`): `requirements*.txt`
+      line-oriented PEP 508, and a **narrow context-anchored scanner** for
+      `pyproject.toml` — not a TOML parser, since a diff hunk is not valid TOML.
+      It tracks table headers and array openers from the hunk's own context
+      lines and yields nothing when it cannot tell. Also adds
+      `internal/pathrules` for R1 case 2 (fixture data), deliberately keyed on a
+      data/fixture path *component* rather than a test root, so executed test
+      files still report. **The hallucination-signal confidence gate was
+      deliberately NOT built** — see below.
 - [ ] Step 6 — full benchmark run, recall split per detection path.
 
-## Current results (step 4, development set)
+## Current results (step 5, development set)
 
 ```
 corpus           cases  findings   TP   FP   FN  precision   recall      F1
 known-good          96         0    0    0    0          —        —       —
-seeded              20        19   18    0    3     100.0%    85.7%   92.3%
-TOTAL              116        19   18    0    3     100.0%    85.7%   92.3%
+seeded              20        22   21    0    0     100.0%   100.0%  100.0%
+TOTAL              116        22   21    0    0     100.0%   100.0%  100.0%
 
 NOISE (findings on known-good): 0   ← target: 0
 ```
 
 Recall **split by detection path** (R3 — a blended number would hide this):
 
-| path | recall | note |
-|---|---|---|
-| import (`internal/pyparse`) | **18/18 = 100%** | |
-| dependency manifest | **0/3 = 0%** | not implemented until step 5 |
+| path | recall |
+|---|---|
+| import (`internal/pyparse`) | **18/18 = 100%** |
+| dependency manifest (`internal/manifest`) | **3/3 = 100%** |
+
+### Read this number with suspicion
+
+A perfect score on the set you developed against is evidence of a working
+pipeline, **not** evidence of a good detector. Every requirement the detector
+satisfies (R1–R4) was derived by inspecting this corpus, there are only 21
+truths in it, and the seeded cases were authored by this project. **These
+figures are not publishable.** The number that counts comes from the fresh
+never-inspected holdout mined at Phase 4 — see `corpus/README.md`.
+
+What the run does legitimately establish is that the zero is real rather than
+silence. All 400 known-good candidates were suppressed for a *positive* reason,
+with **no Silent verdicts at all**:
+
+```
+206 suppress  first-party      132 suppress  stdlib
+ 27 suppress  registry-hit      20 suppress  relative
+ 13 suppress  fixture-data       2 suppress  registry-hit/manifest
+  0 SILENT                        0 FIRE
+```
+
+And the anti-overreach guard holds: `seed-008`'s fake import in
+`tests/test_schemas.py` — an *executed* test file — still fires, while black's
+`tests/data/cases/*.py` fixture files are suppressed. Suppressing `tests/`
+wholesale would have silently dropped that detection.
 
 **The prediction made before step 2 held.** It was written down in advance:
 *"once extraction is parser-based, SafeCommit should emit 0 findings on all 96

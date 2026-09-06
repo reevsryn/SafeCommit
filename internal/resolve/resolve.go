@@ -120,3 +120,26 @@ func topComponent(path string) string {
 	}
 	return strings.TrimSuffix(top, ".py")
 }
+
+// ResolveDep resolves a name taken from a dependency manifest.
+//
+// Manifest entries are already DISTRIBUTION names, so the import-side cascade
+// does not apply: there is no stdlib to check (no manifest depends on `os`),
+// no first-party derivation, and no import-name aliasing — `PyYAML` is written
+// as `PyYAML` in requirements.txt, not as `yaml`. That leaves the registry as
+// the only oracle, which is why R3 insists this path's recall be reported
+// separately: it shares almost no code with the import path.
+func (r *Resolver) ResolveDep(name string) Decision {
+	if name == "" {
+		return Decision{Silent, "no-name", "empty dependency name", ""}
+	}
+	res := r.Registry.Exists(name)
+	switch res.Status {
+	case registry.Exists:
+		return Decision{Suppress, "registry-hit", res.Evidence, name}
+	case registry.Absent:
+		return Decision{Fire, "registry-404", res.Evidence, name}
+	default:
+		return Decision{Silent, "unverified", res.Evidence, name}
+	}
+}
