@@ -31,6 +31,7 @@ mods |= {  # removed from recent versions, still present in real code
     "parser", "symbol", "cgi", "cgitb", "chunk", "crypt", "nis", "nntplib",
     "ossaudiodev", "pipes", "sndhdr", "spwd", "sunau", "telnetlib", "uu",
     "xdrlib", "audioop", "aifc", "mailcap", "msilib", "lib2to3", "typing_extensions",
+    "imghdr", "_crypt", "_msi",
 }
 print("# Python stdlib top-level module names.")
 print(f"# Union across: {', '.join(versions)} + previous list + historical set.")
