@@ -128,7 +128,14 @@ with the development set or holdout #1.
 $HOLD2
 \`\`\`
 
-Diagnosis in \`PHASE1-NOTES.md\` R7. Both holdouts are now SPENT.
+> **This number is now TUNED and is not a measurement.** \`opentelemetry\` was
+> added to the alias table in response to a failure this corpus revealed, which
+> burns it under \`corpus/HOLDOUT-PROTOCOL.md\`. The last untainted figure from
+> holdout #2 is **3 findings / 150 cases (1.3%)**. The one finding that remains
+> (\`ray_release\`) was left unfixed by explicit decision.
+
+Diagnosis in \`PHASE1-NOTES.md\` R7. Both holdouts are SPENT; a third is
+required before publishing another noise figure.
 
 ## Reference tools
 

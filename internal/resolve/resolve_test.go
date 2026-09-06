@@ -201,3 +201,33 @@ func TestNoRepoIndexIsTheDegradedButSafeMode(t *testing.T) {
 		t.Errorf("got %v, want Suppress with no repo index", d.Verdict)
 	}
 }
+
+// Namespace-package roots: import names that no single distribution owns, so a
+// direct registry lookup 404s on a real, widely used library. `opentelemetry`
+// is the one holdout #2 actually caught (R7); the rest are the same pattern.
+func TestNamespacePackageRootsResolve(t *testing.T) {
+	f := &fakeOracle{exists: map[string]bool{
+		"opentelemetry-api":       true,
+		"repoze.lru":              true,
+		"sphinxcontrib-applehelp": true,
+		"jaraco.classes":          true,
+		"ruamel.yaml":             true,
+	}}
+	r := &Resolver{Registry: f}
+	for _, name := range []string{"opentelemetry", "repoze", "sphinxcontrib", "jaraco", "ruamel"} {
+		d := r.Resolve(imp(name, pyparse.KindFromImport))
+		if d.Verdict != Suppress {
+			t.Errorf("%s: got %v (%s), want Suppress — namespace root not aliased", name, d.Verdict, d.Detail)
+		}
+	}
+}
+
+// Import names that ARE registered distributions must not be given aliases;
+// an unnecessary entry is a maintenance liability and can mask a real change.
+func TestSelfRegisteredNamesHaveNoAlias(t *testing.T) {
+	for _, name := range []string{"azure", "zope", "paste", "backports", "mypy_extensions", "requests"} {
+		if d, aliased := DistFor(name); aliased {
+			t.Errorf("DistFor(%q) = %q; this import name is itself a distribution and needs no alias", name, d)
+		}
+	}
+}

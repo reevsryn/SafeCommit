@@ -374,3 +374,45 @@ burns this corpus. A third holdout is required before the next published figure.
 alias table, relax the parent check — are each a one-liner, and each would
 convert this measured result into a tuned one. They are left to an explicit
 decision rather than taken reflexively.
+
+## R7 addendum — `opentelemetry` fixed; holdout #2 is now BURNED
+*(2026-09-06, owner decision: fix opentelemetry, leave ray_release alone)*
+
+`opentelemetry` -> `opentelemetry-api` added to the alias table. Holdout #2
+re-runs at **1 finding / 150 cases**, down from 3.
+
+**That 1 is a TUNED number and must never be quoted as a measurement.** The fix
+was made in response to failures this corpus revealed, which is precisely what
+`corpus/HOLDOUT-PROTOCOL.md` defines as burning it. The last untainted figure
+from holdout #2 is the original **3 findings / 150 cases (1.3%)**. A third
+holdout is required before any new noise figure can be published.
+
+### Generalised, but with the provenance kept separate
+
+`opentelemetry` turned out to be an instance of a pattern rather than a one-off:
+a PEP 420 **namespace root**, an import name no single distribution owns, which
+404s while the packages populating it are real. Three more were added from the
+same pattern -- `repoze`, `sphinxcontrib`, `jaraco` -- each derived
+independently and verified against PyPI (import name 404, mapped distribution
+200). Those three are **not** corpus-derived and do not affect the burn status;
+only `opentelemetry` does. The distinction is recorded in the table itself so a
+later reader can tell which entries came from measurement and which from
+reasoning.
+
+Candidates checked and deliberately **rejected** because their import name is
+itself a registered distribution: `azure`, `zope`, `paste`, `backports`,
+`mypy_extensions`. An unnecessary alias is a maintenance liability and can mask
+a genuine change upstream; `TestSelfRegisteredNamesHaveNoAlias` pins this.
+
+Dead weight removed while there: identity mappings (`psutil`, `tqdm`, `regex`,
+`yattag`) and case-only aliases (`jinja2`, `markdown`, `sqlalchemy`) that PEP 503
+normalization already handles, plus one bogus entry (`OpenSSL_`). Table: 60 -> 51.
+
+### `ray_release` left unfixed, by decision
+
+The package-root parent check stands. Relaxing it would trade a rare false
+positive for silent missed detections across every monorepo subpackage --
+dagster alone contributes 395 top-level names with the check in place. If this
+is ever revisited, the better fix is to consult the repository's packaging
+configuration (`pyproject.toml` / `setup.cfg` `packages`/`package-dir`) rather
+than loosening the heuristic.

@@ -165,3 +165,15 @@ diagnosis: `PHASE1-NOTES.md` R7.
 
 Per the one-shot rule, both causes are now known, so a fix for either burns this
 corpus and a third holdout is required before the next published figure.
+
+
+### Holdout #2: BURNED (2026-09-06)
+
+`opentelemetry` was added to the alias table in response to a failure this
+corpus revealed. Under the one-shot rule that burns it.
+
+- Last untainted figure: **3 findings / 150 cases (1.3%)**.
+- Post-fix figure: 1 finding / 150 — **tuned, not a measurement**.
+
+A third holdout, from repositories used in none of the three existing sets, is
+required before publishing another noise figure.
