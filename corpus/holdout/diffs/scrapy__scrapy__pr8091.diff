@@ -1,0 +1,331 @@
+diff --git a/docs/intro/install.rst b/docs/intro/install.rst
+index 8a52c619968..07756b42b6f 100644
+--- a/docs/intro/install.rst
++++ b/docs/intro/install.rst
+@@ -111,6 +111,8 @@ The following extras are available:
+      - Provides
+    * - ``bpython``
+      - :ref:`bpython shell <shell-config>`
++   * - ``color``
++     - :setting:`LOG_COLOR`
+    * - ``gcs``
+      - :ref:`Google Cloud Storage <topics-feed-storage-gcs>` for
+        :ref:`feed exports <topics-feed-exports>` and
+diff --git a/docs/topics/logging.rst b/docs/topics/logging.rst
+index b486eab63f6..bf1a0bec7bd 100644
+--- a/docs/topics/logging.rst
++++ b/docs/topics/logging.rst
+@@ -158,6 +158,7 @@ These settings can be used to configure the logging:
+ 
+ * :setting:`LOG_FILE`
+ * :setting:`LOG_FILE_APPEND`
++* :setting:`LOG_COLOR`
+ * :setting:`LOG_ENABLED`
+ * :setting:`LOG_ENCODING`
+ * :setting:`LOG_LEVEL`
+@@ -189,6 +190,9 @@ If :setting:`LOG_SHORT_NAMES` is set, then the logs will not display the Scrapy
+ component that prints the log. It is unset by default, hence logs contain the
+ Scrapy component responsible for that log output.
+ 
++When logging to a terminal, :setting:`LOG_COLOR` colorizes messages by log
++level.
++
+ Rotating log files
+ ------------------
+ 
+diff --git a/docs/topics/settings.rst b/docs/topics/settings.rst
+index 9a4a4f113a0..6e2f40db6a0 100644
+--- a/docs/topics/settings.rst
++++ b/docs/topics/settings.rst
+@@ -401,6 +401,7 @@ value per spider when :ref:`running multiple spiders in the same process
+ 
+ These settings are:
+ 
++-   :setting:`LOG_COLOR`
+ -   :setting:`LOG_DATEFORMAT`
+ -   :setting:`LOG_ENABLED`
+ -   :setting:`LOG_ENCODING`
+@@ -1582,6 +1583,22 @@ A string indicating the directory for storing the state of a crawl when
+ :ref:`pausing and resuming crawls <topics-jobs>`.
+ 
+ 
++.. setting:: LOG_COLOR
++
++LOG_COLOR
++---------
++
++Default: ``True``
++
++Whether to colorize log output by log level when logging to a terminal.
++Requires the ``color`` extra:
++
++.. code-block:: bash
++
++    pip install scrapy[color]
++
++.. note:: This is a :ref:`logging setting <logging-settings>`.
++
+ .. setting:: LOG_ENABLED
+ 
+ LOG_ENABLED
+diff --git a/pyproject.toml b/pyproject.toml
+index 551b07ee79e..17ef5190e6c 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -68,6 +68,7 @@ Tracker = "https://github.com/scrapy/scrapy/issues"
+ 
+ [project.optional-dependencies]
+ bpython = ["bpython>=0.7.1"]
++color = ["colorlog>=6.6.0"]
+ gcs = ["google-cloud-storage>=1.29.0"]
+ httpx = ["httpx2[http2,socks]>=2.0.0"]
+ images = ["Pillow>=8.3.2"]
+@@ -271,7 +272,7 @@ disable = [
+ # requires `pylint_per_file_ignores` plugin
+ per-file-ignores = [
+     # Extended list of ones that we may want to address, only for tests
+-    "./tests/*:abstract-method,arguments-renamed,dangerous-default-value,pointless-statement,raise-missing-from,unnecessary-dunder-call,used-before-assignment",
++    "./tests/*:abstract-method,arguments-renamed,dangerous-default-value,pointless-statement,raise-missing-from,unidiomatic-typecheck,unnecessary-dunder-call,used-before-assignment",
+ ]
+ 
+ [tool.pytest.ini_options]
+diff --git a/scrapy/settings/default_settings.py b/scrapy/settings/default_settings.py
+index 1bfff1c9fde..78f8ca50959 100644
+--- a/scrapy/settings/default_settings.py
++++ b/scrapy/settings/default_settings.py
+@@ -137,6 +137,7 @@
+     "ITEM_PROCESSOR",
+     "JOBDIR",
+     "LOGSTATS_INTERVAL",
++    "LOG_COLOR",
+     "LOG_DATEFORMAT",
+     "LOG_ENABLED",
+     "LOG_ENCODING",
+@@ -448,6 +449,7 @@
+ 
+ JOBDIR = None
+ 
++LOG_COLOR = True
+ LOG_ENABLED = True
+ LOG_DATEFORMAT = "%Y-%m-%d %H:%M:%S"
+ LOG_ENCODING = "utf-8"
+diff --git a/scrapy/utils/log.py b/scrapy/utils/log.py
+index d88d50763d8..94e1cd5f1c6 100644
+--- a/scrapy/utils/log.py
++++ b/scrapy/utils/log.py
+@@ -16,6 +16,7 @@
+ import scrapy
+ from scrapy.exceptions import ScrapyDeprecationWarning
+ from scrapy.settings import Settings
++from scrapy.utils.display import _tty_supports_color
+ from scrapy.utils.versions import get_versions
+ 
+ if TYPE_CHECKING:
+@@ -168,6 +169,25 @@ def get_scrapy_root_handler() -> logging.Handler | None:
+     return _scrapy_root_handler
+ 
+ 
++def _get_formatter(handler: logging.Handler, settings: Settings) -> logging.Formatter:
++    fmt = settings.get("LOG_FORMAT")
++    datefmt = settings.get("LOG_DATEFORMAT")
++    if (
++        isinstance(handler, logging.StreamHandler)
++        and not isinstance(handler, logging.FileHandler)
++        and settings.getbool("LOG_COLOR")
++        and handler.stream.isatty()
++        and _tty_supports_color()
++    ):
++        try:
++            from colorlog import ColoredFormatter  # noqa: PLC0415
++        except ImportError:
++            pass
++        else:
++            return ColoredFormatter(fmt=f"%(log_color)s{fmt}", datefmt=datefmt)
++    return logging.Formatter(fmt=fmt, datefmt=datefmt)
++
++
+ def _get_handler(settings: Settings) -> logging.Handler:
+     """Return a log handler object according to settings"""
+     filename = settings.get("LOG_FILE")
+@@ -181,10 +201,7 @@ def _get_handler(settings: Settings) -> logging.Handler:
+     else:
+         handler = logging.NullHandler()
+ 
+-    formatter = logging.Formatter(
+-        fmt=settings.get("LOG_FORMAT"), datefmt=settings.get("LOG_DATEFORMAT")
+-    )
+-    handler.setFormatter(formatter)
++    handler.setFormatter(_get_formatter(handler, settings))
+     handler.setLevel(settings.get("LOG_LEVEL"))
+     if settings.getbool("LOG_SHORT_NAMES"):
+         handler.addFilter(TopLevelFormatter(["scrapy"]))
+diff --git a/tests/test_downloader_handler_twisted_ftp.py b/tests/test_downloader_handler_twisted_ftp.py
+index 7b1c0de4083..1554d8521d2 100644
+--- a/tests/test_downloader_handler_twisted_ftp.py
++++ b/tests/test_downloader_handler_twisted_ftp.py
+@@ -145,7 +145,7 @@ async def test_response_class(
+         meta.update(self.req_meta)
+         request = Request(url=server_url + filename, meta=meta)
+         r = await dh.download_request(request)
+-        assert type(r) is response_class  # pylint: disable=unidiomatic-typecheck
++        assert type(r) is response_class
+ 
+ 
+ class TestFTP(TestFTPBase):
+diff --git a/tests/test_downloader_handlers.py b/tests/test_downloader_handlers.py
+index 8f5c13d627e..15fb5b9bad0 100644
+--- a/tests/test_downloader_handlers.py
++++ b/tests/test_downloader_handlers.py
+@@ -377,7 +377,7 @@ async def test_default_mediatype_encoding(self):
+         request = Request("data:,A%20brief%20note")
+         response = await self.download_request(request)
+         assert response.text == "A brief note"
+-        assert type(response) is responsetypes.from_mimetype("text/plain")  # pylint: disable=unidiomatic-typecheck
++        assert type(response) is responsetypes.from_mimetype("text/plain")
+         assert isinstance(response, TextResponse)
+         assert response.encoding == "US-ASCII"
+ 
+@@ -386,7 +386,7 @@ async def test_default_mediatype(self):
+         request = Request("data:;charset=iso-8859-7,%be%d3%be")
+         response = await self.download_request(request)
+         assert response.text == "\u038e\u03a3\u038e"
+-        assert type(response) is responsetypes.from_mimetype("text/plain")  # pylint: disable=unidiomatic-typecheck
++        assert type(response) is responsetypes.from_mimetype("text/plain")
+         assert isinstance(response, TextResponse)
+         assert response.encoding == "iso-8859-7"
+ 
+@@ -408,7 +408,7 @@ async def test_mediatype_parameters(self):
+         )
+         response = await self.download_request(request)
+         assert response.text == "\u038e\u03a3\u038e"
+-        assert type(response) is responsetypes.from_mimetype("text/plain")  # pylint: disable=unidiomatic-typecheck
++        assert type(response) is responsetypes.from_mimetype("text/plain")
+         assert isinstance(response, TextResponse)
+         assert response.encoding == "utf-8"
+ 
+diff --git a/tests/test_utils_log.py b/tests/test_utils_log.py
+index 4a18d9ff6a0..f4cfd222357 100644
+--- a/tests/test_utils_log.py
++++ b/tests/test_utils_log.py
+@@ -19,6 +19,7 @@
+     SpiderLoggerAdapter,
+     StreamLogger,
+     TopLevelFormatter,
++    _get_formatter,
+     _uninstall_scrapy_root_handler,
+     configure_logging,
+     failure_to_exc_info,
+@@ -142,6 +143,72 @@ def flush(self) -> None:
+         assert handler.flushes == 1
+ 
+ 
++class _TTYStringIO(StringIO):
++    def isatty(self) -> bool:
++        return True
++
++
++class TestGetFormatter:
++    @staticmethod
++    def _settings(**overrides: Any) -> Settings:
++        values = {
++            "LOG_FORMAT": "%(levelname)s: %(message)s",
++            "LOG_DATEFORMAT": "%Y-%m-%d",
++            "LOG_COLOR": True,
++        }
++        values.update(overrides)
++        return Settings(values)
++
++    def test_colored_when_tty_and_enabled(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        pytest.importorskip("colorlog")
++        monkeypatch.setattr("scrapy.utils.log._tty_supports_color", lambda: True)
++        stream = _TTYStringIO()
++        handler = logging.StreamHandler(stream)
++        handler.setFormatter(_get_formatter(handler, self._settings()))
++        logger = logging.getLogger("test_get_formatter_colored")
++        logger.addHandler(handler)
++        logger.setLevel(logging.DEBUG)
++        try:
++            logger.error("boom")
++        finally:
++            logger.removeHandler(handler)
++        output = stream.getvalue()
++        assert "\x1b[" in output
++        assert "boom" in output
++
++    def test_plain_when_not_a_tty(self) -> None:
++        handler = logging.StreamHandler(StringIO())
++        formatter = _get_formatter(handler, self._settings())
++        assert type(formatter) is logging.Formatter
++
++    def test_plain_when_log_color_disabled(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.setattr("scrapy.utils.log._tty_supports_color", lambda: True)
++        handler = logging.StreamHandler(_TTYStringIO())
++        formatter = _get_formatter(handler, self._settings(LOG_COLOR=False))
++        assert type(formatter) is logging.Formatter
++
++    def test_plain_for_file_handler(self, tmp_path: Any) -> None:
++        handler = logging.FileHandler(tmp_path / "log.txt")
++        try:
++            formatter = _get_formatter(handler, self._settings())
++        finally:
++            handler.close()
++        assert type(formatter) is logging.Formatter
++
++    def test_plain_when_colorlog_not_installed(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.setattr("scrapy.utils.log._tty_supports_color", lambda: True)
++        monkeypatch.setitem(sys.modules, "colorlog", None)
++        handler = logging.StreamHandler(_TTYStringIO())
++        formatter = _get_formatter(handler, self._settings())
++        assert type(formatter) is logging.Formatter
++
++
+ class TestConfigureLogging:
+     @pytest.fixture(autouse=True)
+     def restore_logging(self) -> Generator[None]:
+diff --git a/tests/test_zz_resources.py b/tests/test_zz_resources.py
+index b2ba013f1df..496c65edd91 100644
+--- a/tests/test_zz_resources.py
++++ b/tests/test_zz_resources.py
+@@ -29,7 +29,7 @@ def test_stderr_log_handler() -> None:
+     (without ``install_root_handler=False``). It can be removed with
+     ``_uninstall_scrapy_root_handler()`` if installing it was really needed.
+     """
+-    c = sum(1 for h in logging.root.handlers if type(h) is logging.StreamHandler)  # pylint: disable=unidiomatic-typecheck
++    c = sum(1 for h in logging.root.handlers if type(h) is logging.StreamHandler)
+     assert c == 0
+ 
+ 
+diff --git a/tox.ini b/tox.ini
+index 8e0b28a9eaa..bb9374876ae 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -80,6 +80,7 @@ deps =
+     backports.zstd==1.7.0
+     boto3-stubs[s3]==1.43.41
+     botocore-stubs==1.43.14
++    colorlog==6.12.0
+     h2==4.3.0
+     httpx2==2.7.0
+     itemadapter==0.13.1
+@@ -183,6 +184,7 @@ deps =
+     Twisted[http2]
+     boto3
+     bpython  # optional for shell wrapper tests
++    colorlog
+     google-cloud-storage
+     httpx2[http2,socks]
+     ipython
+@@ -198,6 +200,7 @@ deps =
+     Twisted[http2]==21.7.0
+     boto3==1.20.0
+     bpython==0.7.1
++    colorlog==6.6.0
+     google-cloud-storage==1.29.0
+     httpx2[http2,socks]==2.0.0
+     ipython==8.15.0

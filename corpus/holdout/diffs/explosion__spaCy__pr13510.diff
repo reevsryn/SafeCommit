@@ -1,0 +1,360 @@
+diff --git a/spacy/lang/bo/__init__.py b/spacy/lang/bo/__init__.py
+new file mode 100644
+index 00000000000..84ef8c0861f
+--- /dev/null
++++ b/spacy/lang/bo/__init__.py
+@@ -0,0 +1,16 @@
++from ...language import BaseDefaults, Language
++from .lex_attrs import LEX_ATTRS
++from .stop_words import STOP_WORDS
++
++
++class TibetanDefaults(BaseDefaults):
++    lex_attr_getters = LEX_ATTRS
++    stop_words = STOP_WORDS
++
++
++class Tibetan(Language):
++    lang = "bo"
++    Defaults = TibetanDefaults
++
++
++__all__ = ["Tibetan"]
+diff --git a/spacy/lang/bo/examples.py b/spacy/lang/bo/examples.py
+new file mode 100644
+index 00000000000..8ed9372ec2b
+--- /dev/null
++++ b/spacy/lang/bo/examples.py
+@@ -0,0 +1,16 @@
++"""
++Example sentences to test spaCy and its language models.
++
++>>> from spacy.lang.bo.examples import sentences
++>>> docs = nlp.pipe(sentences)
++"""
++
++
++sentences = [
++    "དོན་དུ་རྒྱ་མཚོ་བླ་མ་ཞེས་བྱ་ཞིང༌།",
++    "ཏཱ་ལའི་ཞེས་པ་ནི་སོག་སྐད་ཡིན་པ་དེ་བོད་སྐད་དུ་རྒྱ་མཚོའི་དོན་དུ་འཇུག",
++    "སོག་པོ་ཨལ་ཐན་རྒྱལ་པོས་རྒྱལ་དབང་བསོད་ནམས་རྒྱ་མཚོར་ཆེ་བསྟོད་ཀྱི་མཚན་གསོལ་བ་ཞིག་ཡིན་ཞིང༌།",
++    "རྗེས་སུ་རྒྱལ་བ་དགེ་འདུན་གྲུབ་དང༌། དགེ་འདུན་རྒྱ་མཚོ་སོ་སོར་ཡང་ཏཱ་ལའི་བླ་མའི་སྐུ་ཕྲེང་དང་པོ་དང༌།",
++    "གཉིས་པའི་མཚན་དེ་གསོལ་ཞིང༌།༸རྒྱལ་དབང་སྐུ་ཕྲེང་ལྔ་པས་དགའ་ལྡན་ཕོ་བྲང་གི་སྲིད་དབང་བཙུགས་པ་ནས་ཏཱ་ལའི་བླ་མ་ནི་བོད་ཀྱི་ཆོས་སྲིད་གཉིས་ཀྱི་དབུ་ཁྲིད་དུ་གྱུར་ཞིང་།",
++    "ད་ལྟའི་བར་ཏཱ་ལའི་བླ་མ་སྐུ་ཕྲེང་བཅུ་བཞི་བྱོན་ཡོད།",
++]
+diff --git a/spacy/lang/bo/lex_attrs.py b/spacy/lang/bo/lex_attrs.py
+new file mode 100644
+index 00000000000..c6a593868cc
+--- /dev/null
++++ b/spacy/lang/bo/lex_attrs.py
+@@ -0,0 +1,32 @@
++from ...attrs import LIKE_NUM
++
++# reference 1: https://en.wikipedia.org/wiki/Tibetan_numerals
++
++_num_words = [
++    "ཀླད་ཀོར་",
++    "གཅིག་", "གཉིས་", "གསུམ་", "བཞི་", "ལྔ་", "དྲུག་", "བདུན་", "བརྒྱད་", "དགུ་", "བཅུ་",
++    "བཅུ་གཅིག་", "བཅུ་གཉིས་", "བཅུ་གསུམ་", "བཅུ་བཞི་", "བཅུ་ལྔ་", "བཅུ་དྲུག་", "བཅུ་བདུན་", "བཅུ་པརྒྱད", "བཅུ་དགུ་", "ཉི་ཤུ་",
++    "སུམ་ཅུ", "བཞི་བཅུ", "ལྔ་བཅུ", "དྲུག་ཅུ", "བདུན་ཅུ", "བརྒྱད་ཅུ", "དགུ་བཅུ", "བརྒྱ་",
++    "སྟོང་", "ཁྲི་", "ས་ཡ་", "	བྱེ་བ་", "དུང་ཕྱུར་", "ཐེར་འབུམ་", "ཐེར་འབུམ་ཆེན་པོ་", "ཁྲག་ཁྲིག་", "ཁྲག་ཁྲིག་ཆེན་པོ་",
++]
++
++
++def like_num(text):
++    """
++    Check if text resembles a number
++    """
++    if text.startswith(("+", "-", "±", "~")):
++        text = text[1:]
++    text = text.replace(",", "").replace(".", "")
++    if text.isdigit():
++        return True
++    if text.count("/") == 1:
++        num, denom = text.split("/")
++        if num.isdigit() and denom.isdigit():
++            return True
++    if text in _num_words:
++        return True
++    return False
++
++
++LEX_ATTRS = {LIKE_NUM: like_num}
+diff --git a/spacy/lang/bo/stop_words.py b/spacy/lang/bo/stop_words.py
+new file mode 100644
+index 00000000000..407242c849b
+--- /dev/null
++++ b/spacy/lang/bo/stop_words.py
+@@ -0,0 +1,198 @@
++# Source: https://zenodo.org/records/10148636
++
++STOP_WORDS = set(
++    """
++འི་
++།
++དུ་
++གིས་
++སོགས་
++ཏེ
++གི་
++རྣམས་
++ནི
++ཀུན་
++ཡི་
++འདི
++ཀྱི་
++སྙེད་
++པས་
++གཞན་
++ཀྱིས་
++ཡི
++ལ
++ནི་
++དང་
++སོགས
++ཅིང་
++ར
++དུ
++མི་
++སུ་
++བཅས་
++ཡོངས་
++ལས
++ཙམ་
++གྱིས་
++དེ་
++ཡང་
++མཐའ་དག་
++ཏུ་
++ཉིད་
++ས
++ཏེ་
++གྱི་
++སྤྱི
++དེ
++ཀ་
++ཡིན་
++ཞིང་
++འདི་
++རུང་
++རང་
++ཞིག་
++སྟེ
++སྟེ་
++ན་རེ
++ངམ
++ཤིང་
++དག་
++ཏོ
++རེ་
++འང་
++ཀྱང་
++ལགས་པ
++ཚུ
++དོ
++ཡིན་པ
++རེ
++ན་རེ་
++ཨེ་
++ཚང་མ
++ཐམས་ཅད་
++དམ་
++འོ་
++ཅིག་
++གྱིན་
++ཡིན
++ན
++ཁོ་ན་
++འམ་
++ཀྱིན་
++ལོ
++ཀྱིས
++བས་
++ལགས་
++ཤིག
++གིས
++ཀི་
++སྣ་ཚོགས་
++རྣམས
++སྙེད་པ
++ཡིས་
++གྱི
++གི
++བམ་
++ཤིག་
++རེ་རེ་
++ནམ
++མིན་
++ནམ་
++ངམ་
++རུ་
++འགའ་
++ཀུན
++ཤས་
++ཏུ
++ཡིས
++གིན་
++གམ་
++འོ
++ཡིན་པ་
++མིན
++ལགས
++གྱིས
++ཅང་
++འགའ
++སམ་
++ཞིག
++འང
++ལས་ཆེ་
++འཕྲལ་
++བར་
++རུ
++དང
++ཡ
++འག
++སམ
++ཀ
++ཅུང་ཟད་
++ཅིག
++ཉིད
++དུ་མ
++མ
++ཡིན་བ
++འམ
++མམ
++དམ
++དག
++ཁོ་ན
++ཀྱི
++ལམ
++ཕྱི་
++ནང་
++ཙམ
++ནོ་
++སོ་
++རམ་
++བོ་
++ཨང་
++ཕྱི
++ཏོ་
++ཚོ
++ལ་ལ་
++ཚོ་
++ཅིང
++མ་གི་
++གེ
++གོ
++ཡིན་ལུགས་
++རོ་
++བོ
++ལགས་པ་
++པས
++རབ་
++འི
++རམ
++བས
++གཞན
++སྙེད་པ་
++འབའ་
++མཾ་
++པོ
++ག་
++ག
++གམ
++སྤྱི་
++བམ
++མོ་
++ཙམ་པ་
++ཤ་སྟག་
++མམ་
++རེ་རེ
++སྙེད
++ཏམ་
++ངོ
++གྲང་
++ཏ་རེ
++ཏམ
++ཁ་
++ངེ་
++ཅོག་
++རིལ་
++ཉུང་ཤས་
++གིང་
++ཚ་
++ཀྱང
++""".split()
++)
+diff --git a/spacy/tests/conftest.py b/spacy/tests/conftest.py
+index 7db986ab9e7..d2bc0208157 100644
+--- a/spacy/tests/conftest.py
++++ b/spacy/tests/conftest.py
+@@ -80,6 +80,9 @@ def bg_tokenizer():
+ def bn_tokenizer():
+     return get_lang_class("bn")().tokenizer
+ 
++@pytest.fixture(scope="session")
++def bo_tokenizer():
++    return get_lang_class("bo")().tokenizer
+ 
+ @pytest.fixture(scope="session")
+ def ca_tokenizer():
+diff --git a/spacy/tests/lang/bo/__init__.py b/spacy/tests/lang/bo/__init__.py
+new file mode 100644
+index 00000000000..e69de29bb2d
+diff --git a/spacy/tests/lang/bo/test_text.py b/spacy/tests/lang/bo/test_text.py
+new file mode 100644
+index 00000000000..9275c15c4af
+--- /dev/null
++++ b/spacy/tests/lang/bo/test_text.py
+@@ -0,0 +1,21 @@
++import pytest
++
++
++@pytest.mark.parametrize(
++    "text,match",
++    [
++        ("10", True),
++        ("1", True),
++        ("999.0", True),
++        ("གཅིག་", True),
++        ("གཉིས་", True),
++        ("ཀླད་ཀོར་", True),
++        ("བཅུ་གཅིག་", True),
++        ("ཁྱི་", False),
++        (",", False),
++    ],
++)
++def test_lex_attrs_like_number(bo_tokenizer, text, match):
++    tokens = bo_tokenizer(text)
++    assert len(tokens) == 1
++    assert tokens[0].like_num == match
+\ No newline at end of file
+diff --git a/spacy/tests/tokenizer/test_explain.py b/spacy/tests/tokenizer/test_explain.py
+index 78932f6539c..902b400680a 100644
+--- a/spacy/tests/tokenizer/test_explain.py
++++ b/spacy/tests/tokenizer/test_explain.py
+@@ -18,6 +18,7 @@
+     pytest.param("ar", marks=pytest.mark.slow()),
+     pytest.param("bg", marks=pytest.mark.slow()),
+     "bn",
++    pytest.param("bo", marks=pytest.mark.slow()),
+     pytest.param("ca", marks=pytest.mark.slow()),
+     pytest.param("cs", marks=pytest.mark.slow()),
+     pytest.param("da", marks=pytest.mark.slow()),
+diff --git a/website/meta/languages.json b/website/meta/languages.json
+index d6a07809795..d1f14af96be 100644
+--- a/website/meta/languages.json
++++ b/website/meta/languages.json
+@@ -31,6 +31,12 @@
+             "name": "Bengali",
+             "has_examples": true
+         },
++        {
++            "code": "bo",
++            "name": "Tibetan",
++            "example": "འདི་ཚིག་གྲུབ་རེད།",
++            "has_examples": true
++        },
+         {
+             "code": "ca",
+             "name": "Catalan",

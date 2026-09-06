@@ -1,0 +1,521 @@
+diff --git a/docs/news.rst b/docs/news.rst
+index 38624948d2c..1b8fa85a1da 100644
+--- a/docs/news.rst
++++ b/docs/news.rst
+@@ -3615,7 +3615,7 @@ New features
+ 
+ -   Settings corresponding to :setting:`DOWNLOAD_DELAY`,
+     :setting:`CONCURRENT_REQUESTS_PER_DOMAIN` and
+-    :setting:`RANDOMIZE_DOWNLOAD_DELAY` can now be set on a per-domain basis
++    ``RANDOMIZE_DOWNLOAD_DELAY`` can now be set on a per-domain basis
+     via the new :setting:`DOWNLOAD_SLOTS` setting. (:gh:`5328`)
+ 
+ -   Added :meth:`.TextResponse.jmespath`, a shortcut for JMESPath selectors
+@@ -7695,7 +7695,7 @@ Documentation
+ - Download stats badge removed from README (:gh:`2160`).
+ - New Scrapy :ref:`architecture diagram <topics-architecture>` (:gh:`2165`).
+ - Updated ``Response`` parameters documentation (:gh:`2197`).
+-- Reworded misleading :setting:`RANDOMIZE_DOWNLOAD_DELAY` description (:gh:`2190`).
++- Reworded misleading ``RANDOMIZE_DOWNLOAD_DELAY`` description (:gh:`2190`).
+ - Add StackOverflow as a support channel (:gh:`2257`).
+ 
+ .. _release-1.1.4:
+diff --git a/docs/topics/settings.rst b/docs/topics/settings.rst
+index 27ef3f7efee..b6996f01008 100644
+--- a/docs/topics/settings.rst
++++ b/docs/topics/settings.rst
+@@ -958,8 +958,8 @@ every 10 seconds:
+ 
+     DOWNLOAD_DELAY = 2.5
+ 
+-This setting is also affected by the :setting:`RANDOMIZE_DOWNLOAD_DELAY`
+-setting, which is enabled by default.
++This setting is also affected by the :setting:`DOWNLOAD_DELAY_JITTER` setting,
++which randomizes delays by ±50% by default.
+ 
+ Note that :setting:`DOWNLOAD_DELAY` can lower the effective per-domain
+ concurrency below :setting:`CONCURRENT_REQUESTS_PER_DOMAIN`. If the response
+@@ -975,6 +975,25 @@ desired.
+ It is possible to change this setting per domain by using
+ :setting:`DOWNLOAD_SLOTS`.
+ 
++.. setting:: DOWNLOAD_DELAY_JITTER
++
++DOWNLOAD_DELAY_JITTER
++---------------------
++
++.. versionadded:: VERSION
++
++Default: ``0.5``
++
++Magnitude of the random variation applied to :setting:`DOWNLOAD_DELAY`, e.g.
++``0.2`` spreads delays between 80% and 120% of :setting:`DOWNLOAD_DELAY`. ``0``
++disables randomization.
++
++Randomizing delays makes the time between requests less uniform, resulting in a
++more natural crawling pattern.
++
++It is possible to change this setting per domain by using
++:setting:`DOWNLOAD_SLOTS`.
++
+ .. setting:: DOWNLOAD_BIND_ADDRESS
+ 
+ DOWNLOAD_BIND_ADDRESS
+@@ -1093,8 +1112,8 @@ Allows to define concurrency/delay parameters on per slot (domain) basis:
+     .. code-block:: python
+ 
+         DOWNLOAD_SLOTS = {
+-            "quotes.toscrape.com": {"concurrency": 1, "delay": 2, "randomize_delay": False},
+-            "books.toscrape.com": {"delay": 3, "randomize_delay": False},
++            "quotes.toscrape.com": {"concurrency": 1, "delay": 2, "jitter": 0},
++            "books.toscrape.com": {"delay": 3, "jitter": 0.2},
+         }
+ 
+ .. note::
+@@ -1103,7 +1122,7 @@ Allows to define concurrency/delay parameters on per slot (domain) basis:
+ 
+     -   :setting:`DOWNLOAD_DELAY`: ``delay``
+     -   :setting:`CONCURRENT_REQUESTS_PER_DOMAIN`: ``concurrency``
+-    -   :setting:`RANDOMIZE_DOWNLOAD_DELAY`: ``randomize_delay``
++    -   :setting:`DOWNLOAD_DELAY_JITTER`: ``jitter``
+ 
+ 
+ .. setting:: DOWNLOAD_TIMEOUT
+@@ -1778,29 +1797,6 @@ Example:
+ 
+     NEWSPIDER_MODULE = "mybot.spiders_dev"
+ 
+-.. setting:: RANDOMIZE_DOWNLOAD_DELAY
+-
+-RANDOMIZE_DOWNLOAD_DELAY
+-------------------------
+-
+-Default: ``True``
+-
+-If enabled, Scrapy will wait a random amount of time (between 0.5 * :setting:`DOWNLOAD_DELAY` and 1.5 * :setting:`DOWNLOAD_DELAY`) while fetching requests from the same
+-website.
+-
+-This randomization decreases the chance of the crawler being detected (and
+-subsequently blocked) by sites which analyze requests looking for statistically
+-significant similarities in the time between their requests.
+-
+-The randomization policy is the same used by `wget`_ ``--random-wait`` option.
+-
+-If :setting:`DOWNLOAD_DELAY` is zero this option has no effect.
+-
+-It is possible to change this setting per domain by using
+-:setting:`DOWNLOAD_SLOTS`.
+-
+-.. _wget: https://www.gnu.org/software/wget/manual/wget.html
+-
+ .. setting:: REACTOR_THREADPOOL_MAXSIZE
+ 
+ REACTOR_THREADPOOL_MAXSIZE
+diff --git a/extras/qpsclient.py b/extras/qpsclient.py
+index efb582254b6..4f17d807c15 100644
+--- a/extras/qpsclient.py
++++ b/extras/qpsclient.py
+@@ -3,7 +3,7 @@
+ 
+ usage:
+ 
+-    scrapy runspider qpsclient.py --loglevel=INFO --set RANDOMIZE_DOWNLOAD_DELAY=0
++    scrapy runspider qpsclient.py --loglevel=INFO --set DOWNLOAD_DELAY_JITTER=0
+      --set CONCURRENT_REQUESTS=50 -a qps=10 -a latency=0.3
+ 
+ """
+diff --git a/scrapy/core/downloader/__init__.py b/scrapy/core/downloader/__init__.py
+index 2089b122475..a94c275e558 100644
+--- a/scrapy/core/downloader/__init__.py
++++ b/scrapy/core/downloader/__init__.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import random
++import warnings
+ from collections import deque
+ from dataclasses import dataclass, field
+ from datetime import datetime
+@@ -13,7 +14,9 @@
+ from scrapy import Request, Spider, signals
+ from scrapy.core.downloader.handlers import DownloadHandlers
+ from scrapy.core.downloader.middleware import DownloaderMiddlewareManager
++from scrapy.exceptions import ScrapyDeprecationWarning
+ from scrapy.resolver import dnscache
++from scrapy.settings import SETTINGS_PRIORITIES
+ from scrapy.utils.asyncio import (
+     AsyncioLoopingCall,
+     CallLaterResult,
+@@ -47,7 +50,7 @@ class Slot:
+ 
+     concurrency: int
+     delay: float
+-    randomize_delay: bool
++    jitter: float
+ 
+     active: set[Request] = field(default_factory=set, init=False, repr=False)
+     queue: deque[tuple[Request, Deferred[Response]]] = field(
+@@ -57,13 +60,63 @@ class Slot:
+     lastseen: float = field(default=0, init=False, repr=False)
+     latercall: CallLaterResult | None = field(default=None, init=False, repr=False)
+ 
++    # Hand-written to accept the deprecated randomize_delay parameter, which
++    # means it also has to initialize the fields above.
++    def __init__(
++        self,
++        concurrency: int,
++        delay: float,
++        jitter: float | None = None,
++        randomize_delay: bool | None = None,
++    ) -> None:
++        if isinstance(jitter, bool):
++            # randomize_delay used to be the third positional parameter, and a
++            # boolean would otherwise pass for a magnitude, True meaning ±100%.
++            jitter, randomize_delay = None, jitter
++        if randomize_delay is not None:
++            warnings.warn(
++                "The randomize_delay parameter of Slot is deprecated, use "
++                "jitter instead: it takes the magnitude of the random variation "
++                "as a number, e.g. 0.5 for the ±50% that randomize_delay "
++                "enables, or 0 to disable it.",
++                category=ScrapyDeprecationWarning,
++                stacklevel=2,
++            )
++        self.concurrency = concurrency
++        self.delay = delay
++        self.jitter = jitter if jitter is not None else 0.5 * bool(randomize_delay)
++        self.active = set()
++        self.queue = deque()
++        self.transferring = set()
++        self.lastseen = 0
++        self.latercall = None
++
++    @property
++    def randomize_delay(self) -> bool:
++        warnings.warn(
++            "Slot.randomize_delay is deprecated, use Slot.jitter instead.",
++            category=ScrapyDeprecationWarning,
++            stacklevel=2,
++        )
++        return bool(self.jitter)
++
++    @randomize_delay.setter
++    def randomize_delay(self, value: bool) -> None:
++        warnings.warn(
++            "Slot.randomize_delay is deprecated, use Slot.jitter instead.",
++            category=ScrapyDeprecationWarning,
++            stacklevel=2,
++        )
++        self.jitter = 0.5 if value else 0.0
++
+     def free_transfer_slots(self) -> int:
+         return self.concurrency - len(self.transferring)
+ 
+     def download_delay(self) -> float:
+-        if self.randomize_delay:
+-            return random.uniform(0.5 * self.delay, 1.5 * self.delay)  # noqa: S311
+-        return self.delay
++        if not self.jitter:
++            return self.delay
++        # A jitter above 1 would reach into negative delays, floored at 0.
++        return max(0.0, self.delay * (1 + random.uniform(-self.jitter, self.jitter)))  # noqa: S311
+ 
+     def close(self) -> None:
+         if self.latercall:
+@@ -73,13 +126,58 @@ def close(self) -> None:
+     def __str__(self) -> str:
+         return (
+             f"<downloader.Slot concurrency={self.concurrency!r} "
+-            f"delay={self.delay:.2f} randomize_delay={self.randomize_delay!r} "
++            f"delay={self.delay:.2f} jitter={self.jitter!r} "
+             f"len(active)={len(self.active)} len(queue)={len(self.queue)} "
+             f"len(transferring)={len(self.transferring)} "
+             f"lastseen={datetime.fromtimestamp(self.lastseen).isoformat()}>"
+         )
+ 
+ 
++def _default_jitter(settings: BaseSettings) -> float:
++    """Return the magnitude of the random variation to apply to the delay of
++    slots that do not set their own ``jitter``: :setting:`DOWNLOAD_DELAY_JITTER`,
++    or the deprecated ``RANDOMIZE_DOWNLOAD_DELAY`` when set at a higher
++    :ref:`priority <populating-settings>`, mapped to the historical ±50% or
++    none.
++
++    Warns when ``RANDOMIZE_DOWNLOAD_DELAY`` is set, so it is called once per
++    crawl, from :meth:`Downloader.__init__`. Both defaults mean the same ±50%,
++    so a crawl that sets neither needs no warning.
++    """
++    randomize_priority = settings.getpriority("RANDOMIZE_DOWNLOAD_DELAY") or 0
++    if randomize_priority <= SETTINGS_PRIORITIES["default"]:
++        return settings.getfloat("DOWNLOAD_DELAY_JITTER")
++    warnings.warn(
++        "The RANDOMIZE_DOWNLOAD_DELAY setting is deprecated, use "
++        "DOWNLOAD_DELAY_JITTER instead: it takes the magnitude of the random "
++        "variation as a number, e.g. 0.5 for the ±50% that "
++        "RANDOMIZE_DOWNLOAD_DELAY enables, or 0 to disable it.",
++        category=ScrapyDeprecationWarning,
++        stacklevel=3,
++    )
++    if randomize_priority > (settings.getpriority("DOWNLOAD_DELAY_JITTER") or 0):
++        return 0.5 if settings.getbool("RANDOMIZE_DOWNLOAD_DELAY") else 0.0
++    return settings.getfloat("DOWNLOAD_DELAY_JITTER")
++
++
++def _slot_jitter(slot_settings: dict[str, Any], default: float) -> float:
++    """Return the jitter of a :setting:`DOWNLOAD_SLOTS` entry, from its
++    ``jitter`` key, its deprecated ``randomize_delay`` key, or *default*."""
++    if "jitter" in slot_settings:
++        return float(slot_settings["jitter"])
++    if "randomize_delay" in slot_settings:
++        warnings.warn(
++            "The randomize_delay key of the DOWNLOAD_SLOTS setting is "
++            "deprecated, use jitter instead: it takes the magnitude of the "
++            "random variation as a number, e.g. 0.5 for the ±50% that "
++            "randomize_delay enables, or 0 to disable it.",
++            category=ScrapyDeprecationWarning,
++            stacklevel=3,
++        )
++        return 0.5 if slot_settings["randomize_delay"] else 0.0
++    return default
++
++
+ class Downloader:
+     DOWNLOAD_SLOT = "download_slot"
+     _SLOT_GC_INTERVAL: float = 60.0  # seconds
+@@ -99,7 +197,7 @@ def __init__(self, crawler: Crawler):
+         # Default delay of new slots. AutoThrottle overrides it to apply
+         # AUTOTHROTTLE_START_DELAY.
+         self._delay: float = self.settings.getfloat("DOWNLOAD_DELAY")
+-        self.randomize_delay: bool = self.settings.getbool("RANDOMIZE_DOWNLOAD_DELAY")
++        self._jitter: float = _default_jitter(self.settings)
+         self.middleware: DownloaderMiddlewareManager = build_from_crawler(
+             DownloaderMiddlewareManager, crawler
+         )
+@@ -108,6 +206,16 @@ def __init__(self, crawler: Crawler):
+             "DOWNLOAD_SLOTS"
+         )
+ 
++    @property
++    def randomize_delay(self) -> bool:
++        warnings.warn(
++            "Downloader.randomize_delay is deprecated, use the "
++            "DOWNLOAD_DELAY_JITTER setting instead.",
++            category=ScrapyDeprecationWarning,
++            stacklevel=2,
++        )
++        return bool(self._jitter)
++
+     @inlineCallbacks
+     @_warn_spider_arg
+     def fetch(
+@@ -139,8 +247,7 @@ def _get_slot(
+                 "concurrency", self.ip_concurrency or self.domain_concurrency
+             )
+             delay = slot_settings.get("delay", self._delay)
+-            randomize_delay = slot_settings.get("randomize_delay", self.randomize_delay)
+-            new_slot = Slot(conc, delay, randomize_delay)
++            new_slot = Slot(conc, delay, _slot_jitter(slot_settings, self._jitter))
+             self.slots[key] = new_slot
+             self._start_slot_gc()
+ 
+diff --git a/scrapy/settings/default_settings.py b/scrapy/settings/default_settings.py
+index d7b30b849fc..94116daa9b5 100644
+--- a/scrapy/settings/default_settings.py
++++ b/scrapy/settings/default_settings.py
+@@ -68,6 +68,7 @@
+     "DOWNLOADER_STATS",
+     "DOWNLOAD_BIND_ADDRESS",
+     "DOWNLOAD_DELAY",
++    "DOWNLOAD_DELAY_JITTER",
+     "DOWNLOAD_FAIL_ON_DATALOSS",
+     "DOWNLOAD_HANDLERS",
+     "DOWNLOAD_HANDLERS_BASE",
+@@ -280,6 +281,7 @@
+ DOWNLOAD_BIND_ADDRESS = None
+ 
+ DOWNLOAD_DELAY = 0
++DOWNLOAD_DELAY_JITTER = 0.5
+ 
+ DOWNLOAD_FAIL_ON_DATALOSS = True
+ 
+diff --git a/tests/test_core_downloader.py b/tests/test_core_downloader.py
+index 912c0450baa..b2808262f55 100644
+--- a/tests/test_core_downloader.py
++++ b/tests/test_core_downloader.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ 
+ import warnings
+-from typing import TYPE_CHECKING, cast
++from typing import TYPE_CHECKING, Any, cast
+ 
+ import OpenSSL.SSL
+ import pytest
+@@ -45,8 +45,94 @@
+ 
+ class TestSlot:
+     def test_repr(self):
+-        slot = Slot(concurrency=8, delay=0.1, randomize_delay=True)
+-        assert repr(slot) == "Slot(concurrency=8, delay=0.1, randomize_delay=True)"
++        slot = Slot(concurrency=8, delay=0.1, jitter=0.5)
++        assert repr(slot) == "Slot(concurrency=8, delay=0.1, jitter=0.5)"
++
++    def test_download_delay_without_jitter(self):
++        slot = Slot(concurrency=8, delay=2.0, jitter=0)
++        assert slot.download_delay() == 2.0
++
++    def test_download_delay_with_jitter(self):
++        slot = Slot(concurrency=8, delay=2.0, jitter=0.25)
++        assert all(1.5 <= slot.download_delay() <= 2.5 for _ in range(100))
++
++    def test_download_delay_with_jitter_above_one(self):
++        slot = Slot(concurrency=8, delay=2.0, jitter=3.0)
++        assert all(slot.download_delay() >= 0 for _ in range(100))
++
++    @pytest.mark.parametrize(("value", "expected"), [(True, 0.5), (False, 0.0)])
++    @pytest.mark.parametrize("positional", [False, True])
++    def test_deprecated_randomize_delay_param(
++        self, positional: bool, value: bool, expected: float
++    ):
++        with pytest.warns(
++            ScrapyDeprecationWarning,
++            match="The randomize_delay parameter of Slot is deprecated",
++        ):
++            slot = (
++                Slot(8, 2.0, value)
++                if positional
++                else Slot(concurrency=8, delay=2.0, randomize_delay=value)
++            )
++        assert slot.jitter == expected
++
++    @pytest.mark.parametrize(("jitter", "expected"), [(0, False), (0.2, True)])
++    def test_deprecated_randomize_delay(self, jitter: float, expected: bool):
++        slot = Slot(concurrency=8, delay=2.0, jitter=jitter)
++        with pytest.warns(
++            ScrapyDeprecationWarning, match="Slot.randomize_delay is deprecated"
++        ):
++            assert slot.randomize_delay is expected
++
++    @pytest.mark.parametrize(("value", "expected"), [(True, 0.5), (False, 0.0)])
++    def test_deprecated_randomize_delay_setter(self, value: bool, expected: float):
++        slot = Slot(concurrency=8, delay=2.0, jitter=0.2)
++        with pytest.warns(
++            ScrapyDeprecationWarning, match="Slot.randomize_delay is deprecated"
++        ):
++            slot.randomize_delay = value
++        assert slot.jitter == expected
++
++
++class TestJitterSetting:
++    @staticmethod
++    def _jitter(**settings: Any) -> float:
++        crawler = get_crawler(settings_dict=settings)
++        downloader = Downloader(crawler)
++        downloader.close()
++        return downloader._jitter
++
++    def test_default(self):
++        assert self._jitter() == 0.5
++
++    @pytest.mark.parametrize(("value", "expected"), [(0, 0.0), ("0.2", 0.2), (1, 1.0)])
++    def test_value(self, value: Any, expected: float):
++        assert self._jitter(DOWNLOAD_DELAY_JITTER=value) == pytest.approx(expected)
++
++    @pytest.mark.parametrize(("value", "expected"), [(True, 0.5), (False, 0.0)])
++    def test_deprecated_setting(self, value: bool, expected: float):
++        with pytest.warns(
++            ScrapyDeprecationWarning,
++            match="The RANDOMIZE_DOWNLOAD_DELAY setting is deprecated",
++        ):
++            assert self._jitter(RANDOMIZE_DOWNLOAD_DELAY=value) == expected
++
++    @pytest.mark.parametrize(("jitter", "expected"), [(0, False), (0.2, True)])
++    def test_deprecated_downloader_attribute(self, jitter: float, expected: bool):
++        crawler = get_crawler(settings_dict={"DOWNLOAD_DELAY_JITTER": jitter})
++        downloader = Downloader(crawler)
++        downloader.close()
++        with pytest.warns(
++            ScrapyDeprecationWarning, match="Downloader.randomize_delay is deprecated"
++        ):
++            assert downloader.randomize_delay is expected
++
++    def test_deprecated_setting_loses_on_tie(self):
++        with pytest.warns(ScrapyDeprecationWarning):
++            jitter = self._jitter(
++                RANDOMIZE_DOWNLOAD_DELAY=False, DOWNLOAD_DELAY_JITTER=0.2
++            )
++        assert jitter == pytest.approx(0.2)
+ 
+ 
+ @pytest.mark.requires_reactor  # this test is related to the Twisted HTTP code
+diff --git a/tests/test_crawl.py b/tests/test_crawl.py
+index d284805be18..acec6f0a61b 100644
+--- a/tests/test_crawl.py
++++ b/tests/test_crawl.py
+@@ -88,7 +88,10 @@ async def _test_delay(
+         }
+         tolerance = 1 - (0.6 if randomize else 0.2)
+ 
+-        settings = {"DOWNLOAD_DELAY": delay, "RANDOMIZE_DOWNLOAD_DELAY": randomize}
++        settings = {
++            "DOWNLOAD_DELAY": delay,
++            "DOWNLOAD_DELAY_JITTER": 0.5 if randomize else 0,
++        }
+         crawler = get_crawler(FollowAllSpider, settings)
+         await crawler.crawl_async(**crawl_kwargs)
+         assert crawler.spider
+diff --git a/tests/test_downloaderslotssettings.py b/tests/test_downloaderslotssettings.py
+index 9d58a6e09e9..9bc07816bc8 100644
+--- a/tests/test_downloaderslotssettings.py
++++ b/tests/test_downloaderslotssettings.py
+@@ -18,15 +18,15 @@ class DownloaderSlotsSettingsTestSpider(MetaSpider):
+ 
+     custom_settings = {
+         "DOWNLOAD_DELAY": 1,
+-        "RANDOMIZE_DOWNLOAD_DELAY": False,
++        "DOWNLOAD_DELAY_JITTER": 0,
+         "DOWNLOAD_SLOTS": {
+             "quotes.toscrape.com": {
+                 "concurrency": 1,
+                 "delay": 2,
+-                "randomize_delay": False,
++                "jitter": 0,
+                 "throttle": False,
+             },
+-            "books.toscrape.com": {"delay": 3, "randomize_delay": False},
++            "books.toscrape.com": {"delay": 3, "jitter": 0},
+         },
+     }
+ 
+@@ -86,7 +86,7 @@ async def test_params():
+     params = {
+         "concurrency": 1,
+         "delay": 2,
+-        "randomize_delay": False,
++        "jitter": 0,
+     }
+     settings = {
+         "DOWNLOAD_SLOTS": {
+@@ -106,6 +106,22 @@ async def test_params():
+         )
+ 
+ 
++@pytest.mark.parametrize(("value", "expected"), [(True, 0.5), (False, 0.0)])
++@coroutine_test
++async def test_deprecated_randomize_delay_param(value: bool, expected: float):
++    settings = {"DOWNLOAD_SLOTS": {"example.com": {"randomize_delay": value}}}
++    crawler = get_crawler(DefaultSpider, settings_dict=settings)
++    crawler.spider = crawler._create_spider()
++    downloader = Downloader(crawler)
++    with pytest.warns(
++        ScrapyDeprecationWarning,
++        match="The randomize_delay key of the DOWNLOAD_SLOTS setting is deprecated",
++    ):
++        _, slot = downloader._get_slot(Request("https://example.com"))
++    downloader.close()
++    assert slot.jitter == expected
++
++
+ @coroutine_test
+ async def test_get_slot_deprecated_spider_arg():
+     crawler = get_crawler(DefaultSpider)

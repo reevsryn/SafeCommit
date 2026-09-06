@@ -1,0 +1,71 @@
+diff --git a/pydantic/json_schema.py b/pydantic/json_schema.py
+index 23378ac28c..2d1f1671c4 100644
+--- a/pydantic/json_schema.py
++++ b/pydantic/json_schema.py
+@@ -54,7 +54,7 @@
+ )
+ from .annotated_handlers import GetJsonSchemaHandler
+ from .config import JsonDict, JsonValue
+-from .errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError, PydanticUserError
++from .errors import PydanticInvalidForJsonSchema, PydanticUserError
+ 
+ if TYPE_CHECKING:
+     from . import ConfigDict
+@@ -2480,12 +2480,14 @@ def encode_default(self, dft: Any) -> Any:
+                     dft, by_alias=self.by_alias, mode='json'
+                 )
+             )
+-        except PydanticSchemaGenerationError:
+-            raise pydantic_core.PydanticSerializationError(f'Unable to encode default value {dft}')
+-
+-        return pydantic_core.to_jsonable_python(
+-            default, timedelta_mode=config.ser_json_timedelta, bytes_mode=config.ser_json_bytes, by_alias=self.by_alias
+-        )
++            return pydantic_core.to_jsonable_python(
++                default,
++                timedelta_mode=config.ser_json_timedelta,
++                bytes_mode=config.ser_json_bytes,
++                by_alias=self.by_alias,
++            )
++        except Exception as e:
++            raise pydantic_core.PydanticSerializationError(f'Unable to encode default value {dft}') from e
+ 
+     def update_with_validations(
+         self, json_schema: JsonSchemaValue, core_schema: CoreSchema, mapping: dict[str, str]
+diff --git a/tests/test_json_schema.py b/tests/test_json_schema.py
+index 5f3d171666..b1907b7204 100644
+--- a/tests/test_json_schema.py
++++ b/tests/test_json_schema.py
+@@ -1506,23 +1506,28 @@ class Model(BaseModel):
+ 
+ 
+ @pytest.mark.parametrize(
+-    'type_,default_value,properties',
++    ['type_', 'default_value', 'properties'],
+     (
+         (
+             dict[Any, Any],
+             {(lambda x: x): 1},
+-            {'callback': {'title': 'Callback', 'type': 'object', 'additionalProperties': True}},
++            {'field': {'title': 'Field', 'type': 'object', 'additionalProperties': True}},
+         ),
+         (
+             int | Callable[[int], int],
+             lambda x: x,
+-            {'callback': {'title': 'Callback', 'type': 'integer'}},
++            {'field': {'title': 'Field', 'type': 'integer'}},
++        ),
++        (
++            bytes,
++            b'\xff\xfe',
++            {'field': {'title': 'Field', 'format': 'binary', 'type': 'string'}},
+         ),
+     ),
+ )
+ def test_non_serializable_default(type_, default_value, properties):
+     class Model(BaseModel):
+-        callback: type_ = default_value
++        field: type_ = default_value
+ 
+     with pytest.warns(
+         PydanticJsonSchemaWarning,

@@ -1,0 +1,259 @@
+diff --git a/docs/topics/commands.rst b/docs/topics/commands.rst
+index c5ff19c261a..629a8f50fb1 100644
+--- a/docs/topics/commands.rst
++++ b/docs/topics/commands.rst
+@@ -338,6 +338,9 @@ check
+ 
+ Run contract checks.
+ 
++.. versionadded:: VERSION
++   The ``-a`` option, to pass spider arguments, as in :command:`crawl`.
++
+ .. skip: start
+ 
+ Usage examples::
+diff --git a/docs/topics/contracts.rst b/docs/topics/contracts.rst
+index 7bc19124ae2..860413c4abe 100644
+--- a/docs/topics/contracts.rst
++++ b/docs/topics/contracts.rst
+@@ -36,6 +36,14 @@ You can use the following contracts:
+ 
+ .. autoclass:: MetadataContract
+ 
++.. autoclass:: MethodContract
++
++.. autoclass:: BodyContract
++
++.. autoclass:: HeaderContract
++
++.. autoclass:: CookieContract
++
+ .. autoclass:: ReturnsContract
+ 
+ .. autoclass:: ScrapesContract
+diff --git a/scrapy/commands/check.py b/scrapy/commands/check.py
+index 0a524daa953..fdb9c7483c3 100644
+--- a/scrapy/commands/check.py
++++ b/scrapy/commands/check.py
+@@ -9,8 +9,9 @@
+ from scrapy import Spider
+ from scrapy.commands import ScrapyCommand
+ from scrapy.contracts import ContractsManager
++from scrapy.exceptions import UsageError
+ from scrapy.settings import SETTINGS_PRIORITIES
+-from scrapy.utils.conf import build_component_list
++from scrapy.utils.conf import arglist_to_dict, build_component_list
+ from scrapy.utils.misc import load_object, set_environ
+ 
+ 
+@@ -70,9 +71,23 @@ def add_options(self, parser: argparse.ArgumentParser) -> None:
+             action="store_true",
+             help="print contract tests for all spiders",
+         )
++        parser.add_argument(
++            "-a",
++            dest="spargs",
++            action="append",
++            default=[],
++            metavar="NAME=VALUE",
++            help="set spider argument (may be repeated)",
++        )
+ 
+     def process_options(self, args: list[str], opts: argparse.Namespace) -> None:
+         super().process_options(args, opts)
++        try:
++            opts.spargs = arglist_to_dict(opts.spargs)
++        except ValueError:
++            raise UsageError(
++                "Invalid -a value, use -a NAME=VALUE", print_help=False
++            ) from None
+         assert self.settings is not None
+         # Contracts discard the output of callbacks, so item pipelines and
+         # feed exports get no items, and opening them only causes side
+@@ -113,7 +128,7 @@ async def start(self: Spider) -> AsyncIterator[Any]:
+                     for method in tested_methods:
+                         contract_reqs[spidercls.name].append(method)
+                 elif tested_methods:
+-                    self.crawler_process.crawl(spidercls)
++                    self.crawler_process.crawl(spidercls, **opts.spargs)
+ 
+             # start checks
+             if opts.list:
+diff --git a/scrapy/contracts/default.py b/scrapy/contracts/default.py
+index e2e27165a73..63553eb0d42 100644
+--- a/scrapy/contracts/default.py
++++ b/scrapy/contracts/default.py
+@@ -69,6 +69,84 @@ def adjust_request_args(self, args: dict[str, Any]) -> dict[str, Any]:
+         return args
+ 
+ 
++class MethodContract(Contract):
++    """Sets (``@method``) the :attr:`method <scrapy.Request.method>` of the
++    sample request.
++
++    .. versionadded:: VERSION
++
++    .. code-block:: none
++
++        @method POST
++    """
++
++    name = "method"
++
++    def adjust_request_args(self, args: dict[str, Any]) -> dict[str, Any]:
++        args["method"] = self.args[0]
++        return args
++
++
++class BodyContract(Contract):
++    """Sets (``@body``) the :attr:`body <scrapy.Request.body>` of the sample
++    request.
++
++    .. versionadded:: VERSION
++
++    .. code-block:: none
++
++        @body field1=value1&field2=value2
++    """
++
++    name = "body"
++
++    def adjust_request_args(self, args: dict[str, Any]) -> dict[str, Any]:
++        args["body"] = " ".join(self.args)
++        return args
++
++
++class HeaderContract(Contract):
++    """Sets (``@header``) a header of the sample request. Use one line per
++    header.
++
++    .. versionadded:: VERSION
++
++    .. code-block:: none
++
++        @header name value
++    """
++
++    name = "header"
++
++    def adjust_request_args(self, args: dict[str, Any]) -> dict[str, Any]:
++        args["headers"] = {
++            **(args.get("headers") or {}),
++            self.args[0]: " ".join(self.args[1:]),
++        }
++        return args
++
++
++class CookieContract(Contract):
++    """Sets (``@cookie``) a cookie of the sample request. Use one line per
++    cookie.
++
++    .. versionadded:: VERSION
++
++    .. code-block:: none
++
++        @cookie name value
++    """
++
++    name = "cookie"
++
++    def adjust_request_args(self, args: dict[str, Any]) -> dict[str, Any]:
++        args["cookies"] = {
++            **(args.get("cookies") or {}),
++            self.args[0]: " ".join(self.args[1:]),
++        }
++        return args
++
++
+ class ReturnsContract(Contract):
+     """Sets (``@returns``) lower and upper bounds for the items and requests
+     returned by a callback.
+diff --git a/scrapy/downloadermiddlewares/cookies.py b/scrapy/downloadermiddlewares/cookies.py
+index 34d071fd5d2..3461c89430b 100644
+--- a/scrapy/downloadermiddlewares/cookies.py
++++ b/scrapy/downloadermiddlewares/cookies.py
+@@ -63,7 +63,8 @@ def _process_cookies(
+             cookie_domain = cookie_domain.removeprefix(".")
+ 
+             hostname = urlparse_cached(request).hostname
+-            assert hostname is not None
++            if hostname is None:
++                continue
+             request_domain = hostname.lower()
+ 
+             if cookie_domain and _is_public_domain(cookie_domain):
+diff --git a/scrapy/settings/default_settings.py b/scrapy/settings/default_settings.py
+index b978441035f..760885a884e 100644
+--- a/scrapy/settings/default_settings.py
++++ b/scrapy/settings/default_settings.py
+@@ -545,6 +545,10 @@
+     "scrapy.contracts.default.UrlContract": 1,
+     "scrapy.contracts.default.CallbackKeywordArgumentsContract": 1,
+     "scrapy.contracts.default.MetadataContract": 1,
++    "scrapy.contracts.default.MethodContract": 1,
++    "scrapy.contracts.default.BodyContract": 1,
++    "scrapy.contracts.default.HeaderContract": 1,
++    "scrapy.contracts.default.CookieContract": 1,
+     "scrapy.contracts.default.ReturnsContract": 2,
+     "scrapy.contracts.default.ScrapesContract": 3,
+ }
+diff --git a/tests/test_command_check.py b/tests/test_command_check.py
+index 17c0133383e..8204329878f 100644
+--- a/tests/test_command_check.py
++++ b/tests/test_command_check.py
+@@ -112,6 +112,42 @@ def test_check_cb_kwargs_contract(self, proj_path: Path) -> None:
+         """
+         self._test_contract(proj_path, contracts, parse_def)
+ 
++    def test_check_request_contracts(self, proj_path: Path) -> None:
++        contracts = """
++        @method POST
++        @body field1=value1
++        @header X-Header header value
++        @cookie name value
++        """
++        parse_def = """
++        request = response.request
++        if (
++            request.method != 'POST'
++            or request.body != b'field1=value1'
++            or request.headers['X-Header'] != b'header value'
++            or request.cookies != {'name': 'value'}
++        ):
++            raise Exception("Request arguments not set")
++        """
++        self._test_contract(proj_path, contracts, parse_def)
++
++    def test_check_spider_argument(self, proj_path: Path) -> None:
++        parse_def = """
++        if self.key != 'val':
++            raise Exception("Spider argument not set")
++        """
++        self._write_contract(proj_path, "", parse_def)
++        ret, out, err = proc("check", "-a", "key=val", cwd=proj_path)
++        assert "F" not in out
++        assert "OK" in err
++        assert ret == 0
++
++    def test_check_invalid_spider_argument(self, proj_path: Path) -> None:
++        self._write_contract(proj_path, "", "pass")
++        ret, _, err = proc("check", "-a", "FOO", cwd=proj_path)
++        assert ret == 2
++        assert "Invalid -a value, use -a NAME=VALUE" in err
++
+     def test_check_scrapes_contract(self, proj_path: Path) -> None:
+         contracts = """
+         @scrapes key1 key2
+diff --git a/tests/test_downloadermiddleware_cookies.py b/tests/test_downloadermiddleware_cookies.py
+index 6c4c80eae1c..4800e4d2949 100644
+--- a/tests/test_downloadermiddleware_cookies.py
++++ b/tests/test_downloadermiddleware_cookies.py
+@@ -874,3 +874,8 @@ def test_cookie_redirect_secure_true_upgrade(self):
+             cookies2=False,
+             cookies3=True,
+         )
++
++    def test_hostless_url(self):
++        request = Request("data:,", cookies={"a": "b"})
++        assert self.mw.process_request(request) is None
++        assert "Cookie" not in request.headers

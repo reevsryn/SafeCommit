@@ -1,0 +1,771 @@
+diff --git a/e2e_playwright/st_number_input.py b/e2e_playwright/st_number_input.py
+index 69e65468ea0..dbdcdb475d1 100644
+--- a/e2e_playwright/st_number_input.py
++++ b/e2e_playwright/st_number_input.py
+@@ -219,3 +219,25 @@ def on_change():
+     )
+     st.form_submit_button("Submit number input form")
+ st.write("number input in form - value: ", form_num)
++
++# Lets the on_change="ignore" test assert that committing a value does not rerun the app.
++if "runs" not in st.session_state:
++    st.session_state.runs = 0
++st.session_state.runs += 1
++st.write("Runs:", st.session_state.runs)
++
++# --- on_change="ignore" number input ---
++ignore_number = st.number_input(
++    "Ignore change number input",
++    min_value=0,
++    max_value=100,
++    value=25,
++    step=1,
++    key="ignore_number",
++    on_change="ignore",
++    bind="query-params",
++)
++st.write("Ignore number value:", ignore_number)
++
++if st.button("Apply ignore number", key="apply_ignore_number"):
++    st.write("Applied ignore number value:", ignore_number)
+diff --git a/e2e_playwright/st_number_input_test.py b/e2e_playwright/st_number_input_test.py
+index f746a00aba7..2c7fde1880f 100644
+--- a/e2e_playwright/st_number_input_test.py
++++ b/e2e_playwright/st_number_input_test.py
+@@ -35,7 +35,7 @@
+     reset_hovering,
+ )
+ 
+-NUMBER_INPUT_COUNT = 24
++NUMBER_INPUT_COUNT = 25
+ 
+ 
+ def test_number_input_widget_display(
+@@ -735,3 +735,71 @@ def test_number_input_query_param_non_clearable_empty_value(
+     # Non-clearable number input should reject empty value, show default 3.14
+     expect_prefixed_markdown(page, "bound float value:", "3.14")
+     expect(page).not_to_have_url(re.compile(r"[?&]bound_float="))
++
++
++def test_number_input_on_change_ignore(app: Page):
++    """Test that on_change='ignore' suppresses rerun and sends value on next rerun."""
++    expect(app.get_by_text("Runs: 1", exact=True)).to_be_visible()
++    expect_prefixed_markdown(app, "Ignore number value:", "25")
++
++    number_input = get_number_input(app, "Ignore change number input")
++    number_input_field = number_input.locator("input").first
++
++    # Fill without committing - URL should not update until Enter.
++    number_input_field.fill("30")
++    expect(number_input_field).to_have_value("30")
++    wait_for_app_run(app)
++    expect(app).not_to_have_url(re.compile(r"[?&]ignore_number="))
++
++    # Commit with Enter - should NOT trigger a rerun, but should update the URL
++    number_input_field.press("Enter")
++
++    # Give a spurious rerun a chance to land before asserting the counter.
++    wait_for_app_run(app)
++
++    # Verify no rerun occurred (run count should still be 1)
++    expect(app.get_by_text("Runs: 1", exact=True)).to_be_visible()
++    expect(app.get_by_text("Runs: 2", exact=True)).not_to_be_visible()
++    expect(number_input_field).to_have_value("30")
++    expect_prefixed_markdown(app, "Ignore number value:", "25")
++    expect(app).to_have_url(re.compile(r"[?&]ignore_number=30"))
++
++    # Click button to trigger a rerun - buffered value should be sent
++    app.get_by_role("button", name="Apply ignore number", exact=True).click()
++    wait_for_app_run(app)
++
++    # Verify the updated value is now visible
++    expect(app.get_by_text("Ignore number value: 30", exact=True)).to_be_visible()
++    expect(
++        app.get_by_text("Applied ignore number value: 30", exact=True)
++    ).to_be_visible()
++
++    # Type-then-click: blur commits the dirty value, then the button reruns.
++    number_input_field.fill("40")
++    expect(number_input_field).to_have_value("40")
++    app.get_by_role("button", name="Apply ignore number", exact=True).click()
++    wait_for_app_run(app)
++
++    expect(app.get_by_text("Ignore number value: 40", exact=True)).to_be_visible()
++    expect(
++        app.get_by_text("Applied ignore number value: 40", exact=True)
++    ).to_be_visible()
++
++    # Stepper commits immediately without a rerun, and updates the bound URL.
++    expect(app.get_by_text("Runs: 3", exact=True)).to_be_visible()
++    number_input.get_by_test_id("stNumberInputStepUp").click()
++    wait_for_app_run(app)
++
++    expect(app.get_by_text("Runs: 3", exact=True)).to_be_visible()
++    expect(app.get_by_text("Runs: 4", exact=True)).not_to_be_visible()
++    expect(number_input_field).to_have_value("41")
++    expect(app.get_by_text("Ignore number value: 40", exact=True)).to_be_visible()
++    expect(app).to_have_url(re.compile(r"[?&]ignore_number=41"))
++
++    # Bound ignore-mode values persist across reload via the URL.
++    app.reload()
++    wait_for_app_loaded(app)
++    expect(
++        get_number_input(app, "Ignore change number input").locator("input").first
++    ).to_have_value("41")
++    expect_prefixed_markdown(app, "Ignore number value:", "41")
+diff --git a/frontend/lib/src/components/widgets/NumberInput/NumberInput.test.tsx b/frontend/lib/src/components/widgets/NumberInput/NumberInput.test.tsx
+index 51731de413e..715f4cebbd6 100644
+--- a/frontend/lib/src/components/widgets/NumberInput/NumberInput.test.tsx
++++ b/frontend/lib/src/components/widgets/NumberInput/NumberInput.test.tsx
+@@ -29,7 +29,10 @@ import { WidgetStateManager } from "~lib/WidgetStateManager"
+ 
+ import NumberInput, { Props } from "./NumberInput"
+ 
+-const getProps = (elementProps: Partial<NumberInputProto> = {}): Props => ({
++const getProps = (
++  elementProps: Partial<NumberInputProto> = {},
++  widgetProps: Partial<Props> = {}
++): Props => ({
+   element: NumberInputProto.create({
+     label: "Label",
+     default: 0,
+@@ -42,28 +45,39 @@ const getProps = (elementProps: Partial<NumberInputProto> = {}): Props => ({
+     sendRerunBackMsg: vi.fn(),
+     formsDataChanged: vi.fn(),
+   }),
++  ...widgetProps,
+ })
+ 
+-const getIntProps = (elementProps: Partial<NumberInputProto> = {}): Props => {
+-  return getProps({
+-    dataType: NumberInputProto.DataType.INT,
+-    default: 10,
+-    min: 0,
+-    max: 100,
+-    ...elementProps,
+-  })
++const getIntProps = (
++  elementProps: Partial<NumberInputProto> = {},
++  widgetProps: Partial<Props> = {}
++): Props => {
++  return getProps(
++    {
++      dataType: NumberInputProto.DataType.INT,
++      default: 10,
++      min: 0,
++      max: 100,
++      ...elementProps,
++    },
++    widgetProps
++  )
+ }
+ 
+ const getFloatProps = (
+-  elementProps: Partial<NumberInputProto> = {}
++  elementProps: Partial<NumberInputProto> = {},
++  widgetProps: Partial<Props> = {}
+ ): Props => {
+-  return getProps({
+-    dataType: NumberInputProto.DataType.FLOAT,
+-    default: 10.0,
+-    min: 0.0,
+-    max: 100.0,
+-    ...elementProps,
+-  })
++  return getProps(
++    {
++      dataType: NumberInputProto.DataType.FLOAT,
++      default: 10.0,
++      min: 0.0,
++      max: 100.0,
++      ...elementProps,
++    },
++    widgetProps
++  )
+ }
+ 
+ describe("NumberInput widget", () => {
+@@ -2074,3 +2088,231 @@ describe("NumberInput query param binding", () => {
+     )
+   })
+ })
++
++describe("on_change='ignore' mode", () => {
++  beforeEach(() => {
++    vi.spyOn(UseResizeObserver, "useResizeObserver").mockReturnValue({
++      elementRef: { current: null },
++      values: [250],
++    })
++  })
++
++  afterEach(() => {
++    vi.restoreAllMocks()
++  })
++
++  // WidgetStateManager reaches sendRerunBackMsg via scheduleFlush → setTimeout(0).
++  async function flushScheduledRerun(): Promise<void> {
++    await act(async () => {
++      await new Promise(resolve => {
++        setTimeout(resolve, 0)
++      })
++    })
++  }
++
++  it("passes triggerRerun: false when ignoreRerun is true", async () => {
++    const user = userEvent.setup()
++    const sendRerunBackMsg = vi.fn()
++    const widgetMgr = new WidgetStateManager({
++      sendRerunBackMsg,
++      formsDataChanged: vi.fn(),
++    })
++    const props = getIntProps({ ignoreRerun: true }, { widgetMgr })
++    const setIntValueSpy = vi.spyOn(props.widgetMgr, "setIntValue")
++
++    render(<NumberInput {...props} />)
++    setIntValueSpy.mockClear()
++    sendRerunBackMsg.mockClear()
++
++    const input = screen.getByTestId("stNumberInputField")
++    await user.clear(input)
++    await user.type(input, "30")
++    await user.keyboard("{enter}")
++
++    expect(setIntValueSpy).toHaveBeenLastCalledWith(props.element.id, 30, {
++      formId: props.element.formId,
++      fragmentId: undefined,
++      fromUser: true,
++      triggerRerun: false,
++    })
++    await flushScheduledRerun()
++    expect(sendRerunBackMsg).not.toHaveBeenCalled()
++  })
++
++  it("does not pass triggerRerun when ignoreRerun is false", async () => {
++    const user = userEvent.setup()
++    const sendRerunBackMsg = vi.fn()
++    const widgetMgr = new WidgetStateManager({
++      sendRerunBackMsg,
++      formsDataChanged: vi.fn(),
++    })
++    const props = getIntProps({ ignoreRerun: false }, { widgetMgr })
++    const setIntValueSpy = vi.spyOn(props.widgetMgr, "setIntValue")
++
++    render(<NumberInput {...props} />)
++    setIntValueSpy.mockClear()
++    sendRerunBackMsg.mockClear()
++
++    const input = screen.getByTestId("stNumberInputField")
++    await user.clear(input)
++    await user.type(input, "30")
++    await user.keyboard("{enter}")
++
++    expect(setIntValueSpy).toHaveBeenLastCalledWith(props.element.id, 30, {
++      formId: props.element.formId,
++      fragmentId: undefined,
++      fromUser: true,
++    })
++    await flushScheduledRerun()
++    expect(sendRerunBackMsg).toHaveBeenCalled()
++  })
++
++  it("does not change form batching when ignoreRerun is true", async () => {
++    const user = userEvent.setup()
++    const sendRerunBackMsg = vi.fn()
++    let pendingFormIds = new Set<string>()
++    const widgetMgr = new WidgetStateManager({
++      sendRerunBackMsg,
++      formsDataChanged: vi.fn(newData => {
++        pendingFormIds = newData.formsWithPendingChanges
++      }),
++    })
++    const props = getIntProps(
++      {
++        ignoreRerun: true,
++        formId: "testForm",
++      },
++      { widgetMgr }
++    )
++    const setIntValueSpy = vi.spyOn(props.widgetMgr, "setIntValue")
++
++    render(<NumberInput {...props} />)
++    setIntValueSpy.mockClear()
++    sendRerunBackMsg.mockClear()
++
++    await user.click(screen.getByTestId("stNumberInputStepUp"))
++
++    expect(setIntValueSpy).toHaveBeenLastCalledWith(props.element.id, 11, {
++      formId: "testForm",
++      fragmentId: undefined,
++      fromUser: true,
++      triggerRerun: false,
++    })
++    await flushScheduledRerun()
++    expect(sendRerunBackMsg).not.toHaveBeenCalled()
++    expect(pendingFormIds).toEqual(new Set(["testForm"]))
++  })
++
++  it("does not commit on keystroke outside a form when ignoreRerun is true", async () => {
++    const user = userEvent.setup()
++    const props = getIntProps({ ignoreRerun: true })
++    const setIntValueSpy = vi.spyOn(props.widgetMgr, "setIntValue")
++
++    render(<NumberInput {...props} />)
++    setIntValueSpy.mockClear()
++
++    const input = screen.getByTestId("stNumberInputField")
++    await user.clear(input)
++    await user.type(input, "12")
++
++    expect(setIntValueSpy).not.toHaveBeenCalled()
++  })
++
++  it("passes triggerRerun: false when step up is clicked", async () => {
++    const user = userEvent.setup()
++    const sendRerunBackMsg = vi.fn()
++    const widgetMgr = new WidgetStateManager({
++      sendRerunBackMsg,
++      formsDataChanged: vi.fn(),
++    })
++    const props = getIntProps({ ignoreRerun: true }, { widgetMgr })
++    const setIntValueSpy = vi.spyOn(props.widgetMgr, "setIntValue")
++
++    render(<NumberInput {...props} />)
++    setIntValueSpy.mockClear()
++    sendRerunBackMsg.mockClear()
++
++    await user.click(screen.getByTestId("stNumberInputStepUp"))
++
++    expect(setIntValueSpy).toHaveBeenLastCalledWith(props.element.id, 11, {
++      formId: props.element.formId,
++      fragmentId: undefined,
++      fromUser: true,
++      triggerRerun: false,
++    })
++    await flushScheduledRerun()
++    expect(sendRerunBackMsg).not.toHaveBeenCalled()
++  })
++
++  it("passes triggerRerun: false when clear is clicked", async () => {
++    const user = userEvent.setup()
++    const sendRerunBackMsg = vi.fn()
++    const widgetMgr = new WidgetStateManager({
++      sendRerunBackMsg,
++      formsDataChanged: vi.fn(),
++    })
++    const props = getProps(
++      {
++        dataType: NumberInputProto.DataType.INT,
++        default: null,
++        min: 0,
++        max: 100,
++        ignoreRerun: true,
++      },
++      { widgetMgr }
++    )
++    const setIntValueSpy = vi.spyOn(props.widgetMgr, "setIntValue")
++
++    render(<NumberInput {...props} />)
++    setIntValueSpy.mockClear()
++    sendRerunBackMsg.mockClear()
++
++    const input = screen.getByTestId("stNumberInputField")
++    await user.type(input, "42")
++    expect(setIntValueSpy).not.toHaveBeenCalled()
++
++    await user.click(screen.getByTestId("stNumberInputClearButton"))
++
++    expect(setIntValueSpy).toHaveBeenLastCalledWith(props.element.id, null, {
++      formId: props.element.formId,
++      fragmentId: undefined,
++      fromUser: true,
++      triggerRerun: false,
++    })
++    await flushScheduledRerun()
++    expect(sendRerunBackMsg).not.toHaveBeenCalled()
++  })
++
++  it("passes triggerRerun: false for FLOAT commits", async () => {
++    const user = userEvent.setup()
++    const sendRerunBackMsg = vi.fn()
++    const widgetMgr = new WidgetStateManager({
++      sendRerunBackMsg,
++      formsDataChanged: vi.fn(),
++    })
++    const props = getFloatProps({ ignoreRerun: true }, { widgetMgr })
++    const setDoubleValueSpy = vi.spyOn(props.widgetMgr, "setDoubleValue")
++
++    render(<NumberInput {...props} />)
++    setDoubleValueSpy.mockClear()
++    sendRerunBackMsg.mockClear()
++
++    const input = screen.getByTestId("stNumberInputField")
++    await user.clear(input)
++    await user.type(input, "12.5")
++    await user.tab()
++
++    expect(setDoubleValueSpy).toHaveBeenLastCalledWith(
++      props.element.id,
++      12.5,
++      {
++        formId: props.element.formId,
++        fragmentId: undefined,
++        fromUser: true,
++        triggerRerun: false,
++      }
++    )
++    await flushScheduledRerun()
++    expect(sendRerunBackMsg).not.toHaveBeenCalled()
++  })
++})
+diff --git a/frontend/lib/src/components/widgets/NumberInput/utils.ts b/frontend/lib/src/components/widgets/NumberInput/utils.ts
+index fa054a4a829..0d08358f3f6 100644
+--- a/frontend/lib/src/components/widgets/NumberInput/utils.ts
++++ b/frontend/lib/src/components/widgets/NumberInput/utils.ts
+@@ -20,7 +20,7 @@ import { NumberInput as NumberInputProto } from "@streamlit/protobuf"
+ import { ValueWithSource } from "~lib/hooks/useBasicWidgetState"
+ import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
+ import { sprintf } from "~lib/vendor/sprintf.js/sprintfjs.js"
+-import { WidgetStateManager } from "~lib/WidgetStateManager"
++import { WidgetStateManager, WidgetUpdate } from "~lib/WidgetStateManager"
+ 
+ const LOG = getLogger("NumberInput")
+ 
+@@ -226,20 +226,22 @@ export function updateWidgetMgrState(
+   vws: ValueWithSource<number | null>,
+   fragmentId: string | undefined
+ ): void {
++  const update: WidgetUpdate = {
++    formId: element.formId,
++    fragmentId,
++    fromUser: vws.fromUser,
++    // on_change="ignore" buffers the value without scheduling a rerun.
++    // WidgetStateManager ignores triggerRerun inside forms (the form owns
++    // commit timing).
++    ...(element.ignoreRerun ? { triggerRerun: false } : {}),
++  }
++
+   switch (element.dataType) {
+     case NumberInputProto.DataType.INT:
+-      widgetMgr.setIntValue(element.id, vws.value, {
+-        formId: element.formId,
+-        fragmentId,
+-        fromUser: vws.fromUser,
+-      })
++      widgetMgr.setIntValue(element.id, vws.value, update)
+       break
+     case NumberInputProto.DataType.FLOAT:
+-      widgetMgr.setDoubleValue(element.id, vws.value, {
+-        formId: element.formId,
+-        fragmentId,
+-        fromUser: vws.fromUser,
+-      })
++      widgetMgr.setDoubleValue(element.id, vws.value, update)
+       break
+     default:
+       throw new Error("Invalid data type")
+diff --git a/lib/streamlit/elements/widgets/number_input.py b/lib/streamlit/elements/widgets/number_input.py
+index 2024125eec6..33d9578ea08 100644
+--- a/lib/streamlit/elements/widgets/number_input.py
++++ b/lib/streamlit/elements/widgets/number_input.py
+@@ -48,12 +48,14 @@
+ from streamlit.runtime.scriptrunner import ScriptRunContext, get_script_run_ctx
+ from streamlit.runtime.state import (
+     BindOption,
++    OnChangeMode,
+     PersistStateOption,
+     WidgetArgs,
+     WidgetCallback,
+     WidgetKwargs,
+     get_session_state,
+     register_widget,
++    validate_on_change_mode,
+ )
+ from streamlit.string_util import to_help_str, validate_icon_or_emoji
+ 
+@@ -112,7 +114,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         *,
+@@ -138,7 +140,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         *,
+@@ -165,7 +167,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         placeholder: str | None = None,
+@@ -191,7 +193,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         placeholder: str | None = None,
+@@ -217,7 +219,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         placeholder: str | None = None,
+@@ -243,7 +245,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         placeholder: str | None = None,
+@@ -269,7 +271,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         placeholder: str | None = None,
+@@ -294,7 +296,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         *,
+@@ -320,7 +322,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         *,
+@@ -344,7 +346,7 @@ def number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         *,  # keyword-only arguments:
+@@ -446,8 +448,30 @@ def number_input(
+             including the Markdown directives described in the ``body``
+             parameter of ``st.markdown``.
+ 
+-        on_change : callable
+-            An optional callback invoked when this number_input's value changes.
++        on_change : callable, "rerun", "ignore", or None
++            How the number input should respond to value changes. This controls
++            whether or not Streamlit reruns the app when the user interacts
++            with the number input. ``on_change`` can be one of the following:
++
++            - ``"rerun"`` (default): Streamlit will rerun the app when the
++              user commits a new value (pressing Enter, blurring the field,
++              clicking the ``+/-`` buttons, pressing the up or down arrow
++              keys, or clearing the value).
++
++            - ``"ignore"``: Streamlit will not rerun the app when the user
++              commits a new value. The number input still updates in the UI.
++              The new value is available on the next rerun triggered by
++              something else, such as another widget interaction. Ignored
++              commits are held in the browser and are lost if the page is
++              refreshed before that rerun, unless ``bind="query-params"``
++              is set (see ``bind``). Inside ``st.form``, this has no
++              effect: the form already defers all commits until submit.
++
++            - A ``callable``: Streamlit will rerun the app and execute the
++              ``callable`` as a callback function before the rest of the app.
++
++            - ``None``: This is the same as ``on_change="rerun"``. This value
++              exists for backwards compatibility and shouldn't be used.
+ 
+         args : list or tuple
+             An optional list or tuple of args to pass to the callback.
+@@ -519,6 +543,14 @@ def number_input(
+             from the URL. If ``value`` is ``None``, an empty query
+             parameter (e.g., ``?my_key=``) clears the widget.
+ 
++            When ``on_change="ignore"``, the URL is updated as soon as the
++            value is committed (Enter, blur, the ``+/-`` buttons, the up or
++            down arrow keys, or clearing the value); typing alone does not
++            update it. As with widgets inside a form, the URL can show a
++            value that Python hasn't received yet. Python receives the new
++            value on the next rerun, so a page load or share uses the
++            updated URL value.
++
+         persist_state : "page", "session", or None
+             How long to preserve the widget's value when it isn't rendered.
+             If this is ``None`` (default), the value is lost when the widget
+@@ -598,7 +630,7 @@ def _number_input(
+         format: str | None = None,
+         key: Key | None = None,
+         help: str | None = None,
+-        on_change: WidgetCallback | None = None,
++        on_change: WidgetCallback | OnChangeMode | None = "rerun",
+         args: WidgetArgs | None = None,
+         kwargs: WidgetKwargs | None = None,
+         *,  # keyword-only arguments:
+@@ -613,10 +645,16 @@ def _number_input(
+     ) -> Number | None:
+         key = to_key(key)
+ 
++        validate_on_change_mode(on_change)
++
++        on_change_callback: WidgetCallback | None = (
++            on_change if callable(on_change) else None
++        )
++
+         check_widget_policies(
+             self.dg,
+             key,
+-            on_change,
++            on_change_callback,
+             default_value=value if value != "min" else None,
+         )
+         label = maybe_raise_label_warnings(label, label_visibility)
+@@ -802,6 +840,9 @@ def _number_input(
+         if bind == "query-params" and key is not None:
+             number_input_proto.query_param_key = str(key)
+ 
++        if isinstance(on_change, str) and on_change == "ignore":
++            number_input_proto.ignore_rerun = True
++
+         # min_value and max_value are guaranteed to be Number (not None) after
+         # the JSNumber defaults above.
+         serde = NumberInputSerde(
+@@ -812,7 +853,7 @@ def _number_input(
+         )
+         widget_state = register_widget(
+             number_input_proto.id,
+-            on_change_handler=on_change,
++            on_change_handler=on_change_callback,
+             args=args,
+             kwargs=kwargs,
+             deserializer=serde.deserialize,
+diff --git a/lib/tests/streamlit/elements/number_input_test.py b/lib/tests/streamlit/elements/number_input_test.py
+index 823252f2136..7a7ca6e6661 100644
+--- a/lib/tests/streamlit/elements/number_input_test.py
++++ b/lib/tests/streamlit/elements/number_input_test.py
+@@ -14,6 +14,7 @@
+ 
+ """number_input unit test."""
+ 
++from typing import Any
+ from unittest.mock import MagicMock, patch
+ 
+ import pytest
+@@ -848,6 +849,53 @@ def test_bind_query_params_with_min_max(self):
+         assert c.max == 100
+ 
+ 
++class NumberInputOnChangeModeTest(DeltaGeneratorTestCase):
++    """Test on_change mode functionality (rerun, ignore, callable)."""
++
++    @parameterized.expand(
++        [
++            ("ignore", "ignore", True),
++            ("rerun", "rerun", False),
++            ("none", None, False),
++            ("callback", lambda: None, False),
++        ]
++    )
++    def test_on_change_mode_sets_ignore_rerun_proto_field(
++        self, _name: str, on_change: Any, expected_ignore_rerun: bool
++    ):
++        """Test that on_change modes correctly set the ignore_rerun proto field."""
++        st.number_input("the label", on_change=on_change)
++
++        c = self.get_delta_from_queue().new_element.number_input
++        assert c.ignore_rerun is expected_ignore_rerun
++
++    def test_on_change_invalid_mode_raises_exception(self):
++        """Test that invalid on_change mode raises StreamlitValueError."""
++        with pytest.raises(st.errors.StreamlitValueError) as exc_info:
++            st.number_input("the label", on_change="invalid")
++
++        assert "on_change" in str(exc_info.value)
++        assert "'rerun'" in str(exc_info.value)
++        assert "'ignore'" in str(exc_info.value)
++        assert "a callback function" in str(exc_info.value)
++
++    def test_on_change_non_string_value_raises_exception(self):
++        """Test that a non-string, non-callable on_change raises StreamlitValueError."""
++        with pytest.raises(st.errors.StreamlitValueError) as exc_info:
++            st.number_input("the label", on_change=[])  # type: ignore[arg-type]
++
++        assert "on_change" in str(exc_info.value)
++
++    @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
++    def test_on_change_ignore_allowed_inside_form(self):
++        """Test that on_change='ignore' inside a form does not raise."""
++        with st.form("form"):
++            st.number_input("the label", on_change="ignore")
++
++        c = self.get_delta_from_queue(1).new_element.number_input
++        assert c.ignore_rerun is True
++
++
+ @pytest.mark.parametrize(
+     ("ui_value", "expected"),
+     [
+diff --git a/lib/tests/streamlit/typing/number_input_types.py b/lib/tests/streamlit/typing/number_input_types.py
+index e60d61a5329..ba1000f433c 100644
+--- a/lib/tests/streamlit/typing/number_input_types.py
++++ b/lib/tests/streamlit/typing/number_input_types.py
+@@ -89,6 +89,15 @@
+     assert_type(number_input("foo", bind=None), float)
+     assert_type(number_input("foo", value=None, bind="query-params"), float | None)
+ 
++    # Check on_change parameter modes
++    assert_type(number_input("foo", on_change=None), float)
++    assert_type(number_input("foo", on_change="rerun"), float)
++    assert_type(number_input("foo", on_change="ignore"), float)
++    assert_type(number_input("foo", on_change=lambda: None), float)
++    assert_type(number_input("foo", value=5, on_change="ignore"), int)
++    assert_type(number_input("foo", min_value=1, on_change="ignore"), int)
++    assert_type(number_input("foo", value=None, on_change="ignore"), float | None)
++
+     def on_number_change(prefix: str) -> None: ...
+ 
+     # Common parameters combined
+diff --git a/proto/streamlit/proto/NumberInput.proto b/proto/streamlit/proto/NumberInput.proto
+index 0bf043a73cf..678546638ed 100644
+--- a/proto/streamlit/proto/NumberInput.proto
++++ b/proto/streamlit/proto/NumberInput.proto
+@@ -49,5 +49,12 @@ message NumberInput {
+   // If set, widget value is bound to this query parameter key
+   optional string query_param_key = 25;
+ 
++  // Set by on_change="ignore": do not schedule a rerun; buffer the value until
++  // the next rerun. Bound widgets still update the URL when the value is
++  // committed. Inside a form, this flag has no effect because the form batches
++  // values until submit.
++  bool ignore_rerun = 26;
++  // Next: 27
++
+   reserved 4, 5, 6, 7, 9, 10;
+ }

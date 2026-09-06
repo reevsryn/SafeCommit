@@ -1,0 +1,310 @@
+diff --git a/providers/standard/docs/operators/bash.rst b/providers/standard/docs/operators/bash.rst
+index d1bc9d13d167d..075a20e43368b 100644
+--- a/providers/standard/docs/operators/bash.rst
++++ b/providers/standard/docs/operators/bash.rst
+@@ -226,6 +226,56 @@ Here's how you can use the result_processor with the BashOperator:
+             )
+ 
+ 
++Multiple XCom outputs
++---------------------
++
++Pair ``output_processor`` with ``multiple_outputs=True`` to push more than one XCom from a single task. When
++the processed output is a dictionary, each key is pushed as its own XCom, which lets downstream tasks pull
++individual values by name instead of pulling the whole dictionary and indexing into it.
++
++.. tab-set::
++
++    .. tab-item:: @task.bash
++        :sync: taskflow
++
++        .. exampleinclude:: /../src/airflow/providers/standard/example_dags/example_bash_decorator.py
++            :language: python
++            :dedent: 4
++            :start-after: [START howto_decorator_bash_multiple_outputs]
++            :end-before: [END howto_decorator_bash_multiple_outputs]
++
++    .. tab-item:: BashOperator
++        :sync: operator
++
++        .. exampleinclude:: /../src/airflow/providers/standard/example_dags/example_bash_operator.py
++            :language: python
++            :dedent: 4
++            :start-after: [START howto_operator_bash_multiple_outputs]
++            :end-before: [END howto_operator_bash_multiple_outputs]
++
++The producing task above pushes an XCom for ``dag_folder`` and one for ``file_count``. The full dictionary is
++*also* pushed as the task's return value, so ``{{ ti.xcom_pull(task_ids="describe_dag_folder") }}`` still
++resolves to ``{"dag_folder": ..., "file_count": ...}``.
++
++.. important::
++
++    Only the **last line** written by the command is captured, so the dictionary must be the final thing the
++    command emits. A few consequences worth designing around:
++
++    * A trailing ``echo`` with no arguments emits an empty line, which becomes the captured output instead of
++      your dictionary.
++    * ``stderr`` is merged into ``stdout``, so a subcommand that writes to ``stderr`` last will overwrite the
++      captured value. Redirect noisy subcommands (for example ``2>/dev/null``) to avoid this.
++    * The dictionary must fit on a single line. Use ``jq -c`` rather than pretty-printed output, and prefer
++      ``printf`` over a multi-line ``printf`` format string.
++
++.. note::
++
++    Building JSON by hand does not escape values, so a value containing a double quote produces invalid JSON.
++    When values are not known to be safe, generate the JSON with a tool that escapes properly, such as
++    ``jq -nc --arg uri "$uri" '{uri: $uri}'`` (note that ``jq`` is not installed in every image).
++
++
+ Executing commands from files
+ -----------------------------
+ Both the ``BashOperator`` and ``@task.bash`` TaskFlow decorator enables you to execute Bash commands stored
+diff --git a/providers/standard/src/airflow/providers/standard/decorators/bash.py b/providers/standard/src/airflow/providers/standard/decorators/bash.py
+index 8cf704b9f8480..77fb9861aacb8 100644
+--- a/providers/standard/src/airflow/providers/standard/decorators/bash.py
++++ b/providers/standard/src/airflow/providers/standard/decorators/bash.py
+@@ -17,7 +17,6 @@
+ 
+ from __future__ import annotations
+ 
+-import warnings
+ from collections.abc import Callable, Collection, Mapping, Sequence
+ from typing import TYPE_CHECKING, Any, ClassVar
+ 
+@@ -44,6 +43,9 @@ class _BashDecoratedOperator(DecoratedOperator, BashOperator):
+         in your function (templated).
+     :param op_args: A list of positional arguments that will get unpacked when
+         calling your callable (templated).
++    :param multiple_outputs: If True, the value returned by ``output_processor`` must be a
++        dict and each key is pushed as its own XCom, in addition to the whole dict being
++        pushed as the return value. Defaults to False.
+     """
+ 
+     template_fields: Sequence[str] = (*DecoratedOperator.template_fields, *BashOperator.template_fields)
+@@ -63,19 +65,11 @@ def __init__(
+         op_kwargs: Mapping[str, Any] | None = None,
+         **kwargs,
+     ) -> None:
+-        if kwargs.pop("multiple_outputs", None):
+-            warnings.warn(
+-                f"`multiple_outputs=True` is not supported in {self.custom_operator_name} tasks. Ignoring.",
+-                UserWarning,
+-                stacklevel=3,
+-            )
+-
+         super().__init__(
+             python_callable=python_callable,
+             op_args=op_args,
+             op_kwargs=op_kwargs,
+             bash_command=SET_DURING_EXECUTION,
+-            multiple_outputs=False,
+             **kwargs,
+         )
+ 
+diff --git a/providers/standard/src/airflow/providers/standard/example_dags/example_bash_decorator.py b/providers/standard/src/airflow/providers/standard/example_dags/example_bash_decorator.py
+index edf694d061f6c..a8a2073c646d5 100644
+--- a/providers/standard/src/airflow/providers/standard/example_dags/example_bash_decorator.py
++++ b/providers/standard/src/airflow/providers/standard/example_dags/example_bash_decorator.py
+@@ -17,6 +17,8 @@
+ 
+ from __future__ import annotations
+ 
++import json
++
+ import pendulum
+ 
+ from airflow.providers.common.compat.sdk import TriggerRule
+@@ -36,6 +38,7 @@ def example_bash_decorator():
+     - Jinja templating and context variables
+     - Skip behavior via non-zero exit codes and conditional branching
+     - Parameterized environment variables and dynamic command construction
++    - Pushing several named XComs from one task with `multiple_outputs`
+ 
+     For details, see the Bash decorator documentation
+     [here](https://airflow.apache.org/docs/apache-airflow/stable/howto/operator/bash.html).
+@@ -114,6 +117,27 @@ def get_file_stats() -> str:
+     get_file_stats()
+     # [END howto_decorator_bash_build_cmd]
+ 
++    # [START howto_decorator_bash_multiple_outputs]
++    @task.bash(multiple_outputs=True, output_processor=json.loads)
++    def describe_dag_folder() -> str:
++        # The dict must be the last line the command writes: only that line is captured.
++        return """
++            set -e
++            dag_folder="$AIRFLOW_HOME/dags"
++            file_count=$(find "$dag_folder" -type f -name '*.py' 2>/dev/null | wc -l)
++            printf '{"dag_folder": "%s", "file_count": %s}\\n' "$dag_folder" "$file_count"
++        """
++
++    dag_stats = describe_dag_folder()
++
++    @task.bash
++    def show_dag_folder_stats(folder: str, count: int) -> str:
++        return f'echo "found {count} Dag file(s) under {folder}"'
++
++    # Each key of the returned dict is available as its own XCom.
++    show_dag_folder_stats(folder=dag_stats["dag_folder"], count=dag_stats["file_count"])
++    # [END howto_decorator_bash_multiple_outputs]
++
+     chain(run_me_loop, run_this)
+     chain([also_this, also_this_again, this_skips, run_this], run_this_last)
+ 
+diff --git a/providers/standard/src/airflow/providers/standard/example_dags/example_bash_operator.py b/providers/standard/src/airflow/providers/standard/example_dags/example_bash_operator.py
+index 722967cd224da..e7e4035472292 100644
+--- a/providers/standard/src/airflow/providers/standard/example_dags/example_bash_operator.py
++++ b/providers/standard/src/airflow/providers/standard/example_dags/example_bash_operator.py
+@@ -20,6 +20,7 @@
+ from __future__ import annotations
+ 
+ import datetime
++import json
+ 
+ import pendulum
+ 
+@@ -46,6 +47,7 @@
+     - Defining tasks using `BashOperator`
+     - Executing simple bash commands
+     - Creating task dependencies, including loops and templated commands
++    - Pushing several named XComs from one task with `multiple_outputs`
+ 
+     This example is intended for beginners who want to understand how Airflow
+     interacts with system-level commands using bash.
+@@ -79,6 +81,31 @@
+     # [END howto_operator_bash_template]
+     also_run_this >> run_this_last
+ 
++    # [START howto_operator_bash_multiple_outputs]
++    describe_dag_folder = BashOperator(
++        task_id="describe_dag_folder",
++        # The dict must be the last line the command writes: only that line is captured.
++        bash_command="""
++            set -e
++            dag_folder="$AIRFLOW_HOME/dags"
++            file_count=$(find "$dag_folder" -type f -name '*.py' 2>/dev/null | wc -l)
++            printf '{"dag_folder": "%s", "file_count": %s}\\n' "$dag_folder" "$file_count"
++        """,
++        multiple_outputs=True,
++        output_processor=json.loads,
++    )
++
++    # Each key of the pushed dict is available as its own XCom.
++    show_dag_folder_stats = BashOperator(
++        task_id="show_dag_folder_stats",
++        bash_command=(
++            "echo \"found {{ ti.xcom_pull(task_ids='describe_dag_folder', key='file_count') }}"
++            " Dag file(s) under {{ ti.xcom_pull(task_ids='describe_dag_folder', key='dag_folder') }}\""
++        ),
++    )
++    # [END howto_operator_bash_multiple_outputs]
++    describe_dag_folder >> show_dag_folder_stats >> run_this_last
++
+ # [START howto_operator_bash_skip]
+ this_will_skip = BashOperator(
+     task_id="this_will_skip",
+diff --git a/providers/standard/tests/unit/standard/decorators/test_bash.py b/providers/standard/tests/unit/standard/decorators/test_bash.py
+index 9197911f409a9..d3e6c502fb128 100644
+--- a/providers/standard/tests/unit/standard/decorators/test_bash.py
++++ b/providers/standard/tests/unit/standard/decorators/test_bash.py
+@@ -16,6 +16,7 @@
+ # under the License.
+ from __future__ import annotations
+ 
++import json
+ import os
+ import warnings
+ from contextlib import nullcontext as no_raise
+@@ -412,32 +413,36 @@ def bash():
+         else:
+             assert ti.task.bash_command == "set -e; something-that-isnt-on-path"
+ 
++    @pytest.mark.skipif(
++        not AIRFLOW_V_3_0_PLUS,
++        reason="Airflow 2 resolves @task.bash to its own bundled decorator, which ignores multiple_outputs",
++    )
+     def test_multiple_outputs_true(self):
+-        """Verify setting `multiple_outputs` for a @task.bash-decorated function is ignored."""
++        """Verify `multiple_outputs=True` reaches the operator instead of being ignored."""
+         with self.dag_maker:
+ 
+-            @task.bash(multiple_outputs=True)
++            @task.bash(multiple_outputs=True, output_processor=json.loads)
+             def bash():
+-                return "echo"
++                return """echo '{"rows": 42, "uri": "s3://bucket/out"}'"""
+ 
+-            with pytest.warns(
+-                UserWarning, match="`multiple_outputs=True` is not supported in @task.bash tasks. Ignoring."
+-            ):
++            with warnings.catch_warnings():
++                warnings.simplefilter("error", category=UserWarning)
+                 bash_task = bash()
+ 
+             assert bash_task.operator.bash_command == SET_DURING_EXECUTION
+ 
+-        ti, _ = self.execute_task(bash_task)
++        ti, return_val = self.execute_task(bash_task)
+ 
+-        assert bash_task.operator.multiple_outputs is False
+-        self.validate_bash_command_rtif(ti, "echo")
++        assert bash_task.operator.multiple_outputs is True
++        assert return_val == {"rows": 42, "uri": "s3://bucket/out"}
++        self.validate_bash_command_rtif(ti, """echo '{"rows": 42, "uri": "s3://bucket/out"}'""")
+ 
+     @pytest.mark.parametrize(
+         "multiple_outputs",
+         [False, pytest.param(None, id="none"), pytest.param(SET_DURING_EXECUTION, id="not-set")],
+     )
+     def test_multiple_outputs(self, multiple_outputs):
+-        """Verify setting `multiple_outputs` for a @task.bash-decorated function is ignored."""
++        """Verify `multiple_outputs` defaults to False when unset or falsy."""
+         decorator_kwargs = {}
+         if multiple_outputs is not SET_DURING_EXECUTION:
+             decorator_kwargs["multiple_outputs"] = multiple_outputs
+@@ -458,6 +463,46 @@ def bash():
+         assert bash_task.operator.multiple_outputs is False
+         self.validate_bash_command_rtif(ti, "echo")
+ 
++    def test_multiple_outputs_not_inferred_from_str_annotation(self):
++        """A `-> str` annotation must not infer `multiple_outputs=True`; the callable returns the command."""
++        with self.dag_maker:
++
++            @task.bash
++            def bash() -> str:
++                return "echo hello"
++
++            bash_task = bash()
++
++        ti, return_val = self.execute_task(bash_task)
++
++        assert bash_task.operator.multiple_outputs is False
++        assert return_val == "hello"
++        self.validate_bash_command_rtif(ti, "echo hello")
++
++    @pytest.mark.skipif(not AIRFLOW_V_3_0_PLUS, reason="XCom unrolling asserted via the Task SDK runner")
++    def test_multiple_outputs_pushes_one_xcom_per_key(self, session):
++        """Each key of the processed output is pushed as its own XCom, alongside the return value."""
++        with self.dag_maker:
++
++            @task.bash(multiple_outputs=True, output_processor=json.loads)
++            def bash():
++                return """echo '{"rows": 42, "uri": "s3://bucket/out"}'"""
++
++            bash_task = bash()
++
++        dag_run = self.dag_maker.create_dagrun(
++            run_id=f"bash_deco_multi_xcom_{DEFAULT_DATE.date()}", session=session
++        )
++        ti = dag_run.get_task_instance(bash_task.operator.task_id, session=session)
++        run_task_instance(ti, bash_task.operator, session=session)
++
++        assert ti.xcom_pull(task_ids=ti.task_id, key="rows", session=session) == 42
++        assert ti.xcom_pull(task_ids=ti.task_id, key="uri", session=session) == "s3://bucket/out"
++        assert ti.xcom_pull(task_ids=ti.task_id, session=session) == {
++            "rows": 42,
++            "uri": "s3://bucket/out",
++        }
++
+     @pytest.mark.parametrize(
+         argnames=("return_val", "expected"),
+         argvalues=[

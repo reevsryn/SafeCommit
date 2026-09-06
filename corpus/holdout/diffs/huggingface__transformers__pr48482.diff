@@ -1,0 +1,249 @@
+diff --git a/src/transformers/models/gemma3/modeling_gemma3.py b/src/transformers/models/gemma3/modeling_gemma3.py
+index e870ec1ad81a..f0fa3acb63b7 100644
+--- a/src/transformers/models/gemma3/modeling_gemma3.py
++++ b/src/transformers/models/gemma3/modeling_gemma3.py
+@@ -730,11 +730,18 @@ def create_masks_for_vision_model(
+     # Full attention: OR(causal, blockwise) — use block_sequence_ids directly
+     full_mask = create_causal_mask(**mask_kwargs, block_sequence_ids=block_sequence_ids)
+ 
++    # The sliding mask must be sized against a `sliding_attention` layer, but layer 0 may not be one
++    # and `create_causal_mask` defaults to the first `full_attention` layer, which has a different kv_length.
++    if getattr(past_key_values, "is_sliding", None) and True in past_key_values.is_sliding:
++        sliding_layer_idx = past_key_values.is_sliding.index(True)
++    else:
++        sliding_layer_idx = 0
++
+     # We need to manually pad the sequence IDs for the sliding mask
+     # as it's passed as an `or_mask_function` which bypasses internal padding.
+     early_exit, _, _, _, kv_length, _, kv_offset = _preprocess_mask_arguments(
+         **mask_kwargs,
+-        layer_idx=0,
++        layer_idx=sliding_layer_idx,
+     )
+     if early_exit:
+         padded_block_sequence_ids = block_sequence_ids
+@@ -750,6 +757,7 @@ def create_masks_for_vision_model(
+         **mask_kwargs,
+         or_mask_function=blockwise_overlay(padded_block_sequence_ids),
+         and_mask_function=sliding_window_overlay(config.sliding_window),
++        layer_idx=sliding_layer_idx,
+     )
+ 
+     return {
+diff --git a/src/transformers/models/gemma3/modular_gemma3.py b/src/transformers/models/gemma3/modular_gemma3.py
+index 7ee7db711c27..b7ca600e17b4 100644
+--- a/src/transformers/models/gemma3/modular_gemma3.py
++++ b/src/transformers/models/gemma3/modular_gemma3.py
+@@ -639,11 +639,18 @@ def create_masks_for_vision_model(
+     # Full attention: OR(causal, blockwise) — use block_sequence_ids directly
+     full_mask = create_causal_mask(**mask_kwargs, block_sequence_ids=block_sequence_ids)
+ 
++    # The sliding mask must be sized against a `sliding_attention` layer, but layer 0 may not be one
++    # and `create_causal_mask` defaults to the first `full_attention` layer, which has a different kv_length.
++    if getattr(past_key_values, "is_sliding", None) and True in past_key_values.is_sliding:
++        sliding_layer_idx = past_key_values.is_sliding.index(True)
++    else:
++        sliding_layer_idx = 0
++
+     # We need to manually pad the sequence IDs for the sliding mask
+     # as it's passed as an `or_mask_function` which bypasses internal padding.
+     early_exit, _, _, _, kv_length, _, kv_offset = _preprocess_mask_arguments(
+         **mask_kwargs,
+-        layer_idx=0,
++        layer_idx=sliding_layer_idx,
+     )
+     if early_exit:
+         padded_block_sequence_ids = block_sequence_ids
+@@ -659,6 +666,7 @@ def create_masks_for_vision_model(
+         **mask_kwargs,
+         or_mask_function=blockwise_overlay(padded_block_sequence_ids),
+         and_mask_function=sliding_window_overlay(config.sliding_window),
++        layer_idx=sliding_layer_idx,
+     )
+ 
+     return {
+diff --git a/src/transformers/models/gemma4/modeling_gemma4.py b/src/transformers/models/gemma4/modeling_gemma4.py
+index 79f626e86996..ab7e55acfb9e 100644
+--- a/src/transformers/models/gemma4/modeling_gemma4.py
++++ b/src/transformers/models/gemma4/modeling_gemma4.py
+@@ -2117,11 +2117,18 @@ def create_masks_for_vision_model(
+     # Full attention: causal only — no bidirectional blockwise overlay.
+     full_mask = create_causal_mask(**mask_kwargs)
+ 
++    # The sliding mask must be sized against a `sliding_attention` layer, but layer 0 may not be one
++    # and `create_causal_mask` defaults to the first `full_attention` layer, which has a different kv_length.
++    if getattr(past_key_values, "is_sliding", None) and True in past_key_values.is_sliding:
++        sliding_layer_idx = past_key_values.is_sliding.index(True)
++    else:
++        sliding_layer_idx = 0
++
+     # We need to manually pad the sequence IDs for the sliding mask
+     # as it's passed as an `or_mask_function` which bypasses internal padding.
+     early_exit, _, _, _, kv_length, _, kv_offset = _preprocess_mask_arguments(
+         **mask_kwargs,
+-        layer_idx=0,
++        layer_idx=sliding_layer_idx,
+     )
+     if early_exit:
+         padded_block_sequence_ids = block_sequence_ids
+@@ -2137,6 +2144,7 @@ def create_masks_for_vision_model(
+         **mask_kwargs,
+         or_mask_function=blockwise_overlay(padded_block_sequence_ids),
+         and_mask_function=sliding_window_overlay(config.sliding_window),
++        layer_idx=sliding_layer_idx,
+     )
+ 
+     return {
+diff --git a/src/transformers/models/gemma4/modular_gemma4.py b/src/transformers/models/gemma4/modular_gemma4.py
+index 0c7e6df18d38..885b61625389 100644
+--- a/src/transformers/models/gemma4/modular_gemma4.py
++++ b/src/transformers/models/gemma4/modular_gemma4.py
+@@ -107,11 +107,18 @@ def create_masks_for_vision_model(
+     # Full attention: causal only — no bidirectional blockwise overlay.
+     full_mask = create_causal_mask(**mask_kwargs)
+ 
++    # The sliding mask must be sized against a `sliding_attention` layer, but layer 0 may not be one
++    # and `create_causal_mask` defaults to the first `full_attention` layer, which has a different kv_length.
++    if getattr(past_key_values, "is_sliding", None) and True in past_key_values.is_sliding:
++        sliding_layer_idx = past_key_values.is_sliding.index(True)
++    else:
++        sliding_layer_idx = 0
++
+     # We need to manually pad the sequence IDs for the sliding mask
+     # as it's passed as an `or_mask_function` which bypasses internal padding.
+     early_exit, _, _, _, kv_length, _, kv_offset = _preprocess_mask_arguments(
+         **mask_kwargs,
+-        layer_idx=0,
++        layer_idx=sliding_layer_idx,
+     )
+     if early_exit:
+         padded_block_sequence_ids = block_sequence_ids
+@@ -127,6 +134,7 @@ def create_masks_for_vision_model(
+         **mask_kwargs,
+         or_mask_function=blockwise_overlay(padded_block_sequence_ids),
+         and_mask_function=sliding_window_overlay(config.sliding_window),
++        layer_idx=sliding_layer_idx,
+     )
+ 
+     return {
+diff --git a/src/transformers/models/gemma4_unified/modeling_gemma4_unified.py b/src/transformers/models/gemma4_unified/modeling_gemma4_unified.py
+index 9a897479a360..5ef121fcd4ca 100644
+--- a/src/transformers/models/gemma4_unified/modeling_gemma4_unified.py
++++ b/src/transformers/models/gemma4_unified/modeling_gemma4_unified.py
+@@ -1210,11 +1210,18 @@ def create_masks_for_vision_model(
+     # Full attention: causal only — no bidirectional blockwise overlay.
+     full_mask = create_causal_mask(**mask_kwargs)
+ 
++    # The sliding mask must be sized against a `sliding_attention` layer, but layer 0 may not be one
++    # and `create_causal_mask` defaults to the first `full_attention` layer, which has a different kv_length.
++    if getattr(past_key_values, "is_sliding", None) and True in past_key_values.is_sliding:
++        sliding_layer_idx = past_key_values.is_sliding.index(True)
++    else:
++        sliding_layer_idx = 0
++
+     # We need to manually pad the sequence IDs for the sliding mask
+     # as it's passed as an `or_mask_function` which bypasses internal padding.
+     early_exit, _, _, _, kv_length, _, kv_offset = _preprocess_mask_arguments(
+         **mask_kwargs,
+-        layer_idx=0,
++        layer_idx=sliding_layer_idx,
+     )
+     if early_exit:
+         padded_block_sequence_ids = block_sequence_ids
+@@ -1230,6 +1237,7 @@ def create_masks_for_vision_model(
+         **mask_kwargs,
+         or_mask_function=blockwise_overlay(padded_block_sequence_ids),
+         and_mask_function=sliding_window_overlay(config.sliding_window),
++        layer_idx=sliding_layer_idx,
+     )
+ 
+     return {
+diff --git a/tests/models/gemma3/test_modeling_gemma3.py b/tests/models/gemma3/test_modeling_gemma3.py
+index e5be72867fe6..8b6b848d6fb1 100644
+--- a/tests/models/gemma3/test_modeling_gemma3.py
++++ b/tests/models/gemma3/test_modeling_gemma3.py
+@@ -62,6 +62,7 @@
+         Gemma3TextForSequenceClassification,
+         Gemma3TextModel,
+     )
++    from transformers.cache_utils import StaticCache
+     from transformers.models.gemma3.modeling_gemma3 import create_masks_for_vision_model
+     from transformers.pytorch_utils import is_torch_greater_or_equal
+ 
+@@ -389,6 +390,33 @@ def test_attention_mask_composition(self):
+         # Token 11 (image) looking ahead at Token 12 (text) -> MASKED
+         self.assertLess(full_mask[0, 0, 11, 12].item(), -1000)
+ 
++    @parameterized.expand([(["sliding_attention", "full_attention"],), (["full_attention", "sliding_attention"],)])
++    def test_vision_mask_with_cache_beyond_sliding_window(self, layer_types: list[str]):
++        """Regression test for a crash observed on real vision checkpoints such as ShieldGemma-2.
++
++        Once the cache is longer than the sliding window, sliding and full attention layers report
++        different `kv_length`s. The vision mask has to be built for a sliding layer, otherwise the
++        sliding mask ends up sized against a full attention layer and the forward pass crashes.
++        """
++        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
++        config.text_config._attn_implementation = "eager"
++        config.text_config.sliding_window = 4
++        config.text_config.layer_types = layer_types
++        config.text_config.num_hidden_layers = len(layer_types)
++
++        model = Gemma3ForConditionalGeneration(config).to(torch_device).eval()
++        batch_size, prompt_length = inputs_dict["input_ids"].shape
++        past_key_values = StaticCache(
++            config=config.get_text_config(),
++            max_batch_size=batch_size,
++            max_cache_len=prompt_length + 8,  # longer than the sliding window
++            device=torch_device,
++            dtype=model.dtype,
++        )
++
++        with torch.no_grad():
++            model(**inputs_dict, past_key_values=past_key_values, use_cache=True)
++
+ 
+ @slow
+ @require_torch_accelerator
+diff --git a/tests/models/gemma4/test_modeling_gemma4.py b/tests/models/gemma4/test_modeling_gemma4.py
+index 6db3b45240b5..d5005d8d3060 100644
+--- a/tests/models/gemma4/test_modeling_gemma4.py
++++ b/tests/models/gemma4/test_modeling_gemma4.py
+@@ -58,6 +58,7 @@
+         Gemma4Processor,
+         Gemma4TextModel,
+     )
++    from transformers.cache_utils import StaticCache
+     from transformers.models.gemma4.modeling_gemma4 import create_masks_for_vision_model
+ 
+ 
+@@ -777,6 +778,30 @@ def test_attention_mask_composition(self):
+         # Token 11 (image) looking ahead at Token 12 (text) -> MASKED
+         self.assertLess(full_mask[0, 0, 11, 12].item(), -1000)
+ 
++    def test_vision_mask_with_cache_beyond_sliding_window(self):
++        """Regression test, see the Gemma 3 test of the same name.
++
++        Once the cache is longer than the sliding window, sliding and full attention layers report
++        different `kv_length`s. The vision mask has to be built for a sliding layer, otherwise the
++        sliding mask ends up sized against a full attention layer and the forward pass crashes.
++        """
++        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
++        config.text_config._attn_implementation = "eager"
++        config.text_config.sliding_window = 4
++
++        model = Gemma4ForConditionalGeneration(config).to(torch_device).eval()
++        batch_size, prompt_length = inputs_dict["input_ids"].shape
++        past_key_values = StaticCache(
++            config=config.get_text_config(),
++            max_batch_size=batch_size,
++            max_cache_len=prompt_length + 8,  # longer than the sliding window
++            device=torch_device,
++            dtype=model.dtype,
++        )
++
++        with torch.no_grad():
++            model(**inputs_dict, past_key_values=past_key_values, use_cache=True)
++
+ 
+ @slow
+ @require_torch_accelerator

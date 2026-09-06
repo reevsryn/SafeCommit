@@ -1,0 +1,108 @@
+diff --git a/lib/streamlit/testing/v1/element_tree.py b/lib/streamlit/testing/v1/element_tree.py
+index 9b598d73dee..5fc17c0f145 100644
+--- a/lib/streamlit/testing/v1/element_tree.py
++++ b/lib/streamlit/testing/v1/element_tree.py
+@@ -2693,9 +2693,7 @@ def parse_tree_from_messages(messages: list[ForwardMsg]) -> ElementTree:
+                 elif alert_format == AlertProto.Format.WARNING:
+                     new_node = Warning(elt.alert, root=root)
+                 else:
+-                    raise ValueError(
+-                        f"Unknown alert type with format {elt.alert.format}"
+-                    )
++                    new_node = UnknownElement(elt, root=root)
+             elif ty == "dataframe":
+                 new_node = Dataframe(elt.dataframe, root=root)
+             elif ty == "table":
+@@ -2736,7 +2734,7 @@ def parse_tree_from_messages(messages: list[ForwardMsg]) -> ElementTree:
+                 elif elt.heading.tag == HeadingProtoTag.SUBHEADER_TAG.value:
+                     new_node = Subheader(elt.heading, root=root)
+                 else:
+-                    raise ValueError(f"Unknown heading type with tag {elt.heading.tag}")
++                    new_node = UnknownElement(elt, root=root)
+             elif ty == "imgs":
+                 new_node = Image(elt.imgs, root=root)
+             elif ty == "json":
+@@ -2751,9 +2749,7 @@ def parse_tree_from_messages(messages: list[ForwardMsg]) -> ElementTree:
+                 elif elt.markdown.element_type == MarkdownProto.Type.DIVIDER:
+                     new_node = Divider(elt.markdown, root=root)
+                 else:
+-                    raise ValueError(
+-                        f"Unknown markdown type {elt.markdown.element_type}"
+-                    )
++                    new_node = UnknownElement(elt, root=root)
+             elif ty == "menu_button":
+                 new_node = MenuButton(elt.menu_button, root=root)
+             elif ty == "metric":
+@@ -2772,7 +2768,7 @@ def parse_tree_from_messages(messages: list[ForwardMsg]) -> ElementTree:
+                 elif elt.slider.type == SliderProto.Type.SELECT_SLIDER:
+                     new_node = SelectSlider(elt.slider, root=root)
+                 else:
+-                    raise ValueError(f"Slider with unknown type {elt.slider}")
++                    new_node = UnknownElement(elt, root=root)
+             elif ty == "text":
+                 new_node = Text(elt.text, root=root)
+             elif ty == "text_area":
+diff --git a/lib/tests/streamlit/testing/element_tree_test.py b/lib/tests/streamlit/testing/element_tree_test.py
+index 588c9ab4ecc..dcc45741423 100644
+--- a/lib/tests/streamlit/testing/element_tree_test.py
++++ b/lib/tests/streamlit/testing/element_tree_test.py
+@@ -25,8 +25,17 @@
+ from streamlit.components.v2.manifest_scanner import ComponentConfig, ComponentManifest
+ from streamlit.dataframe import lazy_df_source as dataframe_source
+ from streamlit.elements.markdown import MARKDOWN_HORIZONTAL_RULE_EXPRESSION
++from streamlit.proto.Alert_pb2 import Alert as AlertProto
++from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
++from streamlit.proto.Markdown_pb2 import Markdown as MarkdownProto
++from streamlit.proto.Slider_pb2 import Slider as SliderProto
+ from streamlit.testing.v1.app_test import AppTest
+-from streamlit.testing.v1.element_tree import AppTestError, _format_value_for_widget
++from streamlit.testing.v1.element_tree import (
++    AppTestError,
++    UnknownElement,
++    _format_value_for_widget,
++    parse_tree_from_messages,
++)
+ 
+ if TYPE_CHECKING:
+     from pathlib import Path
+@@ -1338,6 +1347,40 @@ def script():
+     assert at.markdown[0].value == "Hello"
+ 
+ 
++def test_parse_tree_unknown_proto_subtypes_become_unknown_element() -> None:
++    """Unknown markdown, heading, alert, and slider subtypes parse as UnknownElement."""
++
++    def element_msg(index: int) -> ForwardMsg:
++        msg = ForwardMsg()
++        msg.metadata.delta_path.extend([0, index])
++        return msg
++
++    code_msg = element_msg(0)
++    code_msg.delta.new_element.markdown.body = "print('hi')"
++    code_msg.delta.new_element.markdown.element_type = MarkdownProto.Type.CODE
++
++    heading_msg = element_msg(1)
++    heading_msg.delta.new_element.heading.body = "Section"
++    heading_msg.delta.new_element.heading.tag = "h4"
++
++    alert_msg = element_msg(2)
++    alert_msg.delta.new_element.alert.body = "unused format"
++    alert_msg.delta.new_element.alert.format = AlertProto.Format.UNUSED
++
++    slider_msg = element_msg(3)
++    slider_msg.delta.new_element.slider.label = "pager"
++    slider_msg.delta.new_element.slider.type = SliderProto.Type.UNSPECIFIED
++
++    tree = parse_tree_from_messages([code_msg, heading_msg, alert_msg, slider_msg])
++    nodes = [tree.main[i] for i in range(4)]
++
++    assert all(isinstance(node, UnknownElement) for node in nodes)
++    assert [node.type for node in nodes] == ["markdown", "heading", "alert", "slider"]
++    assert nodes[0].value == "print('hi')"
++    assert nodes[1].value == "Section"
++    assert nodes[2].value == "unused format"
++
++
+ def test_element_list_equality():
+     """Test ElementList equality comparison."""
+ 

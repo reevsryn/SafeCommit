@@ -1,0 +1,345 @@
+diff --git a/src/transformers/backbone_utils.py b/src/transformers/backbone_utils.py
+index 050c25e90b4f..7b5622fdbda0 100644
+--- a/src/transformers/backbone_utils.py
++++ b/src/transformers/backbone_utils.py
+@@ -173,6 +173,17 @@ def wrapper(self, *args, **kwargs):
+         if not output_hidden_states:
+             filtered_output_data = {k: v for k, v in output.items() if k != "hidden_states"}
+             output = type(output)(**filtered_output_data)
++        elif isinstance(output_hidden_states, (list, tuple, set)):
++            capture_initial_hidden_state = getattr(
++                (self._can_record_outputs or {}).get("hidden_states"), "capture_initial_hidden_state", True
++            )
++            # When using a list of layer indices, we never collect the first input, so we may need to start at the index 1
++            collected_hidden_states = (
++                output["hidden_states"][1:] if capture_initial_hidden_state else output["hidden_states"]
++            )
++            output["hidden_states"] = [
++                x if i in output_hidden_states else None for i, x in enumerate(collected_hidden_states)
++            ]
+         return output
+ 
+     return wrapper
+diff --git a/src/transformers/generation/candidate_generator.py b/src/transformers/generation/candidate_generator.py
+index 0a62d5a7c1e9..b251b7b975d6 100644
+--- a/src/transformers/generation/candidate_generator.py
++++ b/src/transformers/generation/candidate_generator.py
+@@ -1580,7 +1580,7 @@ class DFlashTokenCandidateGenerator(CandidateGenerator):
+     """
+ 
+     requires_model_outputs: bool = True
+-    # We always need to pass the hidden states at `draft_config.target_layer_ids` from the main model
++    # This will be overriden in the __init__ to capture only the required layer's hidden_states
+     model_kwargs_overrides: dict[str, Any] = {"output_hidden_states": True}
+ 
+     def __init__(
+@@ -1603,6 +1603,8 @@ def __init__(
+ 
+         # Get the layers used to obtain the intermediate hidden_states from main model, and prepare the diffusion window ids tensor
+         self.target_layer_ids = assistant_model.config.target_layer_ids
++        # Override to capture only those specific layers
++        self.model_kwargs_overrides = {"output_hidden_states": self.target_layer_ids}
+         self.block_size = assistant_model.config.block_size
+         self.mask_token_id = assistant_model.config.mask_token_id
+         self.noise_ids_mask = torch.tensor([self.mask_token_id] * (self.block_size - 1))[None, ...]
+@@ -1668,7 +1670,7 @@ def get_candidates(
+         # hidden states of only accepted tokens thus crop out the rest
+         context_hidden_states: torch.Tensor = torch.cat(
+             [
+-                model_outputs.hidden_states[i + 1][:, :num_last_main_model_tokens].to(self.device)
++                model_outputs.hidden_states[i][:, :num_last_main_model_tokens].to(self.device)
+                 for i in self.target_layer_ids
+             ],
+             dim=-1,
+diff --git a/src/transformers/models/colpali/modeling_colpali.py b/src/transformers/models/colpali/modeling_colpali.py
+index 7d63585183c5..b773dd973700 100644
+--- a/src/transformers/models/colpali/modeling_colpali.py
++++ b/src/transformers/models/colpali/modeling_colpali.py
+@@ -20,6 +20,7 @@
+ 
+ from transformers import AutoModel
+ 
++from ...backbone_utils import filter_output_hidden_states
+ from ...cache_utils import Cache
+ from ...modeling_utils import PreTrainedModel
+ from ...processing_utils import Unpack
+@@ -106,6 +107,7 @@ def __init__(self, config: ColPaliConfig):
+ 
+     @can_return_tuple
+     @auto_docstring
++    @filter_output_hidden_states
+     def forward(
+         self,
+         input_ids: torch.LongTensor | None = None,
+@@ -115,18 +117,14 @@ def forward(
+     ) -> ColPaliForRetrievalOutput:
+         if pixel_values is not None:
+             pixel_values = pixel_values.to(dtype=self.dtype)
+-        output_hidden_states = kwargs.pop("output_hidden_states", None)
+-        if output_hidden_states is None:
+-            output_hidden_states = self.config.output_hidden_states
+ 
+         vlm_output = self.vlm(
+             input_ids=input_ids,
+             attention_mask=attention_mask,
+             pixel_values=pixel_values,
+-            output_hidden_states=True,
+             **kwargs,
+         )
+-        vlm_hidden_states = vlm_output.hidden_states if output_hidden_states else None
++        vlm_hidden_states = vlm_output.hidden_states
+         vlm_image_hidden_states = vlm_output.image_hidden_states if pixel_values is not None else None
+ 
+         last_hidden_states = vlm_output[0]  # (batch_size, sequence_length, hidden_size)
+diff --git a/src/transformers/models/dpt/modeling_dpt.py b/src/transformers/models/dpt/modeling_dpt.py
+index ea09034ee0b1..ee642391999e 100755
+--- a/src/transformers/models/dpt/modeling_dpt.py
++++ b/src/transformers/models/dpt/modeling_dpt.py
+@@ -28,7 +28,7 @@
+ 
+ from ... import initialization as init
+ from ...activations import ACT2FN
+-from ...backbone_utils import load_backbone
++from ...backbone_utils import filter_output_hidden_states, load_backbone
+ from ...modeling_layers import GradientCheckpointingLayer
+ from ...modeling_outputs import BaseModelOutput, DepthEstimatorOutput, SemanticSegmenterOutput
+ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
+@@ -941,6 +941,7 @@ def __init__(self, config):
+ 
+     @can_return_tuple
+     @auto_docstring
++    @filter_output_hidden_states
+     def forward(
+         self,
+         pixel_values: torch.FloatTensor,
+@@ -989,13 +990,6 @@ def forward(
+         if labels is not None:
+             raise NotImplementedError("Training is not implemented yet")
+ 
+-        # Internally the model always needs to output hidden states, we control the output
+-        # per user request on the final output
+-        user_requested_hidden_states = kwargs.get("output_hidden_states") or getattr(
+-            self.config, "output_hidden_states", False
+-        )
+-        kwargs["output_hidden_states"] = True
+-
+         if self.backbone is not None:
+             outputs = self.backbone.forward_with_filtered_kwargs(pixel_values, **kwargs)
+             hidden_states = outputs.feature_maps
+@@ -1030,7 +1024,7 @@ def forward(
+         return DepthEstimatorOutput(
+             loss=loss,
+             predicted_depth=predicted_depth,
+-            hidden_states=outputs.hidden_states if user_requested_hidden_states else None,
++            hidden_states=outputs.hidden_states,
+             attentions=outputs.attentions,
+         )
+ 
+@@ -1094,6 +1088,7 @@ def __init__(self, config: DPTConfig):
+ 
+     @can_return_tuple
+     @auto_docstring
++    @filter_output_hidden_states
+     def forward(
+         self,
+         pixel_values: torch.FloatTensor | None = None,
+@@ -1127,13 +1122,6 @@ def forward(
+         if labels is not None and self.config.num_labels == 1:
+             raise ValueError("The number of labels should be greater than one")
+ 
+-        # Internally the model always needs to output hidden states, we control the output
+-        # per user request on the final output
+-        user_requested_hidden_states = kwargs.get("output_hidden_states") or getattr(
+-            self.config, "output_hidden_states", False
+-        )
+-        kwargs["output_hidden_states"] = True
+-
+         outputs: BaseModelOutputWithPoolingAndIntermediateActivations = self.dpt(pixel_values, **kwargs)
+         hidden_states = outputs.hidden_states
+ 
+@@ -1177,7 +1165,7 @@ def forward(
+         return SemanticSegmenterOutput(
+             loss=loss,
+             logits=logits,
+-            hidden_states=outputs.hidden_states if user_requested_hidden_states else None,
++            hidden_states=outputs.hidden_states,
+             attentions=outputs.attentions,
+         )
+ 
+diff --git a/src/transformers/utils/output_capturing.py b/src/transformers/utils/output_capturing.py
+index 7dc3e2f33894..6cf4c00df4a7 100644
+--- a/src/transformers/utils/output_capturing.py
++++ b/src/transformers/utils/output_capturing.py
+@@ -109,8 +109,27 @@ def output_capturing_hook(module, args, output):
+         if collected_outputs is None or key not in collected_outputs.keys():
+             return
+ 
+-        if capture_initial_hidden_state and key == "hidden_states" and len(collected_outputs[key]) == 0:
++        # Optionally capture only some layer's hidden_states
++        hidden_states_layers = collected_outputs.get("_hidden_states_layers")
++
++        # Historically, the first hidden_states output is actually the input of layer 0 (or inputs_embeds), so the hidden_states outputs
++        # have length `num_hidden_layers + 1`. When we request a list of explicit layers to capture, do not add this into the result, so
++        # that the indexing of the output is the same as the actual requested layers
++        if (
++            capture_initial_hidden_state
++            and key == "hidden_states"
++            and len(collected_outputs[key]) == 0
++            and hidden_states_layers is None
++        ):
+             collected_outputs[key].append(args[0])
++
++        # If we are capturing only some layer's hidden_states, skip capture if not part of the requested indices
++        if key == "hidden_states" and hidden_states_layers is not None:
++            current_layer_idx = len(collected_outputs[key])
++            if current_layer_idx not in hidden_states_layers:
++                collected_outputs[key].append(None)
++                return
++
+         if not isinstance(output, tuple):
+             collected_outputs[key].append(output)
+         elif output[index] is not None:
+@@ -221,10 +240,9 @@ def capture_outputs(func=None, *, tie_last_hidden_states=True):
+ 
+     Args:
+         tie_last_hidden_states (`bool`, *optional*, defaults to `True`):
+-            Whether to overwrite `out.hidden_states[-1]` with the `out.last_hidden_state`.
+-            This is true for all language models and should be toggled off only if
+-            `out.hidden_states[-1]` has to be the hidden state before last layer norm, which
+-            is needed for some vision models (e.g. CLIP, SigLIP)
++            Whether to overwrite `out.hidden_states[-1]` with the `out.last_hidden_state`. This is true for all language models
++            and should be toggled off only if `out.hidden_states[-1]` has to be the hidden state before last layer norm, which
++            is needed for some vision models (e.g. CLIP, SigLIP).
+     """
+ 
+     def wrapped_fn(func):
+@@ -251,6 +269,12 @@ def wrapper(self, *args, **kwargs):
+                 )
+ 
+             collected_outputs = {k.replace("output_", ""): [] for k, v in recordable_keys.items() if v}
++            # We accept a list of layer indices as `output_hidden_states`, to capture only specific layer outputs - in this case
++            # we need to add the layers to the `collected_outputs`'s dict to tell the hook which ones we need
++            if "output_hidden_states" in recordable_keys and isinstance(
++                recordable_keys["output_hidden_states"], (list, tuple, set)
++            ):
++                collected_outputs["_hidden_states_layers"] = set(recordable_keys["output_hidden_states"])
+             # Make sure hooks are installed if we need to collect outputs
+             if len(collected_outputs) > 0:
+                 maybe_install_capturing_hooks(self)
+@@ -264,10 +288,14 @@ def wrapper(self, *args, **kwargs):
+             finally:
+                 _active_collector.reset(output_token)
+ 
++            hidden_states_layers = collected_outputs.pop("_hidden_states_layers", None)
+             # Inject collected outputs into model output (return everything as tuples for BC)
+             for key in collected_outputs:
+                 if key == "hidden_states":
+-                    if not tie_last_hidden_states:
++                    # If we specifically don't tie, or did not capture the last layer, do nothing
++                    if not tie_last_hidden_states or (
++                        hidden_states_layers is not None and collected_outputs[key][-1] is None
++                    ):
+                         pass
+                     elif hasattr(outputs, "vision_hidden_states"):
+                         collected_outputs[key] = collected_outputs[key][:-1]
+diff --git a/tests/models/bridgetower/test_modeling_bridgetower.py b/tests/models/bridgetower/test_modeling_bridgetower.py
+index 9250b96bf235..8a672c93187f 100644
+--- a/tests/models/bridgetower/test_modeling_bridgetower.py
++++ b/tests/models/bridgetower/test_modeling_bridgetower.py
+@@ -446,6 +446,10 @@ def test_inputs_embeds(self):
+     def test_inputs_embeds_matches_input_ids(self):
+         pass
+ 
++    @unittest.skip(reason="hidden states are concatenated as 3 tuples of text/image/cross")
++    def test_can_capture_specific_layers_hidden_states(self):
++        pass
++
+ 
+ # We will verify our results on an image of cute cats
+ def prepare_img():
+diff --git a/tests/models/maskformer/test_modeling_maskformer.py b/tests/models/maskformer/test_modeling_maskformer.py
+index 430d728727bc..cf291103f32e 100644
+--- a/tests/models/maskformer/test_modeling_maskformer.py
++++ b/tests/models/maskformer/test_modeling_maskformer.py
+@@ -489,6 +489,10 @@ def test_backbone_selection(self):
+             elif model.__class__.__name__ == "MaskFormerForUniversalSegmentation":
+                 self.assertEqual(model.model.pixel_level_module.encoder.out_indices, [1, 2, 3])
+ 
++    @unittest.skip(reason="hidden states are concatenated weirdly inside the model")
++    def test_can_capture_specific_layers_hidden_states(self):
++        pass
++
+ 
+ TOLERANCE = 2e-4
+ 
+diff --git a/tests/test_modeling_common.py b/tests/test_modeling_common.py
+index 7b0e294fda2d..b9e52733facc 100644
+--- a/tests/test_modeling_common.py
++++ b/tests/test_modeling_common.py
+@@ -5814,6 +5814,66 @@ def test_format_of_can_record_outputs(self):
+                             is_valid_recorder = isinstance(recorder, (str, type, OutputRecorder))
+                             self.assertTrue(is_valid_recorder, f"Invalid recorder: {recorder}")
+ 
++    def test_can_capture_specific_layers_hidden_states(self):
++        """
++        Test that we can capture only a subset of the hidden states with `output_hidden_states`.
++        """
++        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
++
++        for model_class in self.all_model_classes:
++            # Each individual model is a subtest
++            with self.subTest(model_class.__name__):
++                model = model_class(copy.deepcopy(config)).to(device=torch_device)
++                model.eval()
++
++                can_set_hidden_states_layers = any(
++                    "hidden_states" in (module._can_record_outputs or {})
++                    and not isinstance(module._can_record_outputs["hidden_states"], list)
++                    for module in model.modules()
++                    if isinstance(module, PreTrainedModel)
++                )
++                if not can_set_hidden_states_layers:
++                    self.skipTest(
++                        "Cannot capture hidden states, or cannot correctly set layer indices due to several classes capturing at the same time"
++                    )
++
++                # Prepare inputs
++                inputs = self._prepare_for_class(inputs_dict, model_class)
++
++                # Despite the previous skip based on decorators, some models do not propagate the outputs correctly.......
++                out = model(**inputs, output_hidden_states=True)
++                if "hidden_states" in out:
++                    hidden_states = out.hidden_states
++                elif "text_model_output" in out and "hidden_states" in out.text_model_output:
++                    hidden_states = out.text_model_output.hidden_states
++                else:
++                    self.skipTest(
++                        f"{model_class.__name__} does not propagate hidden states correctly or uses another name"
++                    )
++
++                skips_first_input = any(
++                    not module._can_record_outputs["hidden_states"].capture_initial_hidden_state
++                    for module in model.modules()
++                    if isinstance(module, PreTrainedModel)
++                    and hasattr(
++                        (module._can_record_outputs or {}).get("hidden_states", None), "capture_initial_hidden_state"
++                    )
++                )
++                N_layers = len(hidden_states) if skips_first_input else len(hidden_states) - 1
++                # Capture one every 2 layers
++                indices_to_capture = list(range(0, N_layers, 2))
++                out = model(**inputs, output_hidden_states=indices_to_capture)
++
++                hidden_states = out.hidden_states if "hidden_states" in out else out.text_model_output.hidden_states
++                # hidden_states = out.hidden_states
++                # We should have the same number of captured hidden_states, i.e. we do not add the first input
++                self.assertEqual(len(hidden_states), N_layers)
++                # assert we correctly captured the layers
++                self.assertTrue(all(hidden_states[i] is None for i in range(N_layers) if i not in indices_to_capture))
++                self.assertTrue(
++                    all(isinstance(hidden_states[i], torch.Tensor) for i in range(N_layers) if i in indices_to_capture)
++                )
++
+     @require_kernels
+     @require_torch_accelerator
+     def test_kernels_can_load_without_crashing(self):

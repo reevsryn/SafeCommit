@@ -1,0 +1,361 @@
+diff --git a/.claude/skills/understanding-streamlit-architecture/references/backend.md b/.claude/skills/understanding-streamlit-architecture/references/backend.md
+index d35ecabb8a0..27ee7f10037 100644
+--- a/.claude/skills/understanding-streamlit-architecture/references/backend.md
++++ b/.claude/skills/understanding-streamlit-architecture/references/backend.md
+@@ -149,7 +149,7 @@ register_widget(
+ 
+ **Lifecycle hooks**:
+ - `on_script_will_rerun()`: Process widget states from browser, run callbacks
+-- `on_script_finished()`: Clean up stale widgets not seen this run
++- `on_script_finished()`: Reset trigger widgets. Drop stale widgets not seen this run, except on `SCRIPT_STOPPED_FOR_RERUN`: `st.rerun()` can interrupt before later widgets register, so stale cleanup is deferred until the next completed run.
+ 
+ **Disabled widget enforcement**: `WidgetMetadata` carries a `disabled` flag (set via `register_widget(..., disabled=...)`). Because a disabled widget cannot be interacted with in the browser, this is enforced server-side to guard against a stale UI or a forged `BackMsg`: `SessionState.register_widget()` discards any incoming frontend value for a disabled widget (falling back to its previous value, or its default on first registration), and `_call_callbacks()` suppresses its `on_change`/`on_click` callback. Programmatic `st.session_state` assignments are still honored.
+ 
+diff --git a/e2e_playwright/st_rerun.py b/e2e_playwright/st_rerun.py
+index 5cf22fd20e1..01f3d469d23 100644
+--- a/e2e_playwright/st_rerun.py
++++ b/e2e_playwright/st_rerun.py
+@@ -107,3 +107,17 @@ def rerun_from_callback():
+ st.write(f"callback count: {st.session_state.callback_count}")
+ st.write(f"button in body: {button_value_in_body}")
+ st.write(f"resumed after rerun: {'resumed_after_rerun' in st.session_state}")
++
++# Widgets after a body-level st.rerun() must keep their values (GitHub issue #3533).
++select1 = st.radio("Select1", ["Egg", "Spam", "Bacon", "Sausage"], key="select1_after")
++st.write(f"Select1 write: {select1}")
++
++if st.button("body-level rerun"):
++    st.rerun()
++
++select2 = st.radio("Select2", ["Egg", "Spam", "Bacon", "Sausage"], key="select2_after")
++st.write(f"Select2 write: {select2}")
++select3 = st.radio("Select3", ["Egg", "Spam", "Bacon", "Sausage"], key="select3_after")
++st.write(f"Select3 write: {select3}")
++toggle_after = st.toggle("Toggle after rerun", key="toggle_after")
++st.write(f"toggle after write: {toggle_after}")
+diff --git a/e2e_playwright/st_rerun_test.py b/e2e_playwright/st_rerun_test.py
+index d0535f24248..b7c34148fa2 100644
+--- a/e2e_playwright/st_rerun_test.py
++++ b/e2e_playwright/st_rerun_test.py
+@@ -17,9 +17,13 @@
+ from e2e_playwright.conftest import wait_for_app_run
+ from e2e_playwright.shared.app_utils import (
+     click_button,
++    click_toggle,
+     expect_markdown,
+     expect_prefixed_markdown,
++    get_radio,
+     get_text_input,
++    get_toggle,
++    select_radio_option,
+     select_selectbox_option,
+ )
+ 
+@@ -34,6 +38,13 @@ def _expect_initial_reruns_count_text(app: Page):
+     expect_prefixed_markdown(app, "app run count:", "4")
+ 
+ 
++def _expect_body_level_rerun_widget_writes(app: Page):
++    expect_prefixed_markdown(app, "Select1 write:", "Spam", exact_match=True)
++    expect_prefixed_markdown(app, "Select2 write:", "Bacon", exact_match=True)
++    expect_prefixed_markdown(app, "Select3 write:", "Sausage", exact_match=True)
++    expect_prefixed_markdown(app, "toggle after write:", "True", exact_match=True)
++
++
+ def test_st_rerun_restarts_the_session_when_invoked(app: Page):
+     _expect_initial_reruns_finished(app)
+ 
+@@ -130,3 +141,39 @@ def test_st_rerun_in_widget_callback_preserves_widget_values(app: Page):
+     expect_prefixed_markdown(app, "callback count:", "2", exact_match=True)
+     expect_prefixed_markdown(app, "button in body:", "False", exact_match=True)
+     expect_prefixed_markdown(app, "callback text:", "hello", exact_match=True)
++
++
++def test_body_level_st_rerun_preserves_widget_values(app: Page):
++    """Widgets after a body-level st.rerun() keep their values and the UI matches.
++
++    Covers GitHub issue #3533: Python return values after the rerun used to reset
++    to defaults while the radio/toggle UI still showed the previous selection.
++    """
++    _expect_initial_reruns_finished(app)
++    _expect_initial_reruns_count_text(app)
++
++    select_radio_option(app, "Spam", label="Select1")
++    select_radio_option(app, "Bacon", label="Select2")
++    select_radio_option(app, "Sausage", label="Select3")
++    click_toggle(app, "Toggle after rerun")
++    _expect_body_level_rerun_widget_writes(app)
++
++    click_button(app, "body-level rerun")
++    _expect_body_level_rerun_widget_writes(app)
++
++    # Visible radio/toggle state must match the writes (no UI desync).
++    select2 = get_radio(app, "Select2")
++    expect(select2.get_by_role("radio", name="Bacon")).to_be_checked()
++    expect(select2.get_by_role("radio", name="Egg")).not_to_be_checked()
++    expect(
++        get_radio(app, "Select3").get_by_role("radio", name="Sausage")
++    ).to_be_checked()
++    expect(get_toggle(app, "Toggle after rerun").locator("input")).to_be_checked()
++
++    # 4 initial + 3 radios + 1 toggle + 2 for click-and-rerun. Use an
++    # auto-waiting count so we do not snapshot the interrupted run.
++    expect_prefixed_markdown(app, "app run count:", "10", exact_match=True)
++
++    click_button(app, "body-level rerun")
++    expect_prefixed_markdown(app, "app run count:", "12", exact_match=True)
++    _expect_body_level_rerun_widget_writes(app)
+diff --git a/lib/streamlit/runtime/scriptrunner/script_runner.py b/lib/streamlit/runtime/scriptrunner/script_runner.py
+index cc14cd1d3eb..a0975a0645b 100644
+--- a/lib/streamlit/runtime/scriptrunner/script_runner.py
++++ b/lib/streamlit/runtime/scriptrunner/script_runner.py
+@@ -902,11 +902,17 @@ def _on_script_finished(
+         with self._join_wake_lock:
+             self._join_wake_coordinator = None
+ 
+-        # Tell session_state to update itself in response
+         if not premature_stop:
+             self._session_state.on_script_finished(
+                 ctx.shared.widget_ids_this_run.snapshot(),
+-                remove_stale_widgets=ctx.has_script_started,
++                # Skip stale-widget cleanup when this run stopped for a rerun.
++                # st.rerun() can interrupt before later widgets register, so
++                # widget_ids_this_run would treat them as stale. The next run
++                # that completes still drops widgets that were not re-registered.
++                remove_stale_widgets=(
++                    ctx.has_script_started
++                    and event != ScriptRunnerEvent.SCRIPT_STOPPED_FOR_RERUN
++                ),
+             )
+ 
+         # Signal that the script has finished. (We use SCRIPT_STOPPED_WITH_SUCCESS
+diff --git a/lib/streamlit/runtime/state/session_state.py b/lib/streamlit/runtime/state/session_state.py
+index a7eaf24ce2f..65f74acc6f3 100644
+--- a/lib/streamlit/runtime/state/session_state.py
++++ b/lib/streamlit/runtime/state/session_state.py
+@@ -1267,11 +1267,15 @@ def on_script_finished(
+             run. Any widget state whose ID does *not* appear in this set
+             is considered "stale" and will be removed.
+         remove_stale_widgets: bool
+-            Whether to drop the stale widget state. Pass False when the run
+-            never executed its body, since no widget re-registered and every
+-            widget would look stale. The next run that renders cleans up
+-            instead. Triggers still reset either way, so a fired callback's
+-            event is never delivered twice.
++            Whether to drop stale widget state. Pass False when
++            ``widget_ids_this_run`` is incomplete:
++
++            - the body never ran, or
++            - ``st.rerun()`` interrupted the run before later widgets registered.
++
++            The next completed run removes stale widgets instead. SessionState
++            still resets triggers either way, so a fired callback's event is
++            never delivered twice.
+         """
+         self._reset_triggers()
+         if remove_stale_widgets:
+diff --git a/lib/streamlit/testing/v1/local_script_runner.py b/lib/streamlit/testing/v1/local_script_runner.py
+index f30eb5e4de5..2c0e4fc5ec9 100644
+--- a/lib/streamlit/testing/v1/local_script_runner.py
++++ b/lib/streamlit/testing/v1/local_script_runner.py
+@@ -170,10 +170,16 @@ def script_stopped(self) -> bool:
+     def _on_script_finished(
+         self, ctx: ScriptRunContext, event: ScriptRunnerEvent, premature_stop: bool
+     ) -> None:
++        # Do not drop unseen widgets when the script stopped for a rerun
++        # (later widgets never registered). Keep this gate in sync with
++        # ScriptRunner._on_script_finished.
+         if not premature_stop:
+             self._session_state.on_script_finished(
+                 ctx.shared.widget_ids_this_run.snapshot(),
+-                remove_stale_widgets=ctx.has_script_started,
++                remove_stale_widgets=(
++                    ctx.has_script_started
++                    and event != ScriptRunnerEvent.SCRIPT_STOPPED_FOR_RERUN
++                ),
+             )
+ 
+         # Signal that the script has finished. (We use SCRIPT_STOPPED_WITH_SUCCESS
+diff --git a/lib/tests/streamlit/runtime/scriptrunner/script_runner_test.py b/lib/tests/streamlit/runtime/scriptrunner/script_runner_test.py
+index 27cbf6466f3..7aab28325d0 100644
+--- a/lib/tests/streamlit/runtime/scriptrunner/script_runner_test.py
++++ b/lib/tests/streamlit/runtime/scriptrunner/script_runner_test.py
+@@ -1334,6 +1334,50 @@ def test_orphan_cleanup_runs_when_body_ran(self):
+         Runtime._instance.media_file_mgr.remove_orphaned_files.assert_called_once()
+         Runtime._instance.dataframe_source_mgr.remove_orphaned_sources.assert_called_once()
+ 
++    def test_stale_widget_removal_skipped_when_stopped_for_rerun(self):
++        """A run stopped for rerun must reset triggers without dropping widgets.
++
++        Later widgets never registered, so ``widget_ids_this_run`` is incomplete.
++        ``on_script_finished`` still runs so button triggers reset.
++        """
++        scriptrunner = TestScriptRunner("good_script.py")
++        with patch.object(
++            SessionState, "on_script_finished"
++        ) as mock_on_script_finished:
++            scriptrunner._on_script_finished(
++                _finished_run_ctx(has_script_started=True),
++                ScriptRunnerEvent.SCRIPT_STOPPED_FOR_RERUN,
++                premature_stop=False,
++            )
++
++        mock_on_script_finished.assert_called_once()
++        assert mock_on_script_finished.call_args.kwargs["remove_stale_widgets"] is False
++
++    @parameterized.expand(
++        [
++            (ScriptRunnerEvent.SCRIPT_STOPPED_WITH_SUCCESS,),
++            (ScriptRunnerEvent.FRAGMENT_STOPPED_WITH_SUCCESS,),
++        ]
++    )
++    def test_stale_widget_removal_runs_when_script_completes(self, event):
++        """The counterpart to the skip case above.
++
++        Without this, a gate stuck at False would leak stale widget state after
++        every completed run while the skip test kept passing.
++        """
++        scriptrunner = TestScriptRunner("good_script.py")
++        with patch.object(
++            SessionState, "on_script_finished"
++        ) as mock_on_script_finished:
++            scriptrunner._on_script_finished(
++                _finished_run_ctx(has_script_started=True),
++                event,
++                premature_stop=False,
++            )
++
++        mock_on_script_finished.assert_called_once()
++        assert mock_on_script_finished.call_args.kwargs["remove_stale_widgets"] is True
++
+     def test_dg_stack_preserved_for_fragment_rerun(self):
+         """Tests that the dg_stack and cursor are preserved for a fragment rerun.
+ 
+diff --git a/lib/tests/streamlit/runtime/state/session_state_test.py b/lib/tests/streamlit/runtime/state/session_state_test.py
+index 9d701fa9f1f..3247f6b8d4e 100644
+--- a/lib/tests/streamlit/runtime/state/session_state_test.py
++++ b/lib/tests/streamlit/runtime/state/session_state_test.py
+@@ -642,6 +642,123 @@ def on_click():
+     assert at.session_state["clicks"] == 2
+ 
+ 
++def test_body_level_rerun_keeps_widget_values() -> None:
++    """Widgets after a body-level st.rerun() must keep the values set this run.
++
++    ``st.rerun()`` stops the script before later widgets register, so
++    ``widget_ids_this_run`` is incomplete. Dropping those ids would re-seed
++    them from defaults on the follow-up run (GitHub issue #3533).
++    """
++
++    def script():
++        import streamlit as st
++
++        st.radio("Select1", ["Egg", "Spam", "Bacon", "Sausage"], key="select1")
++        if st.button("Rerun"):
++            st.rerun()
++        st.radio("Select2", ["Egg", "Spam", "Bacon", "Sausage"], key="select2")
++        st.radio("Select3", ["Egg", "Spam", "Bacon", "Sausage"], key="select3")
++        st.toggle("Toggle after rerun", key="toggle_after")
++
++    at = AppTest.from_function(script).run()
++    at.radio(key="select1").set_value("Spam").run()
++    at.radio(key="select2").set_value("Bacon").run()
++    at.radio(key="select3").set_value("Sausage").run()
++    at.toggle(key="toggle_after").set_value(True).run()
++
++    at.button[0].click().run()
++
++    assert at.radio(key="select1").value == "Spam"
++    assert at.radio(key="select2").value == "Bacon"
++    assert at.radio(key="select3").value == "Sausage"
++    assert at.toggle(key="toggle_after").value is True
++    assert at.session_state["select1"] == "Spam"
++    assert at.session_state["select2"] == "Bacon"
++    assert at.session_state["select3"] == "Sausage"
++    assert at.session_state["toggle_after"] is True
++
++
++def test_body_level_rerun_resets_triggers() -> None:
++    """A body-level st.rerun() from a button must not loop.
++
++    ``st.rerun()`` counts as a script completion so triggers reset (see
++    ``exec_func_with_error_handling``). The follow-up body belongs to a new
++    interaction and must see the button as False.
++    """
++
++    def script():
++        import streamlit as st
++
++        st.session_state["body_runs"] = st.session_state.get("body_runs", 0) + 1
++        clicked = st.button("Rerun")
++        st.session_state["body_saw_click"] = clicked
++        if clicked:
++            st.rerun()
++
++    at = AppTest.from_function(script).run()
++    assert at.session_state["body_runs"] == 1
++
++    at.button[0].click().run()
++    # Click runs the body once, then st.rerun() runs it again.
++    assert at.session_state["body_runs"] == 3
++    assert at.session_state["body_saw_click"] is False
++
++    # The trigger is not stuck: a second click still advances the body.
++    at.button[0].click().run()
++    assert at.session_state["body_runs"] == 5
++
++
++def test_st_rerun_inside_fragment_keeps_widget_values() -> None:
++    """A widget after st.rerun() inside a fragment must keep its value.
++
++    Same incomplete ``widget_ids_this_run`` as the body-level case; the
++    rerun originates inside a fragment (GitHub issue #11266).
++    """
++
++    def script():
++        import streamlit as st
++
++        @st.fragment
++        def my_fragment():
++            if st.button("Rerun"):
++                st.rerun()
++            st.text_input("t", value="foo", key="t")
++
++        my_fragment()
++
++    at = AppTest.from_function(script).run()
++    at.text_input(key="t").input("bar").run()
++    assert at.text_input(key="t").value == "bar"
++
++    at.button[0].click().run()
++    assert at.text_input(key="t").value == "bar"
++    assert at.session_state["t"] == "bar"
++
++
++def test_follow_up_completed_run_drops_unrendered_widgets() -> None:
++    """A widget hidden on the follow-up completed run is still dropped.
++
++    The interrupted ``st.rerun()`` defers stale cleanup; the next run that
++    completes must still remove widgets that were not re-registered.
++    """
++
++    def script():
++        import streamlit as st
++
++        if not st.session_state.get("hide"):
++            st.text_input("hidden", key="hidden")
++            if st.button("Rerun"):
++                st.session_state["hide"] = True
++                st.rerun()
++
++    at = AppTest.from_function(script).run()
++    at.text_input(key="hidden").input("keep?").run()
++    assert at.session_state["hidden"] == "keep?"
++
++    at.button[0].click().run()
++    assert "hidden" not in at.session_state
++
++
+ def test_callback_rerun_does_not_abort_other_callbacks() -> None:
+     """One callback's st.rerun() must not silently kill the others in the interaction.
+ 

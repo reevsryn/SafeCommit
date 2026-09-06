@@ -1,0 +1,341 @@
+diff --git a/.github/pr-push.yml b/.github/pr-push.yml
+index 1591365077b20..b1193b0768ce5 100644
+--- a/.github/pr-push.yml
++++ b/.github/pr-push.yml
+@@ -1,2 +1,3 @@
+ workflows:
+   - .github/workflows/pre-commit.yml
++  - .github/workflows/translate.yml
+diff --git a/.github/workflows/translate.yml b/.github/workflows/translate.yml
+index 1e3ed9e7c0f0b..50720e8875f4f 100644
+--- a/.github/workflows/translate.yml
++++ b/.github/workflows/translate.yml
+@@ -13,6 +13,7 @@ on:
+       command:
+         description: Command to run
+         type: choice
++        required: true
+         options:
+           - translate-page
+           - translate-lang
+@@ -23,18 +24,12 @@ on:
+       language:
+         description: Language to translate to as a letter code (e.g. "es" for Spanish)
+         type: string
+-        required: false
+-        default: ""
++        required: true
+       en_path:
+         description: File path in English to translate (e.g. docs/en/docs/index.md)
+         type: string
+         required: false
+         default: ""
+-      commit_in_place:
+-        description: Commit changes directly instead of making a PR
+-        type: boolean
+-        required: false
+-        default: false
+       max:
+         description: Maximum number of items to translate (e.g. 10)
+         type: number
+@@ -130,9 +125,11 @@ jobs:
+           COMMAND: ${{ matrix.command }}
+           MAX: ${{ github.event.inputs.max }}
+       - name: Get PR Submit token
++        if: github.event_name == 'schedule'
+         id: pr-submit
+         uses: tiangolo/pr-submit@d802fdf59bde80bc3eb8bd3259f4cbeec63de4aa # 0.0.1
+       - name: Create pull request
++        if: github.event_name == 'schedule'
+         run: |
+           gh auth setup-git
+           uv run ./scripts/translate.py make-pr
+@@ -140,3 +137,16 @@ jobs:
+           GITHUB_TOKEN: ${{ steps.pr-submit.outputs.token }}
+           LANGUAGE: ${{ matrix.lang }}
+           COMMAND: ${{ matrix.command }}
++      - name: Get PR Push token
++        if: github.event_name == 'workflow_dispatch'
++        id: pr-push
++        uses: tiangolo/pr-push@f336b3817f32ea9b8273a8c15f8ecb739ac38167 # 0.0.4
++      - name: Commit and push changes
++        if: github.event_name == 'workflow_dispatch'
++        env:
++          COMMAND: ${{ matrix.command }}
++          GH_TOKEN: ${{ steps.pr-push.outputs.token }}
++          LANGUAGE: ${{ matrix.lang }}
++        run: |
++          gh auth setup-git
++          uv run ./scripts/translate.py push
+diff --git a/scripts/translate.py b/scripts/translate.py
+index a6aacec511a1b..d947bcaf4058f 100644
+--- a/scripts/translate.py
++++ b/scripts/translate.py
+@@ -1,6 +1,5 @@
+ import json
+ import secrets
+-import subprocess
+ from collections.abc import Iterable
+ from functools import lru_cache
+ from os import sep as pathsep
+@@ -10,11 +9,16 @@
+ import git
+ import typer
+ import yaml
+-from doc_parsing_utils import check_translation
+ from github import Github
+ from pydantic_ai import Agent
+ from rich import print
+ 
++from scripts.doc_parsing_utils import check_translation
++from scripts.translation_git import (
++    commit_translation_changes,
++    has_translation_changes,
++)
++
+ non_translated_sections = (
+     f"reference{pathsep}",
+     "release-notes.md",
+@@ -31,6 +35,7 @@
+ general_prompt = general_prompt_path.read_text(encoding="utf-8")
+ 
+ app = typer.Typer()
++repository_path = Path(__file__).absolute().parent.parent
+ 
+ 
+ @lru_cache
+@@ -421,64 +426,61 @@ def make_pr(
+     command: Annotated[str | None, typer.Option(envvar="COMMAND")] = None,
+     github_token: Annotated[str, typer.Option(envvar="GITHUB_TOKEN")],
+     github_repository: Annotated[str, typer.Option(envvar="GITHUB_REPOSITORY")],
+-    commit_in_place: Annotated[
+-        bool, typer.Option(envvar="COMMIT_IN_PLACE", show_default=True)
+-    ] = False,
+ ) -> None:
+-    print("Setting up GitHub Actions git user")
+-    repo = git.Repo(Path(__file__).absolute().parent.parent)
+-    if not repo.is_dirty(untracked_files=True):
+-        print("Repository is clean, no changes to commit")
++    repo = git.Repo(repository_path)
++    if not has_translation_changes(repository_path):
++        print("No translation changes to commit")
+         return
+-    subprocess.run(["git", "config", "user.name", "pr-submit[bot]"], check=True)
+-    subprocess.run(
+-        ["git", "config", "user.email", "pr-submit[bot]@users.noreply.github.com"],
+-        check=True,
+-    )
+-    current_branch = repo.active_branch.name
+-    if current_branch == "master" and commit_in_place:
+-        print("Can't commit directly to master")
+-        raise typer.Exit(code=1)
+-    if not commit_in_place:
+-        branch_name = "translate"
+-        if language:
+-            branch_name += f"-{language}"
+-        if command:
+-            branch_name += f"-{command}"
+-        branch_name += f"-{secrets.token_hex(4)}"
+-        print(f"Creating a new branch {branch_name}")
+-        subprocess.run(["git", "checkout", "-b", branch_name], check=True)
+-    else:
+-        branch_name = current_branch
+-        print(f"Committing in place on branch {branch_name}")
+-    print("Adding updated files")
+-    git_path = Path("docs")
+-    subprocess.run(["git", "add", str(git_path)], check=True)
+-    print("Committing updated file")
+-    message = "🌐 Update translations"
++    branch_name = "translate"
+     if language:
+-        message += f" for {language}"
++        branch_name += f"-{language}"
+     if command:
+-        message += f" ({command})"
+-    subprocess.run(["git", "commit", "-m", message], check=True)
++        branch_name += f"-{command}"
++    branch_name += f"-{secrets.token_hex(4)}"
++    print(f"Creating a new branch {branch_name}")
++    repo.git.checkout("-b", branch_name)
++    message = commit_translation_changes(
++        repo_path=repository_path,
++        bot_name="pr-submit[bot]",
++        language=language,
++        command=command,
++    )
++    assert message is not None
+     print("Pushing branch")
+-    subprocess.run(["git", "push", "origin", branch_name], check=True)
+-    if not commit_in_place:
+-        print("Creating PR")
+-        g = Github(github_token)
+-        gh_repo = g.get_repo(github_repository)
+-        body = (
+-            message
+-            + "\n\nThis PR was created automatically using LLMs."
+-            + f"\n\nIt uses the prompt file https://github.com/fastapi/fastapi/blob/master/docs/{language}/llm-prompt.md."
+-            + "\n\nIn most cases, it's better to make PRs updating that file so that the LLM can do a better job generating the translations than suggesting changes in this PR."
+-        )
+-        pr = gh_repo.create_pull(
+-            title=message, body=body, base="master", head=branch_name
+-        )
+-        print(f"Created PR: {pr.number}")
++    repo.git.push("origin", branch_name)
++    print("Creating PR")
++    g = Github(github_token)
++    gh_repo = g.get_repo(github_repository)
++    body = (
++        message
++        + "\n\nThis PR was created automatically using LLMs."
++        + f"\n\nIt uses the prompt file https://github.com/fastapi/fastapi/blob/master/docs/{language}/llm-prompt.md."
++        + "\n\nIn most cases, it's better to make PRs updating that file so that the LLM can do a better job generating the translations than suggesting changes in this PR."
++    )
++    pr = gh_repo.create_pull(title=message, body=body, base="master", head=branch_name)
++    print(f"Created PR: {pr.number}")
+     print("Finished")
+ 
+ 
++@app.command()
++def push(
++    *,
++    language: Annotated[str | None, typer.Option(envvar="LANGUAGE")] = None,
++    command: Annotated[str | None, typer.Option(envvar="COMMAND")] = None,
++    github_ref_name: Annotated[str, typer.Option(envvar="GITHUB_REF_NAME")],
++) -> None:
++    repo = git.Repo(repository_path)
++    message = commit_translation_changes(
++        repo_path=repository_path,
++        bot_name="pr-push[bot]",
++        language=language,
++        command=command,
++    )
++    if message is None:
++        return
++    print(f"Pushing changes to {github_ref_name}")
++    repo.git.push("origin", f"HEAD:{github_ref_name}")
++
++
+ if __name__ == "__main__":
+     app()
+diff --git a/scripts/translation_git.py b/scripts/translation_git.py
+new file mode 100644
+index 0000000000000..aa6484cc0af12
+--- /dev/null
++++ b/scripts/translation_git.py
+@@ -0,0 +1,47 @@
++import subprocess
++from pathlib import Path
++
++
++def has_translation_changes(repo_path: Path) -> bool:
++    result = subprocess.run(
++        ["git", "status", "--porcelain", "--", "docs"],
++        cwd=repo_path,
++        check=True,
++        capture_output=True,
++        encoding="utf-8",
++    )
++    return bool(result.stdout)
++
++
++def commit_translation_changes(
++    *,
++    repo_path: Path,
++    bot_name: str,
++    language: str | None,
++    command: str | None,
++) -> str | None:
++    if not has_translation_changes(repo_path):
++        print("No translation changes to commit")
++        return None
++    print("Setting up GitHub App git user")
++    subprocess.run(["git", "config", "user.name", bot_name], cwd=repo_path, check=True)
++    subprocess.run(
++        [
++            "git",
++            "config",
++            "user.email",
++            f"{bot_name}@users.noreply.github.com",
++        ],
++        cwd=repo_path,
++        check=True,
++    )
++    print("Adding updated files")
++    subprocess.run(["git", "add", "docs"], cwd=repo_path, check=True)
++    message = "🌐 Update translations"
++    if language:
++        message += f" for {language}"
++    if command:
++        message += f" ({command})"
++    print("Committing updated files")
++    subprocess.run(["git", "commit", "-m", message], cwd=repo_path, check=True)
++    return message
+diff --git a/tests/test_translate.py b/tests/test_translate.py
+new file mode 100644
+index 0000000000000..74c4cd5316801
+--- /dev/null
++++ b/tests/test_translate.py
+@@ -0,0 +1,63 @@
++import subprocess
++from pathlib import Path
++
++from scripts.translation_git import commit_translation_changes
++
++
++def run_git(repo_path: Path, *args: str) -> str:
++    result = subprocess.run(
++        ["git", *args],
++        cwd=repo_path,
++        check=True,
++        capture_output=True,
++        encoding="utf-8",
++    )
++    return result.stdout.strip()
++
++
++def test_commit_translation_changes(tmp_path: Path) -> None:
++    run_git(tmp_path, "init")
++    run_git(tmp_path, "config", "user.name", "Test User")
++    run_git(tmp_path, "config", "user.email", "test@example.com")
++    run_git(tmp_path, "config", "commit.gpgsign", "false")
++    docs_path = tmp_path / "docs"
++    docs_path.mkdir()
++    translation_path = docs_path / "translation.md"
++    translation_path.write_text("Original\n")
++    unrelated_path = tmp_path / "unrelated.txt"
++    unrelated_path.write_text("Original\n")
++    run_git(tmp_path, "add", ".")
++    run_git(tmp_path, "commit", "-m", "Initial commit")
++    translation_path.write_text("Translated\n")
++    unrelated_path.write_text("Unrelated change\n")
++
++    message = commit_translation_changes(
++        repo_path=tmp_path,
++        bot_name="pr-push[bot]",
++        language="es",
++        command="update-outdated",
++    )
++
++    assert message == "🌐 Update translations for es (update-outdated)"
++    assert run_git(tmp_path, "log", "-1", "--format=%s") == message
++    assert run_git(tmp_path, "log", "-1", "--format=%an") == "pr-push[bot]"
++    assert (
++        run_git(tmp_path, "log", "-1", "--format=%ae")
++        == "pr-push[bot]@users.noreply.github.com"
++    )
++    assert (
++        run_git(tmp_path, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
++        == "docs/translation.md"
++    )
++    assert run_git(tmp_path, "diff", "--name-only") == "unrelated.txt"
++    commit_sha = run_git(tmp_path, "rev-parse", "HEAD")
++
++    result = commit_translation_changes(
++        repo_path=tmp_path,
++        bot_name="pr-push[bot]",
++        language="es",
++        command="update-outdated",
++    )
++
++    assert result is None
++    assert run_git(tmp_path, "rev-parse", "HEAD") == commit_sha

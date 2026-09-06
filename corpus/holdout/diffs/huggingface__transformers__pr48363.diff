@@ -1,0 +1,550 @@
+diff --git a/src/transformers/masking_utils.py b/src/transformers/masking_utils.py
+index 7bd46c8bb287..0b6ea5e01945 100644
+--- a/src/transformers/masking_utils.py
++++ b/src/transformers/masking_utils.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ from collections.abc import Callable
++from functools import partial
+ 
+ import torch
+ import torch.nn.functional as F
+@@ -1511,7 +1512,8 @@ def create_recurrent_attention_mask(
+     "compressed_sparse_attention": create_sliding_window_causal_mask,
+     "heavily_compressed_attention": create_sliding_window_causal_mask,
+     "minimax_m3_sparse": create_causal_mask,
+-    "deepseek_sparse_attention": create_causal_mask,
++    # DSA always needs to materialize the mask to account for causality (no SDPA `is_cauasal` shortcut)
++    "deepseek_sparse_attention": partial(create_causal_mask, allow_is_causal_skip=False),
+     "qwen_sparse_attention": create_causal_mask,
+     "linear_attention": create_recurrent_attention_mask,
+     "conv": create_recurrent_attention_mask,
+diff --git a/src/transformers/models/axk2/modeling_axk2.py b/src/transformers/models/axk2/modeling_axk2.py
+index a9e5238eafa9..4eaa88d5d435 100644
+--- a/src/transformers/models/axk2/modeling_axk2.py
++++ b/src/transformers/models/axk2/modeling_axk2.py
+@@ -228,8 +228,8 @@ def forward(
+         hidden_states: torch.Tensor,
+         q_resid: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
+-        position_ids: torch.Tensor,
++        attention_mask: torch.Tensor,
++        position_ids: torch.Tensor,  # Kept for BC
+         past_key_values: Cache | None = None,
+     ) -> torch.Tensor:
+         """
+@@ -279,12 +279,10 @@ def forward(
+         index_scores = torch.matmul(weights.unsqueeze(-2), scores).squeeze(-2)
+ 
+         # Causality needs to be taken into account when computing scores so padding tokens don't affect computation
+-        if attention_mask is not None:
+-            index_scores = index_scores + attention_mask
++        if attention_mask.dtype == torch.bool:
++            index_scores = index_scores.masked_fill(~attention_mask, float("-inf"))
+         else:
+-            key_positions = torch.arange(index_scores.shape[-1], device=index_scores.device)
+-            causal = key_positions[None, None, :] > position_ids[:, :, None]  # [B, S, T]
+-            index_scores = index_scores.masked_fill(causal, float("-inf"))
++            index_scores = index_scores + attention_mask
+ 
+         topk = min(self.index_topk, index_scores.shape[-1])
+         return index_scores.topk(topk, dim=-1).indices.to(torch.int32)  # [B, S, topk]
+@@ -588,7 +586,7 @@ def forward(
+         self,
+         hidden_states: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
++        attention_mask: torch.Tensor,
+         past_key_values: Cache | None = None,
+         position_ids: torch.Tensor | None = None,
+         **kwargs: Unpack[FlashAttentionKwargs],
+@@ -625,13 +623,12 @@ def forward(
+             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+ 
+         # The indexer scores against a 3D `[B, S, T]` mask; the attention mask is 4D `[B, 1, S, T]`.
+-        indexer_mask = attention_mask[:, 0, :, :] if attention_mask is not None else None
+         topk_indices = self.indexer(
+             hidden_states,
+             q_resid,
+             position_embeddings,
+-            indexer_mask,
+-            position_ids,
++            attention_mask[:, 0, :, :],
++            position_ids,  # Kept for BC
+             past_key_values=past_key_values,
+         )
+ 
+@@ -642,11 +639,11 @@ def forward(
+                 .scatter(-1, topk_indices.long(), False)
+                 .unsqueeze(1)
+             )
+-            if attention_mask is None:
+-                key_positions = torch.arange(key_states.shape[2], device=hidden_states.device)
+-                index_mask = index_mask | (key_positions[None, None, None, :] > position_ids[:, None, :, None])
+-                attention_mask = hidden_states.new_zeros((batch_size, 1, seq_length, key_states.shape[2]))
+-            attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
++
++            if attention_mask.dtype == torch.bool:
++                attention_mask = attention_mask & ~index_mask
++            else:
++                attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
+         else:
+             sparse_indices = topk_indices
+ 
+@@ -803,6 +800,7 @@ def forward(
+                 "attention_mask": attention_mask,
+                 "past_key_values": past_key_values,
+                 "position_ids": position_ids,
++                "allow_is_causal_skip": False,  # Always force creation to account for causality in the indexer
+             }
+             causal_mask_mapping = {"deepseek_sparse_attention": create_causal_mask(**mask_kwargs)}
+ 
+diff --git a/src/transformers/models/axk2/modular_axk2.py b/src/transformers/models/axk2/modular_axk2.py
+index 4bd767cb9d79..92b9d6ba35c1 100644
+--- a/src/transformers/models/axk2/modular_axk2.py
++++ b/src/transformers/models/axk2/modular_axk2.py
+@@ -315,7 +315,7 @@ def forward(
+         self,
+         hidden_states: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
++        attention_mask: torch.Tensor,
+         past_key_values: Cache | None = None,
+         position_ids: torch.Tensor | None = None,
+         **kwargs: Unpack[FlashAttentionKwargs],
+@@ -352,13 +352,12 @@ def forward(
+             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+ 
+         # The indexer scores against a 3D `[B, S, T]` mask; the attention mask is 4D `[B, 1, S, T]`.
+-        indexer_mask = attention_mask[:, 0, :, :] if attention_mask is not None else None
+         topk_indices = self.indexer(
+             hidden_states,
+             q_resid,
+             position_embeddings,
+-            indexer_mask,
+-            position_ids,
++            attention_mask[:, 0, :, :],
++            position_ids,  # Kept for BC
+             past_key_values=past_key_values,
+         )
+ 
+@@ -369,11 +368,11 @@ def forward(
+                 .scatter(-1, topk_indices.long(), False)
+                 .unsqueeze(1)
+             )
+-            if attention_mask is None:
+-                key_positions = torch.arange(key_states.shape[2], device=hidden_states.device)
+-                index_mask = index_mask | (key_positions[None, None, None, :] > position_ids[:, None, :, None])
+-                attention_mask = hidden_states.new_zeros((batch_size, 1, seq_length, key_states.shape[2]))
+-            attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
++
++            if attention_mask.dtype == torch.bool:
++                attention_mask = attention_mask & ~index_mask
++            else:
++                attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
+         else:
+             sparse_indices = topk_indices
+ 
+diff --git a/src/transformers/models/deepseek_v32/modeling_deepseek_v32.py b/src/transformers/models/deepseek_v32/modeling_deepseek_v32.py
+index 8bf0f009b1a5..1607ec844463 100644
+--- a/src/transformers/models/deepseek_v32/modeling_deepseek_v32.py
++++ b/src/transformers/models/deepseek_v32/modeling_deepseek_v32.py
+@@ -194,8 +194,8 @@ def forward(
+         hidden_states: torch.Tensor,
+         q_resid: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
+-        position_ids: torch.Tensor,
++        attention_mask: torch.Tensor,
++        position_ids: torch.Tensor,  # Kept for BC
+         past_key_values: Cache | None = None,
+     ) -> torch.Tensor:
+         """
+@@ -245,12 +245,10 @@ def forward(
+         index_scores = torch.matmul(weights.unsqueeze(-2), scores).squeeze(-2)
+ 
+         # Causality needs to be taken into account when computing scores so padding tokens don't affect computation
+-        if attention_mask is not None:
+-            index_scores = index_scores + attention_mask
++        if attention_mask.dtype == torch.bool:
++            index_scores = index_scores.masked_fill(~attention_mask, float("-inf"))
+         else:
+-            key_positions = torch.arange(index_scores.shape[-1], device=index_scores.device)
+-            causal = key_positions[None, None, :] > position_ids[:, :, None]  # [B, S, T]
+-            index_scores = index_scores.masked_fill(causal, float("-inf"))
++            index_scores = index_scores + attention_mask
+ 
+         topk = min(self.index_topk, index_scores.shape[-1])
+         return index_scores.topk(topk, dim=-1).indices.to(torch.int32)  # [B, S, topk]
+@@ -433,7 +431,7 @@ def forward(
+         self,
+         hidden_states: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
++        attention_mask: torch.Tensor,
+         past_key_values: Cache | None = None,
+         position_ids: torch.Tensor | None = None,
+         **kwargs: Unpack[FlashAttentionKwargs],
+@@ -462,9 +460,13 @@ def forward(
+             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+ 
+         # The indexer scores against a 3D `[B, S, T]` mask; the attention mask is 4D `[B, 1, S, T]`.
+-        indexer_mask = attention_mask[:, 0, :, :] if attention_mask is not None else None
+         topk_indices = self.indexer(
+-            hidden_states, q_resid, position_embeddings, indexer_mask, position_ids, past_key_values=past_key_values
++            hidden_states,
++            q_resid,
++            position_embeddings,
++            attention_mask[:, 0, :, :],
++            position_ids,  # Kept for BC
++            past_key_values=past_key_values,
+         )  # [B, S, topk]
+ 
+         sparse_indices = None
+@@ -475,11 +477,11 @@ def forward(
+                 .scatter(-1, topk_indices.long(), False)
+                 .unsqueeze(1)
+             )  # [B, 1, S, T]; True = masked
+-            if attention_mask is None:
+-                key_positions = torch.arange(key_states.shape[2], device=hidden_states.device)
+-                index_mask = index_mask | (key_positions[None, None, None, :] > position_ids[:, None, :, None])
+-                attention_mask = hidden_states.new_zeros((batch_size, 1, seq_length, key_states.shape[2]))
+-            attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
++
++            if attention_mask.dtype == torch.bool:
++                attention_mask = attention_mask & ~index_mask
++            else:
++                attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
+         else:
+             sparse_indices = topk_indices
+ 
+@@ -752,6 +754,7 @@ def forward(
+                 "attention_mask": attention_mask,
+                 "past_key_values": past_key_values,
+                 "position_ids": position_ids,
++                "allow_is_causal_skip": False,  # Always force creation to account for causality in the indexer
+             }
+             causal_mask_mapping = {"deepseek_sparse_attention": create_causal_mask(**mask_kwargs)}
+ 
+diff --git a/src/transformers/models/deepseek_v32/modular_deepseek_v32.py b/src/transformers/models/deepseek_v32/modular_deepseek_v32.py
+index 4025511daa2a..cf4689b944f9 100644
+--- a/src/transformers/models/deepseek_v32/modular_deepseek_v32.py
++++ b/src/transformers/models/deepseek_v32/modular_deepseek_v32.py
+@@ -208,8 +208,8 @@ def forward(
+         hidden_states: torch.Tensor,
+         q_resid: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
+-        position_ids: torch.Tensor,
++        attention_mask: torch.Tensor,
++        position_ids: torch.Tensor,  # Kept for BC
+         past_key_values: Cache | None = None,
+     ) -> torch.Tensor:
+         """
+@@ -259,12 +259,10 @@ def forward(
+         index_scores = torch.matmul(weights.unsqueeze(-2), scores).squeeze(-2)
+ 
+         # Causality needs to be taken into account when computing scores so padding tokens don't affect computation
+-        if attention_mask is not None:
+-            index_scores = index_scores + attention_mask
++        if attention_mask.dtype == torch.bool:
++            index_scores = index_scores.masked_fill(~attention_mask, float("-inf"))
+         else:
+-            key_positions = torch.arange(index_scores.shape[-1], device=index_scores.device)
+-            causal = key_positions[None, None, :] > position_ids[:, :, None]  # [B, S, T]
+-            index_scores = index_scores.masked_fill(causal, float("-inf"))
++            index_scores = index_scores + attention_mask
+ 
+         topk = min(self.index_topk, index_scores.shape[-1])
+         return index_scores.topk(topk, dim=-1).indices.to(torch.int32)  # [B, S, topk]
+@@ -284,7 +282,7 @@ def forward(
+         self,
+         hidden_states: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
++        attention_mask: torch.Tensor,
+         past_key_values: Cache | None = None,
+         position_ids: torch.Tensor | None = None,
+         **kwargs: Unpack[FlashAttentionKwargs],
+@@ -313,9 +311,13 @@ def forward(
+             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+ 
+         # The indexer scores against a 3D `[B, S, T]` mask; the attention mask is 4D `[B, 1, S, T]`.
+-        indexer_mask = attention_mask[:, 0, :, :] if attention_mask is not None else None
+         topk_indices = self.indexer(
+-            hidden_states, q_resid, position_embeddings, indexer_mask, position_ids, past_key_values=past_key_values
++            hidden_states,
++            q_resid,
++            position_embeddings,
++            attention_mask[:, 0, :, :],
++            position_ids,  # Kept for BC
++            past_key_values=past_key_values,
+         )  # [B, S, topk]
+ 
+         sparse_indices = None
+@@ -326,11 +328,11 @@ def forward(
+                 .scatter(-1, topk_indices.long(), False)
+                 .unsqueeze(1)
+             )  # [B, 1, S, T]; True = masked
+-            if attention_mask is None:
+-                key_positions = torch.arange(key_states.shape[2], device=hidden_states.device)
+-                index_mask = index_mask | (key_positions[None, None, None, :] > position_ids[:, None, :, None])
+-                attention_mask = hidden_states.new_zeros((batch_size, 1, seq_length, key_states.shape[2]))
+-            attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
++
++            if attention_mask.dtype == torch.bool:
++                attention_mask = attention_mask & ~index_mask
++            else:
++                attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
+         else:
+             sparse_indices = topk_indices
+ 
+@@ -400,6 +402,7 @@ def forward(
+                 "attention_mask": attention_mask,
+                 "past_key_values": past_key_values,
+                 "position_ids": position_ids,
++                "allow_is_causal_skip": False,  # Always force creation to account for causality in the indexer
+             }
+             causal_mask_mapping = {"deepseek_sparse_attention": create_causal_mask(**mask_kwargs)}
+ 
+diff --git a/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py b/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py
+index 5d7ba1a8f3df..9da14d312a24 100644
+--- a/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py
++++ b/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py
+@@ -198,8 +198,8 @@ def forward(
+         hidden_states: torch.Tensor,
+         q_resid: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
+-        position_ids: torch.Tensor,
++        attention_mask: torch.Tensor,
++        position_ids: torch.Tensor,  # Kept for BC
+         past_key_values: Cache | None = None,
+     ) -> torch.Tensor:
+         """
+@@ -244,12 +244,10 @@ def forward(
+         index_scores = torch.matmul(weights.unsqueeze(-2), scores).squeeze(-2)
+ 
+         # Causality needs to be taken into account when computing scores so padding tokens don't affect computation
+-        if attention_mask is not None:
+-            index_scores = index_scores + attention_mask
++        if attention_mask.dtype == torch.bool:
++            index_scores = index_scores.masked_fill(~attention_mask, float("-inf"))
+         else:
+-            key_positions = torch.arange(index_scores.shape[-1], device=index_scores.device)
+-            causal = key_positions[None, None, :] > position_ids[:, :, None]  # [B, S, T]
+-            index_scores = index_scores.masked_fill(causal, float("-inf"))
++            index_scores = index_scores + attention_mask
+ 
+         topk = min(self.index_topk, index_scores.shape[-1])
+         return index_scores.topk(topk, dim=-1).indices.to(torch.int32)  # [B, S, topk]
+@@ -399,7 +397,7 @@ def forward(
+         self,
+         hidden_states: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
++        attention_mask: torch.Tensor,
+         past_key_values: Cache | None = None,
+         position_ids: torch.Tensor | None = None,
+         prev_topk_indices: torch.Tensor | None = None,
+@@ -431,13 +429,12 @@ def forward(
+ 
+         # DSA: select this layer's top-k tokens, or reuse the previous full layer's on `"shared"` layers.
+         if self.indexer is not None:
+-            indexer_mask = attention_mask[:, 0, :, :] if attention_mask is not None else None
+             topk_indices = self.indexer(
+                 hidden_states,
+                 q_resid,
+                 position_embeddings,
+-                indexer_mask,
+-                position_ids,
++                attention_mask[:, 0, :, :],
++                position_ids,  # Kept for BC
+                 past_key_values=past_key_values,
+             )  # [B, S, topk]
+         else:
+@@ -452,11 +449,11 @@ def forward(
+                 .scatter(-1, topk_indices.long(), False)
+                 .unsqueeze(1)
+             )
+-            if attention_mask is None:
+-                key_positions = torch.arange(key_states.shape[2], device=hidden_states.device)
+-                index_mask = index_mask | (key_positions[None, None, None, :] > position_ids[:, None, :, None])
+-                attention_mask = hidden_states.new_zeros((batch_size, 1, seq_length, key_states.shape[2]))
+-            attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
++
++            if attention_mask.dtype == torch.bool:
++                attention_mask = attention_mask & ~index_mask
++            else:
++                attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
+         else:
+             sparse_indices = topk_indices
+ 
+@@ -730,6 +727,7 @@ def forward(
+                 "attention_mask": attention_mask,
+                 "past_key_values": past_key_values,
+                 "position_ids": position_ids,
++                "allow_is_causal_skip": False,  # Always force creation to account for causality in the indexer
+             }
+             causal_mask_mapping = {"deepseek_sparse_attention": create_causal_mask(**mask_kwargs)}
+ 
+diff --git a/src/transformers/models/glm_moe_dsa/modular_glm_moe_dsa.py b/src/transformers/models/glm_moe_dsa/modular_glm_moe_dsa.py
+index 1400a2a9531d..91f90e90b83e 100644
+--- a/src/transformers/models/glm_moe_dsa/modular_glm_moe_dsa.py
++++ b/src/transformers/models/glm_moe_dsa/modular_glm_moe_dsa.py
+@@ -137,8 +137,8 @@ def forward(
+         hidden_states: torch.Tensor,
+         q_resid: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
+-        position_ids: torch.Tensor,
++        attention_mask: torch.Tensor,
++        position_ids: torch.Tensor,  # Kept for BC
+         past_key_values: Cache | None = None,
+     ) -> torch.Tensor:
+         """
+@@ -183,12 +183,10 @@ def forward(
+         index_scores = torch.matmul(weights.unsqueeze(-2), scores).squeeze(-2)
+ 
+         # Causality needs to be taken into account when computing scores so padding tokens don't affect computation
+-        if attention_mask is not None:
+-            index_scores = index_scores + attention_mask
++        if attention_mask.dtype == torch.bool:
++            index_scores = index_scores.masked_fill(~attention_mask, float("-inf"))
+         else:
+-            key_positions = torch.arange(index_scores.shape[-1], device=index_scores.device)
+-            causal = key_positions[None, None, :] > position_ids[:, :, None]  # [B, S, T]
+-            index_scores = index_scores.masked_fill(causal, float("-inf"))
++            index_scores = index_scores + attention_mask
+ 
+         topk = min(self.index_topk, index_scores.shape[-1])
+         return index_scores.topk(topk, dim=-1).indices.to(torch.int32)  # [B, S, topk]
+@@ -214,7 +212,7 @@ def forward(
+         self,
+         hidden_states: torch.Tensor,
+         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+-        attention_mask: torch.Tensor | None,
++        attention_mask: torch.Tensor,
+         past_key_values: Cache | None = None,
+         position_ids: torch.Tensor | None = None,
+         prev_topk_indices: torch.Tensor | None = None,
+@@ -246,13 +244,12 @@ def forward(
+ 
+         # DSA: select this layer's top-k tokens, or reuse the previous full layer's on `"shared"` layers.
+         if self.indexer is not None:
+-            indexer_mask = attention_mask[:, 0, :, :] if attention_mask is not None else None
+             topk_indices = self.indexer(
+                 hidden_states,
+                 q_resid,
+                 position_embeddings,
+-                indexer_mask,
+-                position_ids,
++                attention_mask[:, 0, :, :],
++                position_ids,  # Kept for BC
+                 past_key_values=past_key_values,
+             )  # [B, S, topk]
+         else:
+@@ -267,11 +264,11 @@ def forward(
+                 .scatter(-1, topk_indices.long(), False)
+                 .unsqueeze(1)
+             )
+-            if attention_mask is None:
+-                key_positions = torch.arange(key_states.shape[2], device=hidden_states.device)
+-                index_mask = index_mask | (key_positions[None, None, None, :] > position_ids[:, None, :, None])
+-                attention_mask = hidden_states.new_zeros((batch_size, 1, seq_length, key_states.shape[2]))
+-            attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
++
++            if attention_mask.dtype == torch.bool:
++                attention_mask = attention_mask & ~index_mask
++            else:
++                attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)
+         else:
+             sparse_indices = topk_indices
+ 
+@@ -366,6 +363,7 @@ def forward(
+                 "attention_mask": attention_mask,
+                 "past_key_values": past_key_values,
+                 "position_ids": position_ids,
++                "allow_is_causal_skip": False,  # Always force creation to account for causality in the indexer
+             }
+             causal_mask_mapping = {"deepseek_sparse_attention": create_causal_mask(**mask_kwargs)}
+ 
+diff --git a/tests/models/axk2/test_modeling_axk2.py b/tests/models/axk2/test_modeling_axk2.py
+index 44e4e57c5cd5..2391f8be8243 100644
+--- a/tests/models/axk2/test_modeling_axk2.py
++++ b/tests/models/axk2/test_modeling_axk2.py
+@@ -74,10 +74,6 @@ class AXK2ModelTest(CausalLMModelTest, unittest.TestCase):
+     model_tester_class = AXK2ModelTester
+     model_split_percents = [0.5, 0.7, 0.8]
+ 
+-    @unittest.skip("Can be fixed by #47438, currently does not properly considers cases where topk > prefill")
+-    def test_left_padding_compatibility(self):
+-        pass
+-
+     @unittest.skip("Fundamentally incompatible with indexer as there is no boundary between sequences")
+     def test_eager_padding_matches_padding_free_with_position_ids(self):
+         pass
+diff --git a/tests/models/deepseek_v32/test_modeling_deepseek_v32.py b/tests/models/deepseek_v32/test_modeling_deepseek_v32.py
+index 2543c7446688..bfcc28a86c6a 100644
+--- a/tests/models/deepseek_v32/test_modeling_deepseek_v32.py
++++ b/tests/models/deepseek_v32/test_modeling_deepseek_v32.py
+@@ -121,6 +121,7 @@ def __init__(
+         first_k_dense_replace=1,
+         n_group=1,
+         topk_group=1,
++        index_topk=8,
+     ):
+         super().__init__(parent=parent)
+         self.n_routed_experts = n_routed_experts
+@@ -131,6 +132,7 @@ def __init__(
+         self.first_k_dense_replace = first_k_dense_replace
+         self.n_group = n_group
+         self.topk_group = topk_group
++        self.index_topk = index_topk
+ 
+ 
+ @require_torch
+@@ -205,10 +207,6 @@ def test_eager_matches_sdpa_inference(self, *args, **kwargs):
+     def test_eager_matches_batched_and_grouped_inference(self, *args, **kwargs):
+         pass
+ 
+-    @unittest.skip("DSA hard top-k selection is sensitive to padding shifts (selection can flip).")
+-    def test_left_padding_compatibility(self):
+-        pass
+-
+     @unittest.skip("DSA hard top-k selection is sensitive to sequence packing (selection can flip).")
+     def test_eager_padding_matches_padding_free_with_position_ids(self):
+         pass
+diff --git a/tests/models/glm_moe_dsa/test_modeling_glm_moe_dsa.py b/tests/models/glm_moe_dsa/test_modeling_glm_moe_dsa.py
+index 2c67b33383ab..a21a81b5f677 100644
+--- a/tests/models/glm_moe_dsa/test_modeling_glm_moe_dsa.py
++++ b/tests/models/glm_moe_dsa/test_modeling_glm_moe_dsa.py
+@@ -61,6 +61,7 @@ def __init__(
+         v_head_dim=128,
+         num_hidden_layers=2,
+         mlp_layer_types=["sparse", "dense"],
++        index_topk=8,
+     ):
+         super().__init__(parent=parent, num_hidden_layers=num_hidden_layers)
+         self.n_routed_experts = n_routed_experts
+@@ -70,6 +71,7 @@ def __init__(
+         self.qk_rope_head_dim = qk_rope_head_dim
+         self.v_head_dim = v_head_dim
+         self.mlp_layer_types = mlp_layer_types
++        self.index_topk = index_topk
+ 
+ 
+ @require_torch
+@@ -108,10 +110,6 @@ def test_eager_matches_sdpa_inference(self, *args):
+     def test_eager_matches_batched_and_grouped_inference(self, *args):
+         pass
+ 
+-    @unittest.skip("DSA hard top-k selection is sensitive to padding shifts (selection can flip).")
+-    def test_left_padding_compatibility(self):
+-        pass
+-
+     @unittest.skip("DSA hard top-k selection is sensitive to sequence packing (selection can flip).")
+     def test_eager_padding_matches_padding_free_with_position_ids(self):
+         pass

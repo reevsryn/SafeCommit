@@ -1,0 +1,26 @@
+diff --git a/celery/__init__.py b/celery/__init__.py
+index 36bdb65bc67..ce0dc62a6db 100644
+--- a/celery/__init__.py
++++ b/celery/__init__.py
+@@ -11,6 +11,7 @@
+ import re
+ import sys
+ from collections import namedtuple
++from typing import TYPE_CHECKING
+ 
+ # Lazy loading
+ from . import local
+@@ -66,12 +67,7 @@ def debug_import(name, locals=None, globals=None,
+         return real_import(name, locals, globals, fromlist, level)
+     builtins.__import__ = debug_import
+ 
+-# This is never executed, but tricks static analyzers (PyDev, PyCharm,
+-# pylint, etc.) into knowing the types of these symbols, and what
+-# they contain.
+-STATICA_HACK = True
+-globals()['kcah_acitats'[::-1].upper()] = False
+-if STATICA_HACK:  # pragma: no cover
++if TYPE_CHECKING:
+     from celery._state import current_app, current_task
+     from celery.app import shared_task
+     from celery.app.base import Celery

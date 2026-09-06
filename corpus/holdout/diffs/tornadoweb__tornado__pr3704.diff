@@ -1,0 +1,414 @@
+diff --git a/docs/releases.rst b/docs/releases.rst
+index a1a78ab54..3b3f56de7 100644
+--- a/docs/releases.rst
++++ b/docs/releases.rst
+@@ -4,6 +4,7 @@ Release notes
+ .. toctree::
+    :maxdepth: 2
+ 
++   releases/v6.5.8
+    releases/v6.5.7
+    releases/v6.5.6
+    releases/v6.5.5
+diff --git a/docs/releases/v6.5.8.rst b/docs/releases/v6.5.8.rst
+new file mode 100644
+index 000000000..6642317be
+--- /dev/null
++++ b/docs/releases/v6.5.8.rst
+@@ -0,0 +1,26 @@
++What's new in Tornado 6.5.8
++===========================
++
++Aug 6, 2026
++-----------
++
++Security fixes
++~~~~~~~~~~~~~~
++
++- Form-encoded ``POST`` bodies are now subject to a limit of 1000 arguments by default. This
++  prevents a CPU and memory denial of service attack. This limit can be overridden via the
++  `.set_parse_body_config` function. Thanks to `Arpit Jain <https://github.com/arpitjain099>`_ 
++  for reporting this issue.
++- Multipart parsing now rejects requests with an excessive number of parts earlier in the parsing
++  process, limiting memory consumption. Thanks to `afldl <https://github.com/afldl>`_ for
++  reporting this issue.
++- The deprecated mixed-case arguments to `.RequestHandler.set_cookie` now enforce the same
++  restrictions on invalid characters that were introduced in Tornado 6.5.5 for the standard
++  lowercase arguments. Thanks to `sec-reex <https://github.com/sec-reex>`_ and
++  `Arpit Jain <https://github.com/arpitjain099>`_ for reporting this issue.
++
++Deprecations
++~~~~~~~~~~~~
++
++- The `.OpenIdMixin` class is deprecated and will be removed in Tornado 6.7. OpenID 2.0 is no
++  longer widely supported by identity providers.
+diff --git a/tornado/__init__.py b/tornado/__init__.py
+index 8fbac2482..1a6a66acb 100644
+--- a/tornado/__init__.py
++++ b/tornado/__init__.py
+@@ -22,8 +22,8 @@
+ # is zero for an official release, positive for a development branch,
+ # or negative for a release candidate or beta (after the base version
+ # number has been incremented)
+-version = "6.5.7"
+-version_info = (6, 5, 7, 0)
++version = "6.5.8"
++version_info = (6, 5, 8, 0)
+ 
+ import importlib
+ import typing
+diff --git a/tornado/auth.py b/tornado/auth.py
+index b1f35f757..d4888fab7 100644
+--- a/tornado/auth.py
++++ b/tornado/auth.py
+@@ -98,8 +98,19 @@ class OpenIdMixin:
+     Class attributes:
+ 
+     * ``_OPENID_ENDPOINT``: the identity provider's URI.
++
++    .. deprecated:: 6.6
++        OpenID 2.0 is no longer widely supported by identity providers.
++        This class will be removed in Tornado 6.7.
+     """
+ 
++    def __init__(self) -> None:
++        warnings.warn(
++            "OpenIdMixin is deprecated and will be removed in Tornado 6.7",
++            DeprecationWarning,
++            stacklevel=2,
++        )
++
+     def authenticate_redirect(
+         self,
+         callback_uri: Optional[str] = None,
+diff --git a/tornado/escape.py b/tornado/escape.py
+index 8515bf58f..a1c16b363 100644
+--- a/tornado/escape.py
++++ b/tornado/escape.py
+@@ -171,7 +171,11 @@ def url_unescape(
+ 
+ 
+ def parse_qs_bytes(
+-    qs: Union[str, bytes], keep_blank_values: bool = False, strict_parsing: bool = False
++    qs: Union[str, bytes],
++    keep_blank_values: bool = False,
++    strict_parsing: bool = False,
++    *,
++    max_num_fields: Optional[int] = None,
+ ) -> Dict[str, List[bytes]]:
+     """Parses a query string like urlparse.parse_qs,
+     but takes bytes and returns the values as byte strings.
+@@ -179,13 +183,21 @@ def parse_qs_bytes(
+     Keys still become type str (interpreted as latin1 in python3!)
+     because it's too painful to keep them as byte strings in
+     python3 and in practice they're nearly always ascii anyway.
++
++    .. versionadded:: 6.5.8
++       The ``max_num_fields`` argument. ValueError is raised if this limit is exceeded.
+     """
+     # This is gross, but python3 doesn't give us another way.
+     # Latin1 is the universal donor of character encodings.
+     if isinstance(qs, bytes):
+         qs = qs.decode("latin1")
+     result = urllib.parse.parse_qs(
+-        qs, keep_blank_values, strict_parsing, encoding="latin1", errors="strict"
++        qs,
++        keep_blank_values,
++        strict_parsing,
++        encoding="latin1",
++        errors="strict",
++        max_num_fields=max_num_fields,
+     )
+     encoded = {}
+     for k, v in result.items():
+diff --git a/tornado/httputil.py b/tornado/httputil.py
+index 0c9ad8324..b80c796cc 100644
+--- a/tornado/httputil.py
++++ b/tornado/httputil.py
+@@ -37,7 +37,6 @@
+ from tornado.escape import native_str, parse_qs_bytes, utf8, to_unicode
+ from tornado.util import ObjectDict, unicode_type
+ 
+-
+ # responses is unused in this file, but we re-export it to other files.
+ # Reference it so pyflakes doesn't complain.
+ responses
+@@ -948,6 +947,23 @@ class ParseMultipartConfig:
+     """
+ 
+ 
++@dataclasses.dataclass
++class ParseUrlEncodedConfig:
++    """This class configures the parsing of ``application/x-www-form-urlencoded`` request bodies.
++
++    Its primary purpose is to place limits on the size and complexity of request messages
++    to avoid potential denial-of-service attacks.
++
++    .. versionadded:: 6.5.8
++    """
++
++    max_arguments: int = 1000
++    """The maximum number of arguments accepted in a urlencoded request.
++
++    Each ``<input>`` element in an HTML form corresponds to at least one argument.
++    """
++
++
+ @dataclasses.dataclass
+ class ParseBodyConfig:
+     """This class configures the parsing of request bodies.
+@@ -958,6 +974,9 @@ class ParseBodyConfig:
+     multipart: ParseMultipartConfig = dataclasses.field(
+         default_factory=ParseMultipartConfig
+     )
++    urlencoded: ParseUrlEncodedConfig = dataclasses.field(
++        default_factory=ParseUrlEncodedConfig
++    )
+     """Configuration for ``multipart/form-data`` request bodies."""
+ 
+ 
+@@ -1016,7 +1035,11 @@ def parse_body_arguments(
+             )
+         try:
+             # real charset decoding will happen in RequestHandler.decode_argument()
+-            uri_arguments = parse_qs_bytes(body, keep_blank_values=True)
++            uri_arguments = parse_qs_bytes(
++                body,
++                keep_blank_values=True,
++                max_num_fields=config.urlencoded.max_arguments,
++            )
+         except Exception as e:
+             raise HTTPInputError("Invalid x-www-form-urlencoded body: %s" % e) from e
+         for name, values in uri_arguments.items():
+@@ -1078,7 +1101,9 @@ def parse_multipart_form_data(
+     final_boundary_index = data.rfind(b"--" + boundary + b"--")
+     if final_boundary_index == -1:
+         raise HTTPInputError("Invalid multipart/form-data: no final boundary found")
+-    parts = data[:final_boundary_index].split(b"--" + boundary + b"\r\n")
++    parts = data[:final_boundary_index].split(
++        b"--" + boundary + b"\r\n", config.max_parts + 1
++    )
+     if len(parts) > config.max_parts:
+         raise HTTPInputError("multipart/form-data has too many parts")
+     for part in parts:
+diff --git a/tornado/test/auth_test.py b/tornado/test/auth_test.py
+index 6dc597211..c5ee25268 100644
+--- a/tornado/test/auth_test.py
++++ b/tornado/test/auth_test.py
+@@ -18,7 +18,8 @@
+ from tornado.httpclient import HTTPClientError
+ from tornado.httputil import url_concat
+ from tornado.log import app_log
+-from tornado.testing import AsyncHTTPTestCase, ExpectLog
++from tornado.testing import AsyncHTTPTestCase, ExpectLog, setup_with_context_manager
++from tornado.test.util import ignore_deprecation
+ from tornado.web import RequestHandler, Application, HTTPError
+ 
+ try:
+@@ -279,12 +280,46 @@ def get(self):
+         self.write(dict(screen_name="foo", name="Foo"))
+ 
+ 
++class OpenIDAuthTest(AsyncHTTPTestCase):
++    def setUp(self):
++        setup_with_context_manager(self, ignore_deprecation())
++        return super().setUp()
++
++    def get_app(self):
++        return Application(
++            [
++                ("/openid/client/login", OpenIdClientLoginHandler, dict(test=self)),
++                ("/openid/server/authenticate", OpenIdServerAuthenticateHandler),
++            ],
++            http_client=self.http_client,
++        )
++
++    def test_openid_redirect(self):
++        with ignore_deprecation():
++            response = self.fetch("/openid/client/login", follow_redirects=False)
++            self.assertEqual(response.code, 302)
++            self.assertIn("/openid/server/authenticate?", response.headers["Location"])
++
++    def test_openid_get_user(self):
++        for i in range(2):
++            with self.subTest(i=i):
++                with ignore_deprecation():
++                    response = self.fetch(
++                        "/openid/client/login?openid.mode=blah"
++                        "&openid.ns.ax=http://openid.net/srv/ax/1.0"
++                        "&openid.ax.type.email=http://axschema.org/contact/email"
++                        "&openid.ax.value.email=foo@example.com"
++                    )
++                response.rethrow()
++                parsed = json_decode(response.body)
++                self.assertEqual(parsed["email"], "foo@example.com")
++
++
+ class AuthTest(AsyncHTTPTestCase):
+     def get_app(self):
+         return Application(
+             [
+                 # test endpoints
+-                ("/openid/client/login", OpenIdClientLoginHandler, dict(test=self)),
+                 (
+                     "/oauth10/client/login",
+                     OAuth1ClientLoginHandler,
+@@ -329,7 +364,6 @@ def get_app(self):
+                     dict(test=self),
+                 ),
+                 # simulated servers
+-                ("/openid/server/authenticate", OpenIdServerAuthenticateHandler),
+                 ("/oauth1/server/request_token", OAuth1ServerRequestTokenHandler),
+                 ("/oauth1/server/access_token", OAuth1ServerAccessTokenHandler),
+                 ("/facebook/server/access_token", FacebookServerAccessTokenHandler),
+@@ -348,24 +382,6 @@ def get_app(self):
+             facebook_secret="test_facebook_secret",
+         )
+ 
+-    def test_openid_redirect(self):
+-        response = self.fetch("/openid/client/login", follow_redirects=False)
+-        self.assertEqual(response.code, 302)
+-        self.assertIn("/openid/server/authenticate?", response.headers["Location"])
+-
+-    def test_openid_get_user(self):
+-        for i in range(2):
+-            with self.subTest(i=i):
+-                response = self.fetch(
+-                    "/openid/client/login?openid.mode=blah"
+-                    "&openid.ns.ax=http://openid.net/srv/ax/1.0"
+-                    "&openid.ax.type.email=http://axschema.org/contact/email"
+-                    "&openid.ax.value.email=foo@example.com"
+-                )
+-                response.rethrow()
+-                parsed = json_decode(response.body)
+-                self.assertEqual(parsed["email"], "foo@example.com")
+-
+     def test_oauth10_redirect(self):
+         response = self.fetch("/oauth10/client/login", follow_redirects=False)
+         self.assertEqual(response.code, 302)
+diff --git a/tornado/test/httpclient_test.py b/tornado/test/httpclient_test.py
+index f009f190e..14e81f3f6 100644
+--- a/tornado/test/httpclient_test.py
++++ b/tornado/test/httpclient_test.py
+@@ -795,7 +795,12 @@ def test_strip_headers_on_redirect(self):
+                     "/redirect?url=%s&status=302" % self.get_url2("/echo_headers")
+                 )
+                 if url_creds:
+-                    url = url.replace("http://", "http://%s@" % url_creds)
++                    # Only add credentials to the outer URL being fetched, not to the
++                    # "url" query parameter (the redirect target), which also starts
++                    # with "http://". Otherwise the redirect's Location header would
++                    # carry its own explicit credentials for the new origin, which
++                    # libcurl legitimately honors instead of stripping.
++                    url = url.replace("http://", "http://%s@" % url_creds, 1)
+                 response = self.fetch(**dict(path=url) | kwargs)
+                 response.rethrow()
+                 echoed_headers = json_decode(response.body)
+@@ -809,17 +814,27 @@ def test_strip_headers_on_redirect(self):
+                     "/redirect?url=%s&status=302" % self.get_url("/echo_headers")
+                 )
+                 if url_creds:
+-                    url = url.replace("http://", "http://%s@" % url_creds)
++                    url = url.replace("http://", "http://%s@" % url_creds, 1)
+                 response = self.fetch(**dict(path=url) | kwargs)
+                 response.rethrow()
+                 echoed_headers = json_decode(response.body)
+                 # Confirm that non-auth headers are getting through
+                 self.assertIn("User-Agent", echoed_headers)
+-                # Auth headers are not stripped when the redirect is same-origin.
+-                # Each of our tests uses one of these headers, but not both.
+-                self.assertTrue(
+-                    "Authorization" in echoed_headers or "Cookie" in echoed_headers
+-                )
++                if name == "credentials in URL":
++                    # Some libcurl versions (known regression as of 8.20/8.21,
++                    # still present as of curl's git master) drop credentials
++                    # embedded in the URL across a same-origin redirect whose
++                    # Location header is an absolute URL, even though they
++                    # should be preserved. This isn't a security concern
++                    # (nothing is leaked to another origin), so just don't
++                    # assert on it either way here.
++                    pass
++                else:
++                    # Auth headers are not stripped when the redirect is same-origin.
++                    # Each of our tests uses one of these headers, but not both.
++                    self.assertTrue(
++                        "Authorization" in echoed_headers or "Cookie" in echoed_headers
++                    )
+ 
+ 
+ class RequestProxyTest(unittest.TestCase):
+diff --git a/tornado/test/httputil_test.py b/tornado/test/httputil_test.py
+index 92683ae9b..afb15879c 100644
+--- a/tornado/test/httputil_test.py
++++ b/tornado/test/httputil_test.py
+@@ -1,4 +1,5 @@
+ from tornado.httputil import (
++    parse_body_arguments,
+     url_concat,
+     parse_multipart_form_data,
+     HTTPHeaders,
+@@ -95,6 +96,23 @@ def test_parsing(self):
+         self.assertIn(("b", "2"), qsl)
+ 
+ 
++class UrlEncodedDataTest(unittest.TestCase):
++    def test_urlencoded_data(self):
++        data = b"a=1&b=2&a=3"
++        args, files = form_data_args()
++        parse_body_arguments("application/x-www-form-urlencoded", data, args, files)
++        self.assertEqual(args["a"], [b"1", b"3"])
++        self.assertEqual(args["b"], [b"2"])
++        self.assertEqual(files, {})
++
++    def test_max_arguments(self):
++        data = b"".join(b"a=1&" for _ in range(1001))
++        args, files = form_data_args()
++        with self.assertRaises(HTTPInputError) as cm:
++            parse_body_arguments("application/x-www-form-urlencoded", data, args, files)
++        self.assertIn("Max number of fields exceeded", str(cm.exception))
++
++
+ class MultipartFormDataTest(unittest.TestCase):
+     def test_file_upload(self):
+         data = b"""\
+diff --git a/tornado/test/web_test.py b/tornado/test/web_test.py
+index 9bd1d49c0..27e7fcfe5 100644
+--- a/tornado/test/web_test.py
++++ b/tornado/test/web_test.py
+@@ -329,6 +329,18 @@ def get(self):
+                                 "unexpected exception for char %r in domain: %s\n"
+                                 % (char, e)
+                             )
++                    try:
++                        self.set_cookie("foo", "bar", DoMaIn="example" + char + ".com")
++                        self.write(
++                            "Didn't get expected exception for char %r in DoMaIn\n"
++                            % char
++                        )
++                    except http.cookies.CookieError as e:
++                        if "Invalid cookie attribute DoMaIn" not in str(e):
++                            self.write(
++                                "unexpected exception for char %r in DoMaIn: %s\n"
++                                % (char, e)
++                            )
+ 
+                     try:
+                         self.set_cookie("foo", "bar", path="/" + char)
+diff --git a/tornado/web.py b/tornado/web.py
+index ec7ec3f53..6f1ae3047 100644
+--- a/tornado/web.py
++++ b/tornado/web.py
+@@ -717,6 +717,12 @@ def set_cookie(
+                 raise http.cookies.CookieError(
+                     f"Invalid cookie attribute {attr_name}={attr_value!r} for cookie {name!r}"
+                 )
++        for k, v in kwargs.items():
++            # Also check for disallowed characters in deprecated kwargs.
++            if re.search(r"[\x00-\x20\x3b\x7f]", str(v)):
++                raise http.cookies.CookieError(
++                    f"Invalid cookie attribute {k}={v!r} for cookie {name!r}"
++                )
+         if not hasattr(self, "_new_cookie"):
+             self._new_cookie = (
+                 http.cookies.SimpleCookie()

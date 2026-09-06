@@ -1,0 +1,114 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index e6c085b14..16790d1de 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -50,12 +50,17 @@ jobs:
+           path: ./dist/tornado-*.tar.gz
+ 
+   build_wheels:
+-    name: Build wheels on ${{ matrix.os }}
++    name: Build wheels on ${{ matrix.os }}${{ matrix.name_suffix || '' }}
+     runs-on: ${{ matrix.os }}
+     strategy:
+       fail-fast: false
+       matrix:
+         os: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025, windows-11-arm, macos-15]
++        arch: [auto]
++        include:
++          - os: ubuntu-24.04
++            arch: "riscv64"
++            name_suffix: "-riscv64"
+ 
+     steps:
+       - uses: actions/checkout@v4
+@@ -66,8 +71,18 @@ jobs:
+         with:
+           python-version: ${{ env.python-version }}
+ 
++      - name: Set up QEMU
++        if: matrix.arch != 'auto'
++        uses: docker/setup-qemu-action@v3
++        with:
++          platforms: ${{ matrix.arch }}
++
+       - name: Build wheels
+         uses: pypa/cibuildwheel@v3.4.0
++        env:
++          CIBW_ARCHS: ${{ matrix.arch }}
++          # Increase timeouts for emulated archs
++          CIBW_ENVIRONMENT: ${{ matrix.arch != 'auto' && 'ASYNC_TEST_TIMEOUT=30 EMULATION=1' || '' }}
+ 
+       - name: Audit ABI3 compliance
+         # This may be moved into cibuildwheel itself in the future. See
+@@ -76,7 +91,7 @@ jobs:
+ 
+       - uses: actions/upload-artifact@v4
+         with:
+-          name: artifacts-${{ matrix.os }}
++          name: artifacts-${{ matrix.os }}${{ matrix.name_suffix || '' }}
+           path: ./wheelhouse/*.whl
+ 
+   upload_pypi_test:
+diff --git a/.github/zizmor.yml b/.github/zizmor.yml
+index a71e19fa6..50582e4bb 100644
+--- a/.github/zizmor.yml
++++ b/.github/zizmor.yml
+@@ -11,4 +11,5 @@ rules:
+         dependabot/*: ref-pin
+         # Additional trusted repositories
+         pypa/*: ref-pin
+-        astral-sh/setup-uv: ref-pin
+\ No newline at end of file
++        astral-sh/setup-uv: ref-pin
++        docker/setup-qemu-action: ref-pin
+diff --git a/tornado/test/httputil_test.py b/tornado/test/httputil_test.py
+index 2924b210e..fee6748db 100644
+--- a/tornado/test/httputil_test.py
++++ b/tornado/test/httputil_test.py
+@@ -23,6 +23,8 @@
+ import urllib.parse
+ import unittest
+ 
++from tornado.test.util import skipIfEmulated
++
+ 
+ def form_data_args() -> tuple[dict[str, list[bytes]], dict[str, list[HTTPFile]]]:
+     """Return two empty dicts suitable for use with parse_multipart_form_data.
+@@ -714,6 +716,7 @@ def test_unquote(self):
+                 c = parse_cookie(encoded)
+                 self.assertEqual(c["a"], decoded)
+ 
++    @skipIfEmulated
+     def test_unquote_large(self):
+         # Adapted from
+         # https://github.com/python/cpython/blob/dc7a2b6522ec7af41282bc34f405bee9b306d611/Lib/test/test_http_cookies.py#L87
+diff --git a/tornado/test/simple_httpclient_test.py b/tornado/test/simple_httpclient_test.py
+index e897f79cd..4a7577353 100644
+--- a/tornado/test/simple_httpclient_test.py
++++ b/tornado/test/simple_httpclient_test.py
+@@ -315,7 +315,7 @@ async def resolve(self, *args, **kwargs):
+ 
+     def test_request_timeout(self):
+         timeout = 0.1
+-        if os.name == "nt":
++        if os.name == "nt" or os.environ.get("EMULATION") == "1":
+             timeout = 0.5
+ 
+         with self.assertRaises(HTTPTimeoutError):
+diff --git a/tornado/test/util.py b/tornado/test/util.py
+index ca7dcec58..36179252f 100644
+--- a/tornado/test/util.py
++++ b/tornado/test/util.py
+@@ -21,6 +21,12 @@
+ # depend on an external network.
+ skipIfNoNetwork = unittest.skipIf("NO_NETWORK" in os.environ, "network access disabled")
+ 
++# Set the environment variable EMULATION=1 to disable any tests that
++# are unreliable under emulation
++skipIfEmulated = unittest.skipIf(
++    "EMULATION" in os.environ, "test unreliable under emulation"
++)
++
+ skipNotCPython = unittest.skipIf(
+     # "CPython" here essentially refers to the traditional synchronous refcounting GC,
+     # so we skip these tests in free-threading builds of cpython too.

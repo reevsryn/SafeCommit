@@ -1,0 +1,58 @@
+diff --git a/src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py b/src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py
+index e538a653f210..7c5dd26beddc 100644
+--- a/src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py
++++ b/src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py
+@@ -35,6 +35,7 @@
+     use_experts_implementation,
+     use_kernel_forward_from_hub,
+     use_kernel_func_from_hub_with_fallback,
++    use_kernelized_func,
+ )
+ from ...integrations.accelerate import force_accelerate_hooks
+ from ...masking_utils import create_causal_mask, create_recurrent_attention_mask
+@@ -455,6 +456,9 @@ def torch_recurrent_gated_delta_rule(
+ 
+ 
+ @use_kernel_forward_from_hub("Qwen3_5GatedDeltaNet")
++@use_kernelized_func(
++    [torch_recurrent_gated_delta_rule, torch_chunk_gated_delta_rule, causal_conv1d_fn, causal_conv1d_update]
++)
+ class Qwen3_5MoeGatedDeltaNet(nn.Module):
+     def __init__(self, config: Qwen3_5MoeConfig, layer_idx: int):
+         super().__init__()
+diff --git a/src/transformers/models/qwen3_5_moe/modular_qwen3_5_moe.py b/src/transformers/models/qwen3_5_moe/modular_qwen3_5_moe.py
+index c9155ee22f05..a48c779802c5 100644
+--- a/src/transformers/models/qwen3_5_moe/modular_qwen3_5_moe.py
++++ b/src/transformers/models/qwen3_5_moe/modular_qwen3_5_moe.py
+@@ -17,7 +17,7 @@
+ from huggingface_hub.dataclasses import strict
+ 
+ from ... import initialization as init
+-from ...integrations import use_kernel_forward_from_hub
++from ...integrations import use_kernel_forward_from_hub, use_kernelized_func
+ from ...modeling_layers import GradientCheckpointingLayer
+ from ...modeling_outputs import BaseModelOutputWithPooling
+ from ...modeling_utils import PreTrainedModel
+@@ -31,6 +31,10 @@
+     Qwen3_5TextRotaryEmbedding,
+     Qwen3_5VisionModel,
+     Qwen3_5VisionRotaryEmbedding,
++    causal_conv1d_fn,
++    causal_conv1d_update,
++    torch_chunk_gated_delta_rule,
++    torch_recurrent_gated_delta_rule,
+ )
+ from ..qwen3_next.configuration_qwen3_next import Qwen3NextConfig
+ from ..qwen3_next.modeling_qwen3_next import (
+@@ -161,8 +165,10 @@ class Qwen3_5MoeTextRotaryEmbedding(Qwen3_5TextRotaryEmbedding):
+     pass
+ 
+ 
+-# Same GDN core as the dense variant, so it reuses the dense Hub kernel name.
+ @use_kernel_forward_from_hub("Qwen3_5GatedDeltaNet")
++@use_kernelized_func(
++    [torch_recurrent_gated_delta_rule, torch_chunk_gated_delta_rule, causal_conv1d_fn, causal_conv1d_update]
++)
+ class Qwen3_5MoeGatedDeltaNet(Qwen3_5GatedDeltaNet):
+     pass
+ 

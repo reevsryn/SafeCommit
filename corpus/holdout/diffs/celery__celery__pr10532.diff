@@ -1,0 +1,193 @@
+diff --git a/CONTRIBUTORS.txt b/CONTRIBUTORS.txt
+index ce156eccef..0926f63151 100644
+--- a/CONTRIBUTORS.txt
++++ b/CONTRIBUTORS.txt
+@@ -311,3 +311,4 @@ Brian Helba, 2026/01/12
+ Hmn Falahi, 2026/07/08
+ Oliver Haas, 2026/07/26
+ Benjamin Chrobot, 2026/08/18
++Arockia Rajamanickam, 2026/08/29
+diff --git a/celery/app/base.py b/celery/app/base.py
+index e56ff0ddc9..7a56a24d93 100644
+--- a/celery/app/base.py
++++ b/celery/app/base.py
+@@ -345,7 +345,7 @@ def __init__(self, main=None, loader=None, backend=None,
+                  set_as_current=True, tasks=None, broker=None, include=None,
+                  changes=None, config_source=None, fixups=None, task_cls=None,
+                  autofinalize=True, namespace=None, strict_typing=True,
+-                 **kwargs):
++                 config_source_silent=False, **kwargs):
+ 
+         self._local = threading.local()
+         self._backend_cache = None
+@@ -374,6 +374,11 @@ def __init__(self, main=None, loader=None, backend=None,
+ 
+         self.configured = False
+         self._config_source = config_source
++        # `silent` from config_from_object(), remembered so the lazy load in
++        # _load_config() honours it too and not only the eager path. Carried
++        # through __reduce_keys__ so an app pickled before its configuration
++        # was read does not lose it.
++        self._config_source_silent = config_source_silent
+         self._pending_defaults = deque()
+         self._pending_periodic_tasks = deque()
+ 
+@@ -718,6 +723,7 @@ def config_from_object(self, obj,
+                 By default the configuration will be read only when required.
+         """
+         self._config_source = obj
++        self._config_source_silent = silent
+         self.namespace = namespace or self.namespace
+         if force or self.configured:
+             self._conf = None
+@@ -1251,7 +1257,8 @@ def _load_config(self):
+             # used to be a method pre 4.0
+             self.on_configure()
+         if self._config_source:
+-            self.loader.config_from_object(self._config_source)
++            self.loader.config_from_object(
++                self._config_source, silent=self._config_source_silent)
+         self.configured = True
+         settings = detect_settings(
+             self.prepare_config(self.loader.conf), self._preconf,
+@@ -1416,6 +1423,7 @@ def __reduce_keys__(self):
+             'control': self.control_cls,
+             'fixups': self.fixups,
+             'config_source': self._config_source,
++            'config_source_silent': self._config_source_silent,
+             'task_cls': self.task_cls,
+             'namespace': self.namespace,
+         }
+@@ -1425,7 +1433,7 @@ def __reduce_args__(self):
+         return (self.main, self._conf.changes if self.configured else {},
+                 self.loader_cls, self.backend_cls, self.amqp_cls,
+                 self.events_cls, self.log_cls, self.control_cls,
+-                False, self._config_source)
++                False, self._config_source, self._config_source_silent)
+ 
+     @cached_property
+     def Worker(self):
+diff --git a/celery/app/utils.py b/celery/app/utils.py
+index 1e72838ab7..4d7d1571ab 100644
+--- a/celery/app/utils.py
++++ b/celery/app/utils.py
+@@ -303,11 +303,12 @@ def build_kwargs(self, *args):
+ 
+     def build_standard_kwargs(self, main, changes, loader, backend, amqp,
+                               events, log, control, accept_magic_kwargs,
+-                              config_source=None):
++                              config_source=None, config_source_silent=False):
+         return {'main': main, 'loader': loader, 'backend': backend,
+                 'amqp': amqp, 'changes': changes, 'events': events,
+                 'log': log, 'control': control, 'set_as_current': False,
+-                'config_source': config_source}
++                'config_source': config_source,
++                'config_source_silent': config_source_silent}
+ 
+     def construct(self, cls, **kwargs):
+         return cls(**kwargs)
+diff --git a/t/unit/app/test_app.py b/t/unit/app/test_app.py
+index f2e80af584..e179c166f8 100644
+--- a/t/unit/app/test_app.py
++++ b/t/unit/app/test_app.py
+@@ -63,6 +63,19 @@ class ObjectConfig2:
+     UNDERSTAND_ME = True
+ 
+ 
++class CustomReduceApp(Celery):
++    """App that defines its own ``__reduce_args__()``.
++
++    Defining it is what makes ``Celery.__reduce__()`` route through the
++    deprecated ``__reduce_v1__()`` path, so this is how that path is reached.
++    Declared at module level because a class defined inside a test cannot be
++    pickled.
++    """
++
++    def __reduce_args__(self):
++        return super().__reduce_args__()
++
++
+ class test_module:
+ 
+     def test_default_app(self):
+@@ -949,6 +962,80 @@ def test_config_from_object__force(self):
+ 
+         self.assert_config2()
+ 
++    def test_config_from_object__silent_lazy(self):
++        """`silent` must survive until the configuration is actually read.
++
++        Without `force`, `config_from_object()` only records the source; the
++        import happens later in `_load_config()`. The flag has to be carried
++        across that gap or the documented behaviour only holds for the eager
++        path.
++        """
++        self.app.config_from_object('nonexistent.module', silent=True)
++        assert self.app.conf.get('SOME_CONFIG') is None
++
++    def test_config_from_object__not_silent_lazy(self):
++        """Without `silent`, the import error must still surface."""
++        self.app.config_from_object('nonexistent.module', silent=False)
++        with pytest.raises(ImportError):
++            self.app.conf.get('SOME_CONFIG')
++
++    def test_config_from_object__silent_force(self):
++        """The eager path keeps working, and is not made silent by accident."""
++        self.app.config_from_object('nonexistent.module', silent=True, force=True)
++        assert self.app.conf.get('SOME_CONFIG') is None
++
++    def test_config_from_object__silent_survives_v1_pickle(self):
++        """The flag must survive the deprecated v1 reduction too.
++
++        `Celery.__reduce__()` still routes through `__reduce_v1__()` for any
++        subclass that defines its own `__reduce_args__()`, so carrying the flag
++        only in `__reduce_keys__()` would leave that path broken.
++        """
++        app = CustomReduceApp('silent-v1', set_as_current=False)
++        assert app._using_v1_reduce
++        app.config_from_object('nonexistent.module', silent=True)
++
++        unpickled = pickle.loads(pickle.dumps(app))
++        assert unpickled.conf.get('SOME_CONFIG') is None
++
++    def test_config_from_object__not_silent_survives_v1_pickle(self):
++        """Control: the v1 path must not silence anything by itself."""
++        app = CustomReduceApp('loud-v1', set_as_current=False)
++        app.config_from_object('nonexistent.module', silent=False)
++
++        unpickled = pickle.loads(pickle.dumps(app))
++        with pytest.raises(ImportError):
++            unpickled.conf.get('SOME_CONFIG')
++
++    def test_app_pickler_accepts_legacy_arg_count(self):
++        """An older v1 payload, without the trailing flag, must still load.
++
++        `config_source_silent` is appended after `config_source`, which is
++        itself optional, so a ten argument payload written by an older Celery
++        keeps working and simply defaults the flag off.
++        """
++        from celery.app.utils import AppPickler
++
++        kwargs = AppPickler().build_standard_kwargs(
++            'main', {}, None, None, None, None, None, None, False, 'src',
++        )
++        assert kwargs['config_source'] == 'src'
++        assert kwargs['config_source_silent'] is False
++
++    def test_config_from_object__silent_survives_pickle(self):
++        """`silent` must survive pickling of a not-yet-configured app.
++
++        An app pickled after `config_from_object(silent=True)` but before its
++        configuration is first read reaches the child process unconfigured, so
++        the child performs the import itself. If the flag were not carried in
++        `__reduce_keys__()` the child would import without it and raise.
++        """
++        self.app.config_from_object('nonexistent.module', silent=True)
++        assert not self.app.configured
++
++        unpickled = pickle.loads(pickle.dumps(self.app))
++        assert unpickled.conf.get('SOME_CONFIG') is None
++
+     def test_config_from_object__compat(self):
+ 
+         class Config:

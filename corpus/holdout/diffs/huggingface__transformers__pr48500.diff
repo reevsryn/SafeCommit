@@ -1,0 +1,54 @@
+diff --git a/src/transformers/modeling_layers.py b/src/transformers/modeling_layers.py
+index 485b66a584d4..4dc31ce058c9 100644
+--- a/src/transformers/modeling_layers.py
++++ b/src/transformers/modeling_layers.py
+@@ -90,12 +90,6 @@ def __call__(self, *args, **kwargs):
+ 
+             if not self._can_checkpoint_with_cache:
+                 # different names for the same thing in different layers
+-                # TODO cyril: this one without `S` can be removed after deprecation cycle
+-                if "past_key_value" in kwargs and kwargs["past_key_value"] is not None:
+-                    kwargs["past_key_value"] = None
+-                    message += " `past_key_value=None`,"
+-                    do_warn = True
+-
+                 if "past_key_values" in kwargs and kwargs["past_key_values"] is not None:
+                     kwargs["past_key_values"] = None
+                     message += " `past_key_values=None`,"
+diff --git a/tests/models/inkling/test_modeling_inkling.py b/tests/models/inkling/test_modeling_inkling.py
+index 43947d351023..3d5492f14a02 100644
+--- a/tests/models/inkling/test_modeling_inkling.py
++++ b/tests/models/inkling/test_modeling_inkling.py
+@@ -44,17 +44,7 @@
+ if is_torch_available():
+     import torch
+ 
+-    from transformers import (
+-        InklingForCausalLM,
+-        InklingForConditionalGeneration,
+-        InklingModel,
+-        InklingTextModel,
+-    )
+-
+-
+-GEMMA4_RANDOM_MOE_FA2_SKIP_REASON = (
+-    "Randomly initialized Inkling MoE routers are too sensitive to tiny eager/FA2 input differences"
+-)
++    from transformers import InklingForCausalLM, InklingForConditionalGeneration, InklingModel, InklingTextModel
+ 
+ 
+ class InklingTextModelTester(CausalLMModelTester):
+@@ -253,11 +243,11 @@ def test_disk_offload_bin(self):
+     def test_disk_offload_safetensors(self):
+         pass
+ 
+-    @unittest.skip(GEMMA4_RANDOM_MOE_FA2_SKIP_REASON)
++    @unittest.skip("Randomly initialized Inkling MoE routers are too sensitive to tiny eager/FA2 input differences")
+     def test_flash_attn_2_inference_equivalence(self):
+         pass
+ 
+-    @unittest.skip(GEMMA4_RANDOM_MOE_FA2_SKIP_REASON)
++    @unittest.skip("Randomly initialized Inkling MoE routers are too sensitive to tiny eager/FA2 input differences")
+     def test_flash_attn_2_inference_equivalence_right_padding(self):
+         pass
+ 

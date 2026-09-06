@@ -1,0 +1,477 @@
+diff --git a/docs/topics/contracts.rst b/docs/topics/contracts.rst
+index 7bc19124ae2..9272250c04c 100644
+--- a/docs/topics/contracts.rst
++++ b/docs/topics/contracts.rst
+@@ -8,6 +8,10 @@ Testing spiders can get particularly annoying and while nothing prevents you
+ from writing unit tests the task gets cumbersome quickly. Scrapy offers an
+ integrated way of testing your spiders by the means of contracts.
+ 
++.. versionchanged:: VERSION
++   Added support for callbacks defined with ``async def``, including
++   :term:`asynchronous generators <asynchronous generator>`.
++
+ This allows you to test each callback of your spider by hardcoding a sample url
+ and check various constraints for how the callback processes the response. Each
+ contract is prefixed with an ``@`` and included in the docstring. See the
+diff --git a/scrapy/contracts/__init__.py b/scrapy/contracts/__init__.py
+index dbdbbd45673..55fb7e98dc3 100644
+--- a/scrapy/contracts/__init__.py
++++ b/scrapy/contracts/__init__.py
+@@ -2,16 +2,19 @@
+ 
+ import re
+ import sys
++import warnings
+ from collections.abc import AsyncGenerator, Iterable
+ from functools import wraps
+-from inspect import getmembers
++from inspect import getmembers, isasyncgenfunction, iscoroutinefunction
+ from types import CoroutineType
+-from typing import TYPE_CHECKING, Any, ClassVar, cast
++from typing import TYPE_CHECKING, Any, ClassVar
+ from unittest import TestCase, TestResult
+ 
++from scrapy.exceptions import ScrapyDeprecationWarning
+ from scrapy.http import Request, Response
++from scrapy.utils.asyncgen import collect_asyncgen
++from scrapy.utils.misc import arg_to_iter
+ from scrapy.utils.python import get_spec
+-from scrapy.utils.spider import iterate_spider_output
+ 
+ if TYPE_CHECKING:
+     from collections.abc import Callable
+@@ -21,6 +24,47 @@
+     from scrapy import Spider
+ 
+ 
++def _is_async(cb: Callable[..., Any]) -> bool:
++    return iscoroutinefunction(cb) or isasyncgenfunction(cb)
++
++
++def _collect(result: Any) -> list[Any]:
++    if isinstance(result, (AsyncGenerator, CoroutineType)):
++        if isinstance(result, CoroutineType):
++            result.close()
++        raise TypeError(
++            "Callbacks that return a coroutine or an asynchronous generator "
++            "must be defined with async def to be supported by contracts."
++        )
++    return list(arg_to_iter(result))
++
++
++async def _collect_async(result: Any) -> list[Any]:
++    if isinstance(result, AsyncGenerator):
++        return await collect_asyncgen(result)
++    if isinstance(result, CoroutineType):
++        return await _collect_async(await result)
++    return list(arg_to_iter(result))
++
++
++def _run_hook(
++    process: Callable[[Any], None],
++    value: Any,
++    testcase: TestCase,
++    results: TestResult,
++) -> None:
++    try:
++        results.startTest(testcase)
++        process(value)
++        results.stopTest(testcase)
++    except AssertionError:
++        results.addFailure(testcase, sys.exc_info())
++    except Exception:
++        results.addError(testcase, sys.exc_info())
++    else:
++        results.addSuccess(testcase)
++
++
+ class Contract:
+     """Base class for :ref:`custom contracts <topics-contracts>`.
+ 
+@@ -45,27 +89,27 @@ def add_pre_hook(self, request: Request, results: TestResult) -> Request:
+         if hasattr(self, "pre_process"):
+             cb = request.callback
+             assert cb is not None
++            pre_process = self.pre_process
++            testcase = self.testcase_pre
+ 
+-            @wraps(cb)
+-            def wrapper(response: Response, **cb_kwargs: Any) -> list[Any]:
+-                try:
+-                    results.startTest(self.testcase_pre)
+-                    self.pre_process(response)
+-                    results.stopTest(self.testcase_pre)
+-                except AssertionError:
+-                    results.addFailure(self.testcase_pre, sys.exc_info())
+-                except Exception:
+-                    results.addError(self.testcase_pre, sys.exc_info())
+-                else:
+-                    results.addSuccess(self.testcase_pre)
+-                cb_result = cb(response, **cb_kwargs)
+-                if isinstance(cb_result, (AsyncGenerator, CoroutineType)):
+-                    if isinstance(cb_result, CoroutineType):
+-                        cb_result.close()
+-                    raise TypeError("Contracts don't support async callbacks")
+-                return list(cast("Iterable[Any]", iterate_spider_output(cb_result)))
+-
+-            request.callback = wrapper
++            if _is_async(cb):
++
++                @wraps(cb)
++                async def async_wrapper(
++                    response: Response, **cb_kwargs: Any
++                ) -> list[Any]:
++                    _run_hook(pre_process, response, testcase, results)
++                    return await _collect_async(cb(response, **cb_kwargs))
++
++                request.callback = async_wrapper
++            else:
++
++                @wraps(cb)
++                def wrapper(response: Response, **cb_kwargs: Any) -> list[Any]:
++                    _run_hook(pre_process, response, testcase, results)
++                    return _collect(cb(response, **cb_kwargs))
++
++                request.callback = wrapper
+ 
+         return request
+ 
+@@ -73,28 +117,29 @@ def add_post_hook(self, request: Request, results: TestResult) -> Request:
+         if hasattr(self, "post_process"):
+             cb = request.callback
+             assert cb is not None
++            post_process = self.post_process
++            testcase = self.testcase_post
+ 
+-            @wraps(cb)
+-            def wrapper(response: Response, **cb_kwargs: Any) -> list[Any]:
+-                cb_result = cb(response, **cb_kwargs)
+-                if isinstance(cb_result, (AsyncGenerator, CoroutineType)):
+-                    if isinstance(cb_result, CoroutineType):
+-                        cb_result.close()
+-                    raise TypeError("Contracts don't support async callbacks")
+-                output = list(cast("Iterable[Any]", iterate_spider_output(cb_result)))
+-                try:
+-                    results.startTest(self.testcase_post)
+-                    self.post_process(output)
+-                    results.stopTest(self.testcase_post)
+-                except AssertionError:
+-                    results.addFailure(self.testcase_post, sys.exc_info())
+-                except Exception:
+-                    results.addError(self.testcase_post, sys.exc_info())
+-                else:
+-                    results.addSuccess(self.testcase_post)
+-                return output
++            if _is_async(cb):
++
++                @wraps(cb)
++                async def async_wrapper(
++                    response: Response, **cb_kwargs: Any
++                ) -> list[Any]:
++                    output = await _collect_async(cb(response, **cb_kwargs))
++                    _run_hook(post_process, output, testcase, results)
++                    return output
++
++                request.callback = async_wrapper
++            else:
++
++                @wraps(cb)
++                def wrapper(response: Response, **cb_kwargs: Any) -> list[Any]:
++                    output = _collect(cb(response, **cb_kwargs))
++                    _run_hook(post_process, output, testcase, results)
++                    return output
+ 
+-            request.callback = wrapper
++                request.callback = wrapper
+ 
+         return request
+ 
+@@ -114,6 +159,19 @@ class ContractsManager:
+ 
+     def __init__(self, contracts: Iterable[type[Contract]]):
+         for contract in contracts:
++            if (
++                contract.add_pre_hook is not Contract.add_pre_hook
++                or contract.add_post_hook is not Contract.add_post_hook
++            ):
++                warnings.warn(
++                    f"{contract.__module__}.{contract.__qualname__} overrides"
++                    " Contract.add_pre_hook() or Contract.add_post_hook(), which is"
++                    " deprecated. Define pre_process() or post_process() instead."
++                    " Contracts that override those methods do not support"
++                    " asynchronous callbacks.",
++                    ScrapyDeprecationWarning,
++                    stacklevel=2,
++                )
+             self.contracts[contract.name] = contract
+ 
+     def tested_methods_from_spidercls(self, spidercls: type[Spider]) -> list[str]:
+@@ -199,14 +257,25 @@ def _clean_req(
+         cb = request.callback
+         assert cb is not None
+ 
+-        @wraps(cb)
+-        def cb_wrapper(response: Response, **cb_kwargs: Any) -> None:
+-            try:
+-                output = cb(response, **cb_kwargs)
+-                output = list(cast("Iterable[Any]", iterate_spider_output(output)))
+-            except Exception:
+-                case = _create_testcase(method, "callback")
+-                results.addError(case, sys.exc_info())
++        if _is_async(cb):
++
++            @wraps(cb)
++            async def cb_wrapper(response: Response, **cb_kwargs: Any) -> None:
++                try:
++                    await _collect_async(cb(response, **cb_kwargs))
++                except Exception:
++                    case = _create_testcase(method, "callback")
++                    results.addError(case, sys.exc_info())
++
++        else:
++
++            @wraps(cb)
++            def cb_wrapper(response: Response, **cb_kwargs: Any) -> None:
++                try:
++                    _collect(cb(response, **cb_kwargs))
++                except Exception:
++                    case = _create_testcase(method, "callback")
++                    results.addError(case, sys.exc_info())
+ 
+         def eb_wrapper(failure: Failure) -> None:
+             case = _create_testcase(method, "errback")
+diff --git a/tests/test_contracts.py b/tests/test_contracts.py
+index 44b621776fa..ea2eed17f79 100644
+--- a/tests/test_contracts.py
++++ b/tests/test_contracts.py
+@@ -14,15 +14,17 @@
+     ScrapesContract,
+     UrlContract,
+ )
++from scrapy.exceptions import ScrapyDeprecationWarning
+ from scrapy.http import Request, Response
+ from scrapy.item import Field, Item
+ from scrapy.spidermiddlewares.httperror import HttpError
+ from scrapy.spiders import Spider
+ from scrapy.utils.test import get_crawler
+ from tests.mockserver.http import MockServer
+-from tests.utils.decorators import inline_callbacks_test
++from tests.utils.decorators import coroutine_test, inline_callbacks_test
+ 
+ if TYPE_CHECKING:
++    from collections.abc import AsyncIterator
+     from unittest import TestResult
+ 
+     from scrapy.http.request import CallbackT
+@@ -95,7 +97,7 @@ def returns_request(self, response):
+         """
+         return Request("http://scrapy.org", callback=self.returns_item)
+ 
+-    async def returns_request_async(self, response):
++    async def returns_request_async(self, response: Response) -> Request:
+         """async method which returns request
+         @url http://scrapy.org
+         @returns requests 1
+@@ -170,13 +172,34 @@ def yields_item_and_request(self, response):
+         yield DemoItem(name="test", url=response.url)
+         yield Request("http://scrapy.org", callback=self.returns_item)
+ 
+-    async def returns_async_gen(self, response):
++    async def returns_async_gen(self, response: Response) -> AsyncIterator[DemoItem]:
+         """async generator callback
+         @url http://scrapy.org
+         @returns items 1 1
+         """
+         yield DemoItem(url=response.url)
+ 
++    def returns_coroutine(self, response):
++        """method which returns a coroutine without being defined with async def
++        @url http://scrapy.org
++        @returns requests 1
++        """
++        return self.returns_request_async(response)
++
++    def returns_async_gen_sync(self, response):
++        """method which returns an async generator without being defined with async def
++        @url http://scrapy.org
++        @returns items 1 1
++        """
++        return self.returns_async_gen(response)
++
++    async def raises_async(self, response):
++        """async method which raises an exception
++        @url http://scrapy.org
++        @returns items 1 1
++        """
++        raise ValueError("async callback error")
++
+     def returns_dict_fail(self, response):
+         """method which returns item
+         @url http://scrapy.org
+@@ -473,14 +496,49 @@ def test_returns(self):
+         _call(request, response)
+         self.should_fail()
+ 
+-    def test_returns_async(self):
++    @coroutine_test
++    async def test_returns_async(self):
+         spider = DemoSpider()
+         response = ResponseMock()
+ 
+         request = _request(self.conman, spider.returns_request_async, self.results)
++        await _call(request, response)
++        self.should_succeed()
++
++    @coroutine_test
++    async def test_returns_async_gen(self):
++        spider = DemoSpider()
++        response = ResponseMock()
++
++        request = _request(self.conman, spider.returns_async_gen, self.results)
++        await _call(request, response)
++        self.should_succeed()
++
++    def test_returns_coroutine(self):
++        spider = DemoSpider()
++        response = ResponseMock()
++
++        request = _request(self.conman, spider.returns_coroutine, self.results)
+         _call(request, response)
+         self.should_error()
+ 
++    def test_returns_async_gen_sync(self):
++        spider = DemoSpider()
++        response = ResponseMock()
++
++        request = _request(self.conman, spider.returns_async_gen_sync, self.results)
++        _call(request, response)
++        self.should_error()
++
++    @coroutine_test
++    async def test_raises_async(self):
++        spider = DemoSpider()
++        response = ResponseMock()
++
++        request = _request(self.conman, spider.raises_async, self.results)
++        await _call(request, response)
++        self.should_error()
++
+     def test_returns_invalid_argument_count(self):
+         spider = DemoSpider()
+         with pytest.raises(ValueError, match="expected 1, 2 or 3, got 0"):
+@@ -623,6 +681,37 @@ def parse_second(self, response):
+         assert isinstance(crawler.spider, TestSameUrlSpider)
+         assert crawler.spider.visited == 2
+ 
++    @inline_callbacks_test
++    def test_async_callbacks(self):
++        class AsyncCallbackSpider(Spider):
++            name = "async_callbacks"
++
++            async def start(self_):  # pylint: disable=no-self-argument
++                for item_or_request in self.conman.from_spider(self_, self.results):
++                    yield item_or_request
++
++            async def parse_coroutine(self, response):
++                return DemoItem(name="coroutine", url=response.url)
++
++            async def parse_async_gen(self, response):
++                yield DemoItem(name="async gen", url=response.url)
++
++        with MockServer() as mockserver:
++            contract_doc = (
++                f"@url {mockserver.url('/status?n=200')}\n"
++                "@returns items 1 1\n"
++                "@scrapes name url"
++            )
++
++            AsyncCallbackSpider.parse_coroutine.__doc__ = contract_doc
++            AsyncCallbackSpider.parse_async_gen.__doc__ = contract_doc
++
++            crawler = get_crawler(AsyncCallbackSpider)
++            yield crawler.crawl()
++
++        self.should_succeed()
++        assert self.results.testsRun == 4
++
+     def test_custom_tagged_request_contract(self):
+         spider = DemoSpider()
+         request = _request(self.conman, spider.custom_tagged_request, self.results)
+@@ -761,35 +850,47 @@ def test_pre_hook_error(self):
+ 
+         assert self.results.errors
+ 
+-    def test_pre_hook_async_callback(self):
++    @coroutine_test
++    async def test_pre_hook_async_callback(self):
+         spider = DemoSpider()
+         response = ResponseMock()
+         contract = PreProcessSuccessContract(spider.returns_request_async)
+         request = Request("http://scrapy.org", callback=spider.returns_request_async)
+         contract.add_pre_hook(request, self.results)
+ 
+-        with pytest.raises(TypeError, match="async callbacks"):
+-            _call(request, response)
++        output = await _call(request, response)
+ 
+-    def test_pre_hook_async_generator(self):
++        assert len(output) == 1
++        assert not self.results.failures
++        assert not self.results.errors
++
++    @coroutine_test
++    async def test_pre_hook_async_generator(self):
+         spider = DemoSpider()
+         response = ResponseMock()
+         contract = PreProcessSuccessContract(spider.returns_async_gen)
+         request = Request("http://scrapy.org", callback=spider.returns_async_gen)
+         contract.add_pre_hook(request, self.results)
+ 
+-        with pytest.raises(TypeError, match="async callbacks"):
+-            _call(request, response)
++        output = await _call(request, response)
++
++        assert len(output) == 1
++        assert not self.results.failures
++        assert not self.results.errors
+ 
+-    def test_post_hook_async_generator(self):
++    @coroutine_test
++    async def test_post_hook_async_generator(self):
+         spider = DemoSpider()
+         response = ResponseMock()
+         contract = PostProcessSuccessContract(spider.returns_async_gen)
+         request = Request("http://scrapy.org", callback=spider.returns_async_gen)
+         contract.add_post_hook(request, self.results)
+ 
+-        with pytest.raises(TypeError, match="async callbacks"):
+-            _call(request, response)
++        output = await _call(request, response)
++
++        assert len(output) == 1
++        assert not self.results.failures
++        assert not self.results.errors
+ 
+     def test_post_hook_error(self):
+         spider = DemoSpider()
+@@ -802,3 +903,20 @@ def test_post_hook_error(self):
+         _call(request, response)
+ 
+         assert self.results.errors
++
++
++class LegacyHookContract(Contract):
++    name = "legacy_hook"
++
++    def add_pre_hook(self, request, results):
++        return request
++
++
++def test_hook_override_deprecation():
++    with pytest.warns(ScrapyDeprecationWarning, match="add_pre_hook"):
++        ContractsManager([LegacyHookContract])
++
++
++def test_no_hook_override_deprecation(recwarn):
++    ContractsManager([UrlContract, ReturnsContract])
++    assert not [w for w in recwarn if w.category is ScrapyDeprecationWarning]

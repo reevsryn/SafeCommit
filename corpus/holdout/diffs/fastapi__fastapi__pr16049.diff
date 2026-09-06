@@ -1,0 +1,824 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 25ffb0d2da810..3ae682cb39609 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -2,7 +2,7 @@
+ import sys
+ from collections.abc import Callable
+ from dataclasses import dataclass, field
+-from functools import cached_property, partial
++from functools import lru_cache, partial
+ from typing import Any, Literal
+ 
+ from fastapi._compat import ModelField
+@@ -28,7 +28,7 @@ def _impartial(func: Callable[..., Any]) -> Callable[..., Any]:
+     return func
+ 
+ 
+-@dataclass
++@dataclass(slots=True)
+ class Dependant:
+     path_params: list[ModelField] = field(default_factory=list)
+     query_params: list[ModelField] = field(default_factory=list)
+@@ -50,144 +50,188 @@ class Dependant:
+     path: str | None = None
+     scope: Literal["function", "request"] | None = None
+ 
+-    @cached_property
+-    def oauth_scopes(self) -> list[str]:
+-        scopes = self.parent_oauth_scopes.copy() if self.parent_oauth_scopes else []
+-        # This doesn't use a set to preserve order, just in case
+-        for scope in self.own_oauth_scopes or []:
+-            if scope not in scopes:
+-                scopes.append(scope)
+-        return scopes
+-
+-    @cached_property
+-    def cache_key(self) -> DependencyCacheKey:
+-        scopes_for_cache = (
+-            tuple(sorted(set(self.oauth_scopes or []))) if self._uses_scopes else ()
+-        )
+-        return (
+-            self.call,
+-            scopes_for_cache,
+-            self.computed_scope or "",
++
++_UsesScopesCache = dict[int, tuple[Dependant, bool]]
++
++
++class _CallIdentity:
++    __slots__ = ("call",)
++
++    def __init__(self, call: Callable[..., Any]) -> None:
++        self.call = call
++
++    def __hash__(self) -> int:
++        return id(self.call)
++
++    def __eq__(self, other: object) -> bool:
++        return isinstance(other, _CallIdentity) and self.call is other.call
++
++
++def _get_oauth_scopes(*, dependant: Dependant) -> list[str]:
++    scopes = (
++        dependant.parent_oauth_scopes.copy() if dependant.parent_oauth_scopes else []
++    )
++    # This doesn't use a set to preserve order, just in case
++    for scope in dependant.own_oauth_scopes or []:
++        if scope not in scopes:
++            scopes.append(scope)
++    return scopes
++
++
++def _get_cache_key(
++    *,
++    dependant: Dependant,
++    uses_scopes_cache: _UsesScopesCache | None = None,
++) -> DependencyCacheKey:
++    scopes_for_cache = (
++        tuple(sorted(set(_get_oauth_scopes(dependant=dependant))))
++        if _uses_scopes(dependant=dependant, cache=uses_scopes_cache)
++        else ()
++    )
++    return (
++        dependant.call,
++        scopes_for_cache,
++        _get_computed_scope(dependant=dependant) or "",
++    )
++
++
++def _uses_scopes(
++    *, dependant: Dependant, cache: _UsesScopesCache | None = None
++) -> bool:
++    if cache is None:
++        cache = {}
++    cache_key = id(dependant)
++    cached = cache.get(cache_key)
++    if cached is not None and cached[0] is dependant:
++        return cached[1]
++    if dependant.own_oauth_scopes:
++        result = True
++    elif dependant.security_scopes_param_name is not None:
++        result = True
++    elif _is_security_scheme(dependant=dependant):
++        result = True
++    else:
++        result = any(
++            _uses_scopes(dependant=sub_dep, cache=cache)
++            for sub_dep in dependant.dependencies
+         )
++    cache[cache_key] = (dependant, result)
++    return result
+ 
+-    @cached_property
+-    def _uses_scopes(self) -> bool:
+-        if self.own_oauth_scopes:
+-            return True
+-        if self.security_scopes_param_name is not None:
+-            return True
+-        if self._is_security_scheme:
+-            return True
+-        for sub_dep in self.dependencies:
+-            if sub_dep._uses_scopes:
+-                return True
+-        return False
+ 
+-    @cached_property
+-    def _is_security_scheme(self) -> bool:
+-        if self.call is None:
+-            return False  # pragma: no cover
+-        unwrapped = _unwrapped_call(self.call)
+-        return isinstance(unwrapped, SecurityBase)
+-
+-    # Mainly to get the type of SecurityBase, but it's the same self.call
+-    @cached_property
+-    def _security_scheme(self) -> SecurityBase:
+-        unwrapped = _unwrapped_call(self.call)
+-        assert isinstance(unwrapped, SecurityBase)
+-        return unwrapped
+-
+-    @cached_property
+-    def _security_dependencies(self) -> list["Dependant"]:
+-        security_deps = [dep for dep in self.dependencies if dep._is_security_scheme]
+-        return security_deps
+-
+-    @cached_property
+-    def is_gen_callable(self) -> bool:
+-        if self.call is None:
+-            return False  # pragma: no cover
+-        if inspect.isgeneratorfunction(
+-            _impartial(self.call)
+-        ) or inspect.isgeneratorfunction(_unwrapped_call(self.call)):
+-            return True
+-        if inspect.isclass(_unwrapped_call(self.call)):
+-            return False
+-        dunder_call = getattr(_impartial(self.call), "__call__", None)  # noqa: B004
+-        if dunder_call is None:
+-            return False  # pragma: no cover
+-        if inspect.isgeneratorfunction(
+-            _impartial(dunder_call)
+-        ) or inspect.isgeneratorfunction(_unwrapped_call(dunder_call)):
+-            return True
+-        dunder_unwrapped_call = getattr(_unwrapped_call(self.call), "__call__", None)  # noqa: B004
+-        if dunder_unwrapped_call is None:
+-            return False  # pragma: no cover
+-        if inspect.isgeneratorfunction(
+-            _impartial(dunder_unwrapped_call)
+-        ) or inspect.isgeneratorfunction(_unwrapped_call(dunder_unwrapped_call)):
+-            return True
+-        return False
++def _is_security_scheme(*, dependant: Dependant) -> bool:
++    if dependant.call is None:
++        return False  # pragma: no cover
++    unwrapped = _unwrapped_call(dependant.call)
++    return isinstance(unwrapped, SecurityBase)
++
++
++def _get_security_scheme(*, dependant: Dependant) -> SecurityBase:
++    # Mainly to get the type of SecurityBase, but it's the same dependant.call
++    unwrapped = _unwrapped_call(dependant.call)
++    assert isinstance(unwrapped, SecurityBase)
++    return unwrapped
+ 
+-    @cached_property
+-    def is_async_gen_callable(self) -> bool:
+-        if self.call is None:
+-            return False  # pragma: no cover
+-        if inspect.isasyncgenfunction(
+-            _impartial(self.call)
+-        ) or inspect.isasyncgenfunction(_unwrapped_call(self.call)):
+-            return True
+-        if inspect.isclass(_unwrapped_call(self.call)):
+-            return False
+-        dunder_call = getattr(_impartial(self.call), "__call__", None)  # noqa: B004
+-        if dunder_call is None:
+-            return False  # pragma: no cover
+-        if inspect.isasyncgenfunction(
+-            _impartial(dunder_call)
+-        ) or inspect.isasyncgenfunction(_unwrapped_call(dunder_call)):
+-            return True
+-        dunder_unwrapped_call = getattr(_unwrapped_call(self.call), "__call__", None)  # noqa: B004
+-        if dunder_unwrapped_call is None:
+-            return False  # pragma: no cover
+-        if inspect.isasyncgenfunction(
+-            _impartial(dunder_unwrapped_call)
+-        ) or inspect.isasyncgenfunction(_unwrapped_call(dunder_unwrapped_call)):
+-            return True
+-        return False
+ 
+-    @cached_property
+-    def is_coroutine_callable(self) -> bool:
+-        if self.call is None:
+-            return False  # pragma: no cover
+-        if inspect.isroutine(_impartial(self.call)) and iscoroutinefunction(
+-            _impartial(self.call)
+-        ):
+-            return True
+-        if inspect.isroutine(_unwrapped_call(self.call)) and iscoroutinefunction(
+-            _unwrapped_call(self.call)
+-        ):
+-            return True
+-        if inspect.isclass(_unwrapped_call(self.call)):
+-            return False
+-        dunder_call = getattr(_impartial(self.call), "__call__", None)  # noqa: B004
+-        if dunder_call is None:
+-            return False  # pragma: no cover
+-        if iscoroutinefunction(_impartial(dunder_call)) or iscoroutinefunction(
+-            _unwrapped_call(dunder_call)
+-        ):
+-            return True
+-        dunder_unwrapped_call = getattr(_unwrapped_call(self.call), "__call__", None)  # noqa: B004
+-        if dunder_unwrapped_call is None:
+-            return False  # pragma: no cover
+-        if iscoroutinefunction(
+-            _impartial(dunder_unwrapped_call)
+-        ) or iscoroutinefunction(_unwrapped_call(dunder_unwrapped_call)):
+-            return True
++def _get_security_dependencies(*, dependant: Dependant) -> list[Dependant]:
++    return [dep for dep in dependant.dependencies if _is_security_scheme(dependant=dep)]
++
++
++@lru_cache(maxsize=1024)
++def _is_gen_callable_cached(call_identity: _CallIdentity) -> bool:
++    call = call_identity.call
++    if inspect.isgeneratorfunction(_impartial(call)) or inspect.isgeneratorfunction(
++        _unwrapped_call(call)
++    ):
++        return True
++    if inspect.isclass(_unwrapped_call(call)):
++        return False
++    dunder_call = getattr(_impartial(call), "__call__", None)  # noqa: B004
++    if dunder_call is None:
++        return False  # pragma: no cover
++    if inspect.isgeneratorfunction(
++        _impartial(dunder_call)
++    ) or inspect.isgeneratorfunction(_unwrapped_call(dunder_call)):
++        return True
++    dunder_unwrapped_call = getattr(_unwrapped_call(call), "__call__", None)  # noqa: B004
++    if dunder_unwrapped_call is None:
++        return False  # pragma: no cover
++    return inspect.isgeneratorfunction(
++        _impartial(dunder_unwrapped_call)
++    ) or inspect.isgeneratorfunction(_unwrapped_call(dunder_unwrapped_call))
++
++
++def _is_gen_callable(call: Callable[..., Any] | None) -> bool:
++    if call is None:
++        return False  # pragma: no cover
++    return _is_gen_callable_cached(_CallIdentity(call))
++
++
++@lru_cache(maxsize=1024)
++def _is_async_gen_callable_cached(call_identity: _CallIdentity) -> bool:
++    call = call_identity.call
++    if inspect.isasyncgenfunction(_impartial(call)) or inspect.isasyncgenfunction(
++        _unwrapped_call(call)
++    ):
++        return True
++    if inspect.isclass(_unwrapped_call(call)):
+         return False
++    dunder_call = getattr(_impartial(call), "__call__", None)  # noqa: B004
++    if dunder_call is None:
++        return False  # pragma: no cover
++    if inspect.isasyncgenfunction(
++        _impartial(dunder_call)
++    ) or inspect.isasyncgenfunction(_unwrapped_call(dunder_call)):
++        return True
++    dunder_unwrapped_call = getattr(_unwrapped_call(call), "__call__", None)  # noqa: B004
++    if dunder_unwrapped_call is None:
++        return False  # pragma: no cover
++    return inspect.isasyncgenfunction(
++        _impartial(dunder_unwrapped_call)
++    ) or inspect.isasyncgenfunction(_unwrapped_call(dunder_unwrapped_call))
++
++
++def _is_async_gen_callable(call: Callable[..., Any] | None) -> bool:
++    if call is None:
++        return False  # pragma: no cover
++    return _is_async_gen_callable_cached(_CallIdentity(call))
++
++
++@lru_cache(maxsize=1024)
++def _is_coroutine_callable_cached(call_identity: _CallIdentity) -> bool:
++    call = call_identity.call
++    if inspect.isroutine(_impartial(call)) and iscoroutinefunction(_impartial(call)):
++        return True
++    if inspect.isroutine(_unwrapped_call(call)) and iscoroutinefunction(
++        _unwrapped_call(call)
++    ):
++        return True
++    if inspect.isclass(_unwrapped_call(call)):
++        return False
++    dunder_call = getattr(_impartial(call), "__call__", None)  # noqa: B004
++    if dunder_call is None:
++        return False  # pragma: no cover
++    if iscoroutinefunction(_impartial(dunder_call)) or iscoroutinefunction(
++        _unwrapped_call(dunder_call)
++    ):
++        return True
++    dunder_unwrapped_call = getattr(_unwrapped_call(call), "__call__", None)  # noqa: B004
++    if dunder_unwrapped_call is None:
++        return False  # pragma: no cover
++    return iscoroutinefunction(
++        _impartial(dunder_unwrapped_call)
++    ) or iscoroutinefunction(_unwrapped_call(dunder_unwrapped_call))
++
++
++def _is_coroutine_callable(call: Callable[..., Any] | None) -> bool:
++    if call is None:
++        return False  # pragma: no cover
++    return _is_coroutine_callable_cached(_CallIdentity(call))
++
+ 
+-    @cached_property
+-    def computed_scope(self) -> str | None:
+-        if self.scope:
+-            return self.scope
+-        if self.is_gen_callable or self.is_async_gen_callable:
+-            return "request"
+-        return None
++def _get_computed_scope(*, dependant: Dependant) -> str | None:
++    if dependant.scope:
++        return dependant.scope
++    if _is_gen_callable(dependant.call) or _is_async_gen_callable(dependant.call):
++        return "request"
++    return None
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 40dffba64bed8..31863801584cc 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -54,7 +54,16 @@
+     asynccontextmanager,
+     contextmanager_in_threadpool,
+ )
+-from fastapi.dependencies.models import Dependant
++from fastapi.dependencies.models import (
++    Dependant,
++    _get_cache_key,
++    _get_computed_scope,
++    _get_oauth_scopes,
++    _is_async_gen_callable,
++    _is_coroutine_callable,
++    _is_gen_callable,
++    _UsesScopesCache,
++)
+ from fastapi.exceptions import DependencyScopeError
+ from fastapi.logger import logger
+ from fastapi.security.oauth2 import SecurityScopes
+@@ -141,12 +150,20 @@ def get_flat_dependant(
+     skip_repeats: bool = False,
+     visited: list[DependencyCacheKey] | None = None,
+     parent_oauth_scopes: list[str] | None = None,
++    _uses_scopes_cache: _UsesScopesCache | None = None,
+ ) -> Dependant:
+     if visited is None:
+         visited = []
+-    visited.append(dependant.cache_key)
++    if _uses_scopes_cache is None:
++        _uses_scopes_cache = {}
++    visited.append(
++        _get_cache_key(
++            dependant=dependant,
++            uses_scopes_cache=_uses_scopes_cache,
++        )
++    )
+     use_parent_oauth_scopes = (parent_oauth_scopes or []) + (
+-        dependant.oauth_scopes or []
++        _get_oauth_scopes(dependant=dependant)
+     )
+ 
+     flat_dependant = Dependant(
+@@ -170,13 +187,21 @@ def get_flat_dependant(
+         scope=dependant.scope,
+     )
+     for sub_dependant in dependant.dependencies:
+-        if skip_repeats and sub_dependant.cache_key in visited:
++        if (
++            skip_repeats
++            and _get_cache_key(
++                dependant=sub_dependant,
++                uses_scopes_cache=_uses_scopes_cache,
++            )
++            in visited
++        ):
+             continue
+         flat_sub = get_flat_dependant(
+             sub_dependant,
+             skip_repeats=skip_repeats,
+             visited=visited,
+-            parent_oauth_scopes=flat_dependant.oauth_scopes,
++            parent_oauth_scopes=_get_oauth_scopes(dependant=flat_dependant),
++            _uses_scopes_cache=_uses_scopes_cache,
+         )
+         flat_dependant.dependencies.append(flat_sub)
+         flat_dependant.path_params.extend(flat_sub.path_params)
+@@ -317,8 +342,11 @@ def get_dependant(
+         if param_details.depends is not None:
+             assert param_details.depends.dependency
+             if (
+-                (dependant.is_gen_callable or dependant.is_async_gen_callable)
+-                and dependant.computed_scope == "request"
++                (
++                    _is_gen_callable(dependant.call)
++                    or _is_async_gen_callable(dependant.call)
++                )
++                and _get_computed_scope(dependant=dependant) == "request"
+                 and param_details.depends.scope == "function"
+             ):
+                 assert dependant.call
+@@ -579,9 +607,9 @@ async def _solve_generator(
+     *, dependant: Dependant, stack: AsyncExitStack, sub_values: dict[str, Any]
+ ) -> Any:
+     assert dependant.call
+-    if dependant.is_async_gen_callable:
++    if _is_async_gen_callable(dependant.call):
+         cm = asynccontextmanager(dependant.call)(**sub_values)
+-    elif dependant.is_gen_callable:
++    elif _is_gen_callable(dependant.call):
+         cm = contextmanager_in_threadpool(contextmanager(dependant.call)(**sub_values))
+     return await stack.enter_async_context(cm)
+ 
+@@ -608,6 +636,7 @@ async def solve_dependencies(
+     # people might be monkey patching this function (although that's not supported)
+     async_exit_stack: AsyncExitStack,
+     embed_body_fields: bool,
++    _uses_scopes_cache: _UsesScopesCache | None = None,
+ ) -> SolvedDependency:
+     request_astack = request.scope.get("fastapi_inner_astack")
+     assert isinstance(request_astack, AsyncExitStack), (
+@@ -625,6 +654,8 @@ async def solve_dependencies(
+         response.status_code = None  # type: ignore
+     if dependency_cache is None:
+         dependency_cache = {}
++    if _uses_scopes_cache is None:
++        _uses_scopes_cache = {}
+     for sub_dependant in dependant.dependencies:
+         sub_dependant.call = cast(Callable[..., Any], sub_dependant.call)
+         call = sub_dependant.call
+@@ -642,7 +673,7 @@ async def solve_dependencies(
+                 path=use_path,
+                 call=call,
+                 name=sub_dependant.name,
+-                parent_oauth_scopes=sub_dependant.oauth_scopes,
++                parent_oauth_scopes=_get_oauth_scopes(dependant=sub_dependant),
+                 scope=sub_dependant.scope,
+             )
+ 
+@@ -656,15 +687,20 @@ async def solve_dependencies(
+             dependency_cache=dependency_cache,
+             async_exit_stack=async_exit_stack,
+             embed_body_fields=embed_body_fields,
++            _uses_scopes_cache=_uses_scopes_cache,
+         )
+         background_tasks = solved_result.background_tasks
+         if solved_result.errors:
+             errors.extend(solved_result.errors)
+             continue
+-        if sub_dependant.use_cache and sub_dependant.cache_key in dependency_cache:
+-            solved = dependency_cache[sub_dependant.cache_key]
+-        elif (
+-            use_sub_dependant.is_gen_callable or use_sub_dependant.is_async_gen_callable
++        sub_dependant_cache_key = _get_cache_key(
++            dependant=sub_dependant,
++            uses_scopes_cache=_uses_scopes_cache,
++        )
++        if sub_dependant.use_cache and sub_dependant_cache_key in dependency_cache:
++            solved = dependency_cache[sub_dependant_cache_key]
++        elif _is_gen_callable(use_sub_dependant.call) or _is_async_gen_callable(
++            use_sub_dependant.call
+         ):
+             use_astack = request_astack
+             if sub_dependant.scope == "function":
+@@ -674,14 +710,14 @@ async def solve_dependencies(
+                 stack=use_astack,
+                 sub_values=solved_result.values,
+             )
+-        elif use_sub_dependant.is_coroutine_callable:
++        elif _is_coroutine_callable(use_sub_dependant.call):
+             solved = await call(**solved_result.values)
+         else:
+             solved = await run_in_threadpool(call, **solved_result.values)
+         if sub_dependant.name is not None:
+             values[sub_dependant.name] = solved
+-        if sub_dependant.cache_key not in dependency_cache:
+-            dependency_cache[sub_dependant.cache_key] = solved
++        if sub_dependant_cache_key not in dependency_cache:
++            dependency_cache[sub_dependant_cache_key] = solved
+     path_values, path_errors = request_params_to_args(
+         dependant.path_params, request.path_params
+     )
+@@ -724,7 +760,7 @@ async def solve_dependencies(
+         values[dependant.response_param_name] = response
+     if dependant.security_scopes_param_name:
+         values[dependant.security_scopes_param_name] = SecurityScopes(
+-            scopes=dependant.oauth_scopes
++            scopes=_get_oauth_scopes(dependant=dependant)
+         )
+     return SolvedDependency(
+         values=values,
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index 2e0aca118788b..54c5b78a5549b 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -15,7 +15,12 @@
+     lenient_issubclass,
+ )
+ from fastapi.datastructures import DefaultPlaceholder, _Unset
+-from fastapi.dependencies.models import Dependant
++from fastapi.dependencies.models import (
++    Dependant,
++    _get_oauth_scopes,
++    _get_security_dependencies,
++    _get_security_scheme,
++)
+ from fastapi.dependencies.utils import (
+     _get_flat_fields_from_params,
+     get_flat_dependant,
+@@ -84,18 +89,19 @@ def get_openapi_security_definitions(
+     security_definitions = {}
+     # Use a dict to merge scopes for same security scheme
+     operation_security_dict: dict[str, list[str]] = {}
+-    for security_dependency in flat_dependant._security_dependencies:
++    for security_dependency in _get_security_dependencies(dependant=flat_dependant):
++        security_scheme = _get_security_scheme(dependant=security_dependency)
+         security_definition = jsonable_encoder(
+-            security_dependency._security_scheme.model,
++            security_scheme.model,
+             by_alias=True,
+             exclude_none=True,
+         )
+-        security_name = security_dependency._security_scheme.scheme_name
++        security_name = security_scheme.scheme_name
+         security_definitions[security_name] = security_definition
+         # Merge scopes for the same security scheme
+         if security_name not in operation_security_dict:
+             operation_security_dict[security_name] = []
+-        for scope in security_dependency.oauth_scopes or []:
++        for scope in _get_oauth_scopes(dependant=security_dependency):
+             if scope not in operation_security_dict[security_name]:
+                 operation_security_dict[security_name].append(scope)
+     operation_security = [
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 78207778a2c65..f3ff6c172e6e9 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -48,7 +48,12 @@
+     lenient_issubclass,
+ )
+ from fastapi.datastructures import Default, DefaultPlaceholder
+-from fastapi.dependencies.models import Dependant
++from fastapi.dependencies.models import (
++    Dependant,
++    _is_async_gen_callable,
++    _is_coroutine_callable,
++    _is_gen_callable,
++)
+ from fastapi.dependencies.utils import (
+     _should_embed_body_fields,
+     get_body_field,
+@@ -384,7 +389,7 @@ def get_request_handler(
+     is_json_stream: bool = False,
+ ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+     assert dependant.call is not None, "dependant.call must be a function"
+-    is_coroutine = dependant.is_coroutine_callable
++    is_coroutine = _is_coroutine_callable(dependant.call)
+     is_body_form = body_field and isinstance(body_field.field_info, params.Form)
+     if isinstance(response_class, DefaultPlaceholder):
+         actual_response_class: type[Response] = response_class.value
+@@ -543,7 +548,7 @@ def _serialize_sse_item(item: Any) -> bytes:
+                             data_str=_serialize_data(item).decode("utf-8")
+                         )
+ 
+-                if dependant.is_async_gen_callable:
++                if _is_async_gen_callable(dependant.call):
+                     sse_aiter: AsyncIterator[Any] = gen.__aiter__()
+                 else:
+                     sse_aiter = iterate_in_threadpool(gen)
+@@ -641,7 +646,7 @@ async def _sse_with_checkpoints(
+                 def _serialize_item(item: Any) -> bytes:
+                     return _serialize_data(item) + b"\n"
+ 
+-                if dependant.is_async_gen_callable:
++                if _is_async_gen_callable(dependant.call):
+ 
+                     async def _async_stream_jsonl() -> AsyncIterator[bytes]:
+                         async for item in gen:
+@@ -667,10 +672,12 @@ def _sync_stream_jsonl() -> Iterator[bytes]:
+                     background=solved_result.background_tasks,
+                 )
+                 response.headers.raw.extend(solved_result.response.headers.raw)
+-            elif dependant.is_async_gen_callable or dependant.is_gen_callable:
++            elif _is_async_gen_callable(dependant.call) or _is_gen_callable(
++                dependant.call
++            ):
+                 # Raw streaming with explicit response_class (e.g. StreamingResponse)
+                 gen = dependant.call(**solved_result.values)
+-                if dependant.is_async_gen_callable:
++                if _is_async_gen_callable(dependant.call):
+ 
+                     async def _async_stream_raw(
+                         async_gen: AsyncIterator[Any],
+@@ -1097,8 +1104,8 @@ def _populate_api_route_state(
+         embed_body_fields=route._embed_body_fields,
+     )
+     # Detect generator endpoints that should stream as JSONL or SSE
+-    is_generator = (
+-        route.dependant.is_async_gen_callable or route.dependant.is_gen_callable
++    is_generator = _is_async_gen_callable(route.dependant.call) or _is_gen_callable(
++        route.dependant.call
+     )
+     route.is_sse_stream = is_generator and lenient_issubclass(
+         response_class, EventSourceResponse
+diff --git a/tests/test_dependency_models.py b/tests/test_dependency_models.py
+new file mode 100644
+index 0000000000000..a2a36eaff4ecd
+--- /dev/null
++++ b/tests/test_dependency_models.py
+@@ -0,0 +1,187 @@
++from collections.abc import AsyncGenerator, Generator
++from typing import Any
++
++from fastapi.dependencies.models import (
++    Dependant,
++    _get_cache_key,
++    _get_computed_scope,
++    _get_oauth_scopes,
++    _get_security_dependencies,
++    _get_security_scheme,
++    _is_async_gen_callable,
++    _is_async_gen_callable_cached,
++    _is_coroutine_callable,
++    _is_coroutine_callable_cached,
++    _is_gen_callable,
++    _is_gen_callable_cached,
++    _is_security_scheme,
++    _uses_scopes,
++)
++from fastapi.security import APIKeyHeader
++
++
++def sync_dependency() -> None:
++    pass  # pragma: no cover
++
++
++async def async_dependency() -> None:
++    pass  # pragma: no cover
++
++
++def generator_dependency() -> Generator[None, None, None]:
++    yield  # pragma: no cover
++
++
++async def async_generator_dependency() -> AsyncGenerator[None, None]:
++    yield  # pragma: no cover
++
++
++class UnhashableCallable:
++    __hash__ = None
++
++    async def __call__(self) -> None:
++        pass  # pragma: no cover
++
++
++class UnhashableGeneratorCallable:
++    __hash__ = None
++
++    def __call__(self) -> Generator[None, None, None]:
++        yield  # pragma: no cover
++
++
++class UnhashableAsyncGeneratorCallable:
++    __hash__ = None
++
++    async def __call__(self) -> AsyncGenerator[None, None]:
++        yield  # pragma: no cover
++
++
++class EqualCallable:
++    def __eq__(self, other: object) -> bool:
++        return isinstance(other, EqualCallable)
++
++    def __hash__(self) -> int:
++        return 1  # pragma: no cover
++
++
++class EqualAsyncCallable(EqualCallable):
++    async def __call__(self) -> None:
++        pass  # pragma: no cover
++
++
++class EqualSyncCallable(EqualCallable):
++    def __call__(self) -> None:
++        pass  # pragma: no cover
++
++
++def test_callable_classification_is_shared_by_call() -> None:
++    _is_gen_callable_cached.cache_clear()
++    _is_async_gen_callable_cached.cache_clear()
++    _is_coroutine_callable_cached.cache_clear()
++
++    for _ in range(2):
++        assert not _is_gen_callable(async_dependency)
++        assert not _is_async_gen_callable(async_dependency)
++        assert _is_coroutine_callable(async_dependency)
++
++    for cached_function in (
++        _is_gen_callable_cached,
++        _is_async_gen_callable_cached,
++        _is_coroutine_callable_cached,
++    ):
++        cache_info = cached_function.cache_info()
++        assert cache_info.hits == 1
++        assert cache_info.misses == 1
++        assert cache_info.maxsize == 1024
++
++
++def test_unhashable_callable_classification() -> None:
++    assert _is_coroutine_callable(UnhashableCallable())
++    assert _is_gen_callable(UnhashableGeneratorCallable())
++    assert _is_async_gen_callable(UnhashableAsyncGeneratorCallable())
++
++
++def test_equal_callable_instances_are_cached_by_identity() -> None:
++    async_callable = EqualAsyncCallable()
++    sync_callable = EqualSyncCallable()
++
++    assert async_callable == sync_callable
++    assert _is_coroutine_callable(async_callable)
++    assert not _is_coroutine_callable(sync_callable)
++
++
++def test_callable_classification() -> None:
++    assert not _is_gen_callable(sync_dependency)
++    assert not _is_async_gen_callable(sync_dependency)
++    assert not _is_coroutine_callable(sync_dependency)
++    assert _is_gen_callable(generator_dependency)
++    assert _is_async_gen_callable(async_generator_dependency)
++
++
++def test_derived_values_are_not_stored_on_dependant() -> None:
++    dependant = Dependant(call=async_dependency)
++    uses_scopes_cache = {}
++
++    assert _get_oauth_scopes(dependant=dependant) == []
++    assert not _uses_scopes(dependant=dependant, cache=uses_scopes_cache)
++    assert not _uses_scopes(dependant=dependant, cache=uses_scopes_cache)
++    assert _get_security_dependencies(dependant=dependant) == []
++    assert _get_computed_scope(dependant=dependant) is None
++    assert _get_cache_key(dependant=dependant) == (async_dependency, (), "")
++
++    assert not hasattr(dependant, "__dict__")
++
++
++def test_security_scheme_helpers() -> None:
++    security_scheme = APIKeyHeader(name="key")
++    security_dependant = Dependant(call=security_scheme)
++    dependant = Dependant(dependencies=[security_dependant])
++
++    assert _is_security_scheme(dependant=security_dependant)
++    assert _get_security_scheme(dependant=security_dependant) is security_scheme
++    assert _get_security_dependencies(dependant=dependant) == [security_dependant]
++    assert _uses_scopes(dependant=dependant)
++
++
++def test_derived_values_follow_dependency_state() -> None:
++    child = Dependant(call=sync_dependency)
++    dependant = Dependant(
++        call=sync_dependency,
++        dependencies=[child],
++        own_oauth_scopes=[],
++        parent_oauth_scopes=["parent"],
++    )
++
++    assert _get_cache_key(dependant=dependant) == (sync_dependency, (), "")
++
++    child.security_scopes_param_name = "scopes"
++    dependant.own_oauth_scopes = ["own", "parent"]
++
++    assert _uses_scopes(dependant=dependant)
++    assert _get_oauth_scopes(dependant=dependant) == ["parent", "own"]
++    assert _get_cache_key(dependant=dependant) == (
++        sync_dependency,
++        ("own", "parent"),
++        "",
++    )
++
++
++def test_explicit_and_generator_scopes() -> None:
++    assert (
++        _get_computed_scope(dependant=Dependant(call=sync_dependency, scope="function"))
++        == "function"
++    )
++    assert (
++        _get_computed_scope(dependant=Dependant(call=generator_dependency)) == "request"
++    )
++
++
++def test_callable_return_annotations_are_not_used() -> None:
++    class CallableWithUnhashableReturn:
++        def __call__(self) -> Any:
++            return None  # pragma: no cover
++
++        __hash__ = None
++
++    assert not _is_coroutine_callable(CallableWithUnhashableReturn())

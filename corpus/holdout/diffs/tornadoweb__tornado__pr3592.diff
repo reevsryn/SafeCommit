@@ -1,0 +1,717 @@
+diff --git a/requirements.txt b/requirements.txt
+index fc4c90105..8317a1775 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -8,7 +8,7 @@ alabaster==1.0.0
+     # via sphinx
+ babel==2.17.0
+     # via sphinx
+-black==25.1.0
++black==26.3.1
+     # via -r requirements.in
+ build==1.2.2.post1
+     # via pip-tools
+@@ -62,7 +62,7 @@ packaging==25.0
+     #   sphinx
+     #   tox
+     #   wheel
+-pathspec==0.12.1
++pathspec==1.0.4
+     # via black
+ pip-tools==7.4.1
+     # via -r requirements.in
+@@ -85,6 +85,8 @@ pyproject-hooks==1.2.0
+     # via
+     #   build
+     #   pip-tools
++pytokens==0.4.1
++    # via black
+ requests==2.32.4
+     # via sphinx
+ roman-numerals-py==3.1.0
+diff --git a/tornado/curl_httpclient.py b/tornado/curl_httpclient.py
+index 6d98b44b7..9ca9d92d1 100644
+--- a/tornado/curl_httpclient.py
++++ b/tornado/curl_httpclient.py
+@@ -224,7 +224,7 @@ def _process_queue(self) -> None:
+             while self._free_list and self._requests:
+                 started += 1
+                 curl = self._free_list.pop()
+-                (request, callback, queue_start_time) = self._requests.popleft()
++                request, callback, queue_start_time = self._requests.popleft()
+                 # TODO: Don't smuggle extra data on an attribute of the Curl object.
+                 curl.info = {  # type: ignore
+                     "headers": httputil.HTTPHeaders(),
+@@ -565,7 +565,7 @@ def _curl_header_callback(
+         if header_line.startswith("HTTP/"):
+             headers.clear()
+             try:
+-                (_version, _code, reason) = httputil.parse_response_start_line(
++                _version, _code, reason = httputil.parse_response_start_line(
+                     header_line
+                 )
+                 header_line = "X-Http-Reason: %s" % reason
+diff --git a/tornado/httputil.py b/tornado/httputil.py
+index 19198b7a4..38d9f8799 100644
+--- a/tornado/httputil.py
++++ b/tornado/httputil.py
+@@ -37,7 +37,6 @@
+ from tornado.escape import native_str, parse_qs_bytes, utf8, to_unicode
+ from tornado.util import ObjectDict, unicode_type
+ 
+-
+ # responses is unused in this file, but we re-export it to other files.
+ # Reference it so pyflakes doesn't complain.
+ responses
+diff --git a/tornado/log.py b/tornado/log.py
+index f5ca5c0c4..4b1390434 100644
+--- a/tornado/log.py
++++ b/tornado/log.py
+@@ -27,6 +27,7 @@
+ `logging` module.  For example, you may wish to send ``tornado.access`` logs
+ to a separate file for analysis.
+ """
++
+ import logging
+ import logging.handlers
+ import sys
+diff --git a/tornado/test/autoreload_test.py b/tornado/test/autoreload_test.py
+index 60fb30c61..8f9b739fa 100644
+--- a/tornado/test/autoreload_test.py
++++ b/tornado/test/autoreload_test.py
+@@ -23,9 +23,7 @@ def setUp(self):
+         #
+         # The last line of each such test's "main" program should be
+         #     exec(open("run_twice_magic.py").read())
+-        self.write_files(
+-            {
+-                "run_twice_magic.py": """
++        self.write_files({"run_twice_magic.py": """
+                     import os
+                     import sys
+ 
+@@ -38,9 +36,7 @@ def setUp(self):
+                         tornado.autoreload._reload()
+                     else:
+                         os._exit(0)
+-                """
+-            }
+-        )
++                """})
+ 
+     def tearDown(self):
+         try:
+diff --git a/tornado/test/curl_httpclient_test.py b/tornado/test/curl_httpclient_test.py
+index bf87df682..51d2ed4ae 100644
+--- a/tornado/test/curl_httpclient_test.py
++++ b/tornado/test/curl_httpclient_test.py
+@@ -7,7 +7,6 @@
+ from tornado.web import Application, RequestHandler
+ from tornado import gen
+ 
+-
+ try:
+     import pycurl
+ except ImportError:
+diff --git a/tornado/test/httpclient_test.py b/tornado/test/httpclient_test.py
+index caed23e04..b8ae06204 100644
+--- a/tornado/test/httpclient_test.py
++++ b/tornado/test/httpclient_test.py
+@@ -238,8 +238,7 @@ def accept_callback(conn, address):
+                 request_data = yield stream.read_until(b"\r\n\r\n")
+                 if b"HTTP/1." not in request_data:
+                     self.skipTest("requires HTTP/1.x")
+-                yield stream.write(
+-                    b"""\
++                yield stream.write(b"""\
+ HTTP/1.1 200 OK
+ Transfer-Encoding: chunked
+ 
+@@ -249,10 +248,7 @@ def accept_callback(conn, address):
+ 2
+ 0
+ 
+-""".replace(
+-                        b"\n", b"\r\n"
+-                    )
+-                )
++""".replace(b"\n", b"\r\n"))
+                 stream.close()
+ 
+             netutil.add_accept_handler(sock, accept_callback)  # type: ignore
+@@ -539,16 +535,12 @@ def accept_callback(conn, address):
+                 request_data = yield stream.read_until(b"\r\n\r\n")
+                 if b"HTTP/1." not in request_data:
+                     self.skipTest("requires HTTP/1.x")
+-                yield stream.write(
+-                    b"""\
++                yield stream.write(b"""\
+ HTTP/1.1 200 OK
+ X-XSS-Protection: 1;
+ \tmode=block
+ 
+-""".replace(
+-                        b"\n", b"\r\n"
+-                    )
+-                )
++""".replace(b"\n", b"\r\n"))
+                 stream.close()
+ 
+             netutil.add_accept_handler(sock, accept_callback)  # type: ignore
+diff --git a/tornado/test/httpserver_test.py b/tornado/test/httpserver_test.py
+index 008078ed9..b6a30fba5 100644
+--- a/tornado/test/httpserver_test.py
++++ b/tornado/test/httpserver_test.py
+@@ -477,8 +477,7 @@ def test_invalid_host_header_with_whitespace(self):
+     def test_chunked_request_body(self):
+         # Chunked requests are not widely supported and we don't have a way
+         # to generate them in AsyncHTTPClient, but HTTPServer will read them.
+-        self.stream.write(
+-            b"""\
++        self.stream.write(b"""\
+ POST /echo HTTP/1.1
+ Host: 127.0.0.1
+ Transfer-Encoding: chunked
+@@ -490,10 +489,7 @@ def test_chunked_request_body(self):
+ bar
+ 0
+ 
+-""".replace(
+-                b"\n", b"\r\n"
+-            )
+-        )
++""".replace(b"\n", b"\r\n"))
+         start_line, headers, response = self.io_loop.run_sync(
+             lambda: read_stream_body(self.stream)
+         )
+@@ -502,8 +498,7 @@ def test_chunked_request_body(self):
+     def test_chunked_request_uppercase(self):
+         # As per RFC 2616 section 3.6, "Transfer-Encoding" header's value is
+         # case-insensitive.
+-        self.stream.write(
+-            b"""\
++        self.stream.write(b"""\
+ POST /echo HTTP/1.1
+ Host: 127.0.0.1
+ Transfer-Encoding: Chunked
+@@ -515,10 +510,7 @@ def test_chunked_request_uppercase(self):
+ bar
+ 0
+ 
+-""".replace(
+-                b"\n", b"\r\n"
+-            )
+-        )
++""".replace(b"\n", b"\r\n"))
+         start_line, headers, response = self.io_loop.run_sync(
+             lambda: read_stream_body(self.stream)
+         )
+@@ -527,8 +519,7 @@ def test_chunked_request_uppercase(self):
+     def test_chunked_request_body_invalid_size(self):
+         # Only hex digits are allowed in chunk sizes. Python's int() function
+         # also accepts underscores, so make sure we reject them here.
+-        self.stream.write(
+-            b"""\
++        self.stream.write(b"""\
+ POST /echo HTTP/1.1
+ Host: 127.0.0.1
+ Transfer-Encoding: chunked
+@@ -537,10 +528,7 @@ def test_chunked_request_body_invalid_size(self):
+ 1234567890abcdef1234567890
+ 0
+ 
+-""".replace(
+-                b"\n", b"\r\n"
+-            )
+-        )
++""".replace(b"\n", b"\r\n"))
+         with ExpectLog(gen_log, ".*invalid chunk size", level=logging.INFO):
+             start_line, headers, response = self.io_loop.run_sync(
+                 lambda: read_stream_body(self.stream)
+@@ -550,8 +538,7 @@ def test_chunked_request_body_invalid_size(self):
+     def test_chunked_request_body_duplicate_header(self):
+         # Repeated Transfer-Encoding headers should be an error (and not confuse
+         # the chunked-encoding detection to mess up framing).
+-        self.stream.write(
+-            b"""\
++        self.stream.write(b"""\
+ POST /echo HTTP/1.1
+ Host: 127.0.0.1
+ Transfer-Encoding: chunked
+@@ -561,8 +548,7 @@ def test_chunked_request_body_duplicate_header(self):
+ ok
+ 0
+ 
+-"""
+-        )
++""")
+         with ExpectLog(
+             gen_log,
+             ".*Unsupported Transfer-Encoding chunked,chunked",
+@@ -575,8 +561,7 @@ def test_chunked_request_body_duplicate_header(self):
+ 
+     def test_chunked_request_body_unsupported_transfer_encoding(self):
+         # We don't support transfer-encodings other than chunked.
+-        self.stream.write(
+-            b"""\
++        self.stream.write(b"""\
+ POST /echo HTTP/1.1
+ Host: 127.0.0.1
+ Transfer-Encoding: gzip, chunked
+@@ -585,8 +570,7 @@ def test_chunked_request_body_unsupported_transfer_encoding(self):
+ ok
+ 0
+ 
+-"""
+-        )
++""")
+         with ExpectLog(
+             gen_log, ".*Unsupported Transfer-Encoding gzip, chunked", level=logging.INFO
+         ):
+@@ -597,8 +581,7 @@ def test_chunked_request_body_unsupported_transfer_encoding(self):
+ 
+     def test_chunked_request_body_transfer_encoding_and_content_length(self):
+         # Transfer-encoding and content-length are mutually exclusive
+-        self.stream.write(
+-            b"""\
++        self.stream.write(b"""\
+ POST /echo HTTP/1.1
+ Host: 127.0.0.1
+ Transfer-Encoding: chunked
+@@ -608,8 +591,7 @@ def test_chunked_request_body_transfer_encoding_and_content_length(self):
+ ok
+ 0
+ 
+-"""
+-        )
++""")
+         with ExpectLog(
+             gen_log,
+             ".*Message with both Transfer-Encoding and Content-Length",
+@@ -638,20 +620,14 @@ def test_invalid_content_length(self):
+                     level=logging.INFO,
+                 ):
+                     yield stream.connect(("127.0.0.1", self.get_http_port()))
+-                    stream.write(
+-                        utf8(
+-                            textwrap.dedent(
+-                                f"""\
++                    stream.write(utf8(textwrap.dedent(f"""\
+                             POST /echo HTTP/1.1
+                             Host: 127.0.0.1
+                             Content-Length: {value}
+                             Connection: close
+ 
+                             1234567890
+-                            """
+-                            ).replace("\n", "\r\n")
+-                        )
+-                    )
++                            """).replace("\n", "\r\n")))
+                     yield stream.read_until_close()
+ 
+     @gen_test
+diff --git a/tornado/test/httputil_test.py b/tornado/test/httputil_test.py
+index 46034bba1..6e3013794 100644
+--- a/tornado/test/httputil_test.py
++++ b/tornado/test/httputil_test.py
+@@ -102,9 +102,7 @@ def test_file_upload(self):
+ Content-Disposition: form-data; name="files"; filename="ab.txt"
+ 
+ Foo
+---1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         parse_multipart_form_data(b"1234", data, args, files)
+         file = files["files"][0]
+@@ -118,9 +116,7 @@ def test_unquoted_names(self):
+ Content-Disposition: form-data; name=files; filename=ab.txt
+ 
+ Foo
+---1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         parse_multipart_form_data(b"1234", data, args, files)
+         file = files["files"][0]
+@@ -146,11 +142,7 @@ def test_special_filenames(self):
+ Content-Disposition: form-data; name="files"; filename="%s"
+ 
+ Foo
+---1234--""" % filename.replace(
+-                "\\", "\\\\"
+-            ).replace(
+-                '"', '\\"'
+-            )
++--1234--""" % filename.replace("\\", "\\\\").replace('"', '\\"')
+             data = utf8(str_data.replace("\n", "\r\n"))
+             args, files = form_data_args()
+             parse_multipart_form_data(b"1234", data, args, files)
+@@ -170,11 +162,7 @@ def test_invalid_chars(self):
+ Content-Disposition: form-data; name="files"; filename="%s"
+ 
+ Foo
+---1234--""" % filename.replace(
+-                "\\", "\\\\"
+-            ).replace(
+-                '"', '\\"'
+-            )
++--1234--""" % filename.replace("\\", "\\\\").replace('"', '\\"')
+             data = utf8(str_data.replace("\n", "\r\n"))
+             args, files = form_data_args()
+             with self.assertRaises(HTTPInputError) as cm:
+@@ -187,9 +175,7 @@ def test_non_ascii_filename_rfc5987(self):
+ Content-Disposition: form-data; name="files"; filename="ab.txt"; filename*=UTF-8''%C3%A1b.txt
+ 
+ Foo
+---1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         parse_multipart_form_data(b"1234", data, args, files)
+         file = files["files"][0]
+@@ -202,11 +188,7 @@ def test_non_ascii_filename_raw(self):
+ Content-Disposition: form-data; name="files"; filename="测试.txt"
+ 
+ Foo
+---1234--""".encode(
+-            "utf-8"
+-        ).replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".encode("utf-8").replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         parse_multipart_form_data(b"1234", data, args, files)
+         file = files["files"][0]
+@@ -219,9 +201,7 @@ def test_boundary_starts_and_ends_with_quotes(self):
+ Content-Disposition: form-data; name="files"; filename="ab.txt"
+ 
+ Foo
+---1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         parse_multipart_form_data(b'"1234"', data, args, files)
+         file = files["files"][0]
+@@ -233,9 +213,7 @@ def test_missing_headers(self):
+ --1234
+ 
+ Foo
+---1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         with self.assertRaises(
+             HTTPInputError, msg="multipart/form-data missing headers"
+@@ -249,9 +227,7 @@ def test_invalid_content_disposition(self):
+ Content-Disposition: invalid; name="files"; filename="ab.txt"
+ 
+ Foo
+---1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         with self.assertRaises(HTTPInputError, msg="Invalid multipart/form-data"):
+             parse_multipart_form_data(b"1234", data, args, files)
+@@ -262,9 +238,7 @@ def test_line_does_not_end_with_correct_line_break(self):
+ --1234
+ Content-Disposition: form-data; name="files"; filename="ab.txt"
+ 
+-Foo--1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++Foo--1234--""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         with self.assertRaises(HTTPInputError, msg="Invalid multipart/form-data"):
+             parse_multipart_form_data(b"1234", data, args, files)
+@@ -276,9 +250,7 @@ def test_content_disposition_header_without_name_parameter(self):
+ Content-Disposition: form-data; filename="ab.txt"
+ 
+ Foo
+---1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         with self.assertRaises(
+             HTTPInputError, msg="multipart/form-data value missing name"
+@@ -296,9 +268,7 @@ def test_data_after_final_boundary(self):
+ 
+ Foo
+ --1234--
+-""".replace(
+-            b"\n", b"\r\n"
+-        )
++""".replace(b"\n", b"\r\n")
+         args, files = form_data_args()
+         parse_multipart_form_data(b"1234", data, args, files)
+         file = files["files"][0]
+@@ -334,9 +304,7 @@ def test_multipart_config(self):
+         body = b"""--1234
+ Content-Disposition: form-data; name="files"; filename="ab.txt"
+ 
+---1234--""".replace(
+-            b"\n", b"\r\n"
+-        )
++--1234--""".replace(b"\n", b"\r\n")
+         config = ParseMultipartConfig()
+         args, files = form_data_args()
+         parse_multipart_form_data(boundary, body, args, files, config=config)
+@@ -378,9 +346,7 @@ def test_multi_line(self):
+ Foo: even
+      more
+      lines
+-""".replace(
+-            "\n", "\r\n"
+-        )
++""".replace("\n", "\r\n")
+         headers = HTTPHeaders.parse(data)
+         self.assertEqual(headers["asdf"], "qwer zxcv")
+         self.assertEqual(headers.get_list("asdf"), ["qwer zxcv"])
+diff --git a/tornado/test/runtests.py b/tornado/test/runtests.py
+index d7eb51f9a..44ca068fb 100644
+--- a/tornado/test/runtests.py
++++ b/tornado/test/runtests.py
+@@ -15,7 +15,6 @@
+ from tornado.options import define, add_parse_callback, options
+ from tornado.test.util import ABT_SKIP_MESSAGE
+ 
+-
+ TEST_MODULES = [
+     "tornado.httputil.doctests",
+     "tornado.iostream.doctests",
+diff --git a/tornado/test/tcpserver_test.py b/tornado/test/tcpserver_test.py
+index 3c691cffd..173c51c52 100644
+--- a/tornado/test/tcpserver_test.py
++++ b/tornado/test/tcpserver_test.py
+@@ -141,8 +141,7 @@ def run_subproc(self, code: str) -> Tuple[str, str]:
+     def test_listen_single(self):
+         # As a sanity check, run the single-process version through this test
+         # harness too.
+-        code = textwrap.dedent(
+-            """
++        code = textwrap.dedent("""
+             import asyncio
+             from tornado.tcpserver import TCPServer
+ 
+@@ -152,15 +151,13 @@ async def main():
+ 
+             asyncio.run(main())
+             print('012', end='')
+-        """
+-        )
++        """)
+         out, err = self.run_subproc(code)
+         self.assertEqual("".join(sorted(out)), "012")
+         self.assertEqual(err, "")
+ 
+     def test_bind_start(self):
+-        code = textwrap.dedent(
+-            """
++        code = textwrap.dedent("""
+             import warnings
+ 
+             from tornado.ioloop import IOLoop
+@@ -174,15 +171,13 @@ def test_bind_start(self):
+             server.start(3)
+             IOLoop.current().run_sync(lambda: None)
+             print(task_id(), end='')
+-        """
+-        )
++        """)
+         out, err = self.run_subproc(code)
+         self.assertEqual("".join(sorted(out)), "012")
+         self.assertEqual(err, "")
+ 
+     def test_add_sockets(self):
+-        code = textwrap.dedent(
+-            """
++        code = textwrap.dedent("""
+             import asyncio
+             from tornado.netutil import bind_sockets
+             from tornado.process import fork_processes, task_id
+@@ -196,15 +191,13 @@ async def post_fork_main():
+                 server.add_sockets(sockets)
+             asyncio.run(post_fork_main())
+             print(task_id(), end='')
+-        """
+-        )
++        """)
+         out, err = self.run_subproc(code)
+         self.assertEqual("".join(sorted(out)), "012")
+         self.assertEqual(err, "")
+ 
+     def test_listen_multi_reuse_port(self):
+-        code = textwrap.dedent(
+-            """
++        code = textwrap.dedent("""
+             import asyncio
+             import socket
+             from tornado.netutil import bind_sockets
+@@ -223,8 +216,7 @@ async def main():
+                 server.listen(port, address='127.0.0.1', reuse_port=True)
+             asyncio.run(main())
+             print(task_id(), end='')
+-            """
+-        )
++            """)
+         out, err = self.run_subproc(code)
+         self.assertEqual("".join(sorted(out)), "012")
+         self.assertEqual(err, "")
+diff --git a/tornado/test/template_test.py b/tornado/test/template_test.py
+index 477b762dc..1bb7c4ab0 100644
+--- a/tornado/test/template_test.py
++++ b/tornado/test/template_test.py
+@@ -126,16 +126,12 @@ def test_if_empty_body(self):
+         self.assertEqual(template.generate(), b"")
+ 
+     def test_try(self):
+-        template = Template(
+-            utf8(
+-                """{% try %}
++        template = Template(utf8("""{% try %}
+ try{% set y = 1/x %}
+ {% except %}-except
+ {% else %}-else
+ {% finally %}-finally
+-{% end %}"""
+-            )
+-        )
++{% end %}"""))
+         self.assertEqual(template.generate(x=1), b"\ntry\n-else\n-finally\n")
+         self.assertEqual(template.generate(x=0), b"\ntry-except\n-finally\n")
+ 
+@@ -144,9 +140,7 @@ def test_comment_directive(self):
+         self.assertEqual(template.generate(), b"foo")
+ 
+     def test_break_continue(self):
+-        template = Template(
+-            utf8(
+-                """\
++        template = Template(utf8("""\
+ {% for i in range(10) %}
+     {% if i == 2 %}
+         {% continue %}
+@@ -155,9 +149,7 @@ def test_break_continue(self):
+     {% if i == 6 %}
+         {% break %}
+     {% end %}
+-{% end %}"""
+-            )
+-        )
++{% end %}"""))
+         result = template.generate()
+         # remove extraneous whitespace
+         result = b"".join(result.split())
+@@ -194,14 +186,10 @@ def test_non_ascii_name(self):
+ 
+ class StackTraceTest(unittest.TestCase):
+     def test_error_line_number_expression(self):
+-        loader = DictLoader(
+-            {
+-                "test.html": """one
++        loader = DictLoader({"test.html": """one
+ two{{1/0}}
+ three
+-        """
+-            }
+-        )
++        """})
+         try:
+             loader.load("test.html").generate()
+             self.fail("did not get expected exception")
+@@ -209,14 +197,10 @@ def test_error_line_number_expression(self):
+             self.assertTrue("# test.html:2" in traceback.format_exc())
+ 
+     def test_error_line_number_directive(self):
+-        loader = DictLoader(
+-            {
+-                "test.html": """one
++        loader = DictLoader({"test.html": """one
+ two{%if 1/0%}
+ three{%end%}
+-        """
+-            }
+-        )
++        """})
+         try:
+             loader.load("test.html").generate()
+             self.fail("did not get expected exception")
+@@ -449,16 +433,12 @@ def test_manual_minimize_whitespace(self):
+         # Whitespace including newlines is allowed within template tags
+         # and directives, and this is one way to avoid long lines while
+         # keeping extra whitespace out of the rendered output.
+-        loader = DictLoader(
+-            {
+-                "foo.txt": """\
++        loader = DictLoader({"foo.txt": """\
+ {% for i in items
+   %}{% if i > 0 %}, {% end %}{#
+   #}{{i
+   }}{% end
+-%}"""
+-            }
+-        )
++%}"""})
+         self.assertEqual(
+             loader.load("foo.txt").generate(items=range(5)), b"0, 1, 2, 3, 4"
+         )
+@@ -501,18 +481,14 @@ def test_whitespace_by_loader(self):
+         self.assertEqual(loader.load("bar.txt").generate(), b" bar ")
+ 
+     def test_whitespace_directive(self):
+-        loader = DictLoader(
+-            {
+-                "foo.html": """\
++        loader = DictLoader({"foo.html": """\
+ {% whitespace oneline %}
+     {% for i in range(3) %}
+         {{ i }}
+     {% end %}
+ {% whitespace all %}
+     pre\tformatted
+-"""
+-            }
+-        )
++"""})
+         self.assertEqual(
+             loader.load("foo.html").generate(), b"  0  1  2  \n    pre\tformatted\n"
+         )
+diff --git a/tornado/test/util_test.py b/tornado/test/util_test.py
+index baa2ff2bd..1d71c0394 100644
+--- a/tornado/test/util_test.py
++++ b/tornado/test/util_test.py
+@@ -219,22 +219,18 @@ def test_no_inherit_future(self):
+         #
+         # The annotations future became available in python 3.7 but has been replaced by PEP 649, so
+         # it should remain supported but off-by-default for the foreseeable future.
+-        code1 = textwrap.dedent(
+-            """
++        code1 = textwrap.dedent("""
+             from __future__ import annotations
+             from tornado.util import exec_in
+ 
+             exec_in(code2, globals())
+-            """
+-        )
++            """)
+ 
+-        code2 = textwrap.dedent(
+-            """
++        code2 = textwrap.dedent("""
+             def f(x: int) -> int:
+                 return x + 1
+             output[0] = f.__annotations__
+-            """
+-        )
++            """)
+ 
+         # Make a mutable container to pass the result back to the caller
+         output = [None]

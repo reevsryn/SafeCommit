@@ -1,0 +1,39 @@
+diff --git a/requirements.txt b/requirements.txt
+index 6e79ed526bd..0162c694286 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -9,7 +9,7 @@ murmurhash>=0.28.0,<1.1.0
+ wasabi>=0.9.1,<1.2.0
+ srsly>=2.4.3,<3.0.0
+ catalogue>=2.0.6,<2.1.0
+-typer-slim>=0.3.0,<1.0.0
++typer>=0.3.0,<1.0.0
+ weasel>=0.4.2,<0.5.0
+ # Third party dependencies
+ numpy>=2.0.0,<3.0.0
+diff --git a/setup.cfg b/setup.cfg
+index c4928af9224..57a6d2f29db 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -55,7 +55,7 @@ install_requires =
+     catalogue>=2.0.6,<2.1.0
+     weasel>=0.4.2,<0.5.0
+     # Third-party dependencies
+-    typer-slim>=0.3.0,<1.0.0
++    typer>=0.3.0,<1.0.0
+     tqdm>=4.38.0,<5.0.0
+     numpy>=1.15.0; python_version < "3.9"
+     numpy>=1.19.0; python_version >= "3.9"
+diff --git a/spacy/cli/_util.py b/spacy/cli/_util.py
+index 309b6b1e79a..5057640a5b9 100644
+--- a/spacy/cli/_util.py
++++ b/spacy/cli/_util.py
+@@ -68,7 +68,7 @@
+ Arg = typer.Argument
+ Opt = typer.Option
+ 
+-app = typer.Typer(name=NAME, help=HELP)
++app = typer.Typer(name=NAME, help=HELP, rich_markup_mode=None)
+ benchmark_cli = typer.Typer(name="benchmark", help=BENCHMARK_HELP, no_args_is_help=True)
+ debug_cli = typer.Typer(name="debug", help=DEBUG_HELP, no_args_is_help=True)
+ init_cli = typer.Typer(name="init", help=INIT_HELP, no_args_is_help=True)

@@ -1,0 +1,417 @@
+diff --git a/tornado/httputil.py b/tornado/httputil.py
+index 44f86ea39..19198b7a4 100644
+--- a/tornado/httputil.py
++++ b/tornado/httputil.py
+@@ -22,6 +22,7 @@
+ import calendar
+ import collections.abc
+ import copy
++import dataclasses
+ import datetime
+ import email.utils
+ from functools import lru_cache
+@@ -66,7 +67,7 @@
+ 
+ # Roughly the inverse of RequestHandler._VALID_HEADER_CHARS, but permits
+ # chars greater than \xFF (which may appear after decoding utf8).
+-_FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
++_FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x08\x0A-\x1F\x7F]")
+ 
+ 
+ class _ABNF:
+@@ -909,12 +910,90 @@ def _int_or_none(val: str) -> Optional[int]:
+     return int(val)
+ 
+ 
++@dataclasses.dataclass
++class ParseMultipartConfig:
++    """This class configures the parsing of ``multipart/form-data`` request bodies.
++
++    Its primary purpose is to place limits on the size and complexity of request messages
++    to avoid potential denial-of-service attacks.
++
++    .. versionadded:: 6.5.5
++    """
++
++    enabled: bool = True
++    """Set this to false to disable the parsing of ``multipart/form-data`` requests entirely.
++
++    This may be desirable for applications that do not need to handle this format, since
++    multipart request have a history of DoS vulnerabilities in Tornado. Multipart requests
++    are used primarily for ``<input type="file">`` in HTML forms, or in APIs that mimic this
++    format. File uploads that use the HTTP ``PUT`` method generally do not use the multipart
++    format.
++    """
++
++    max_parts: int = 100
++    """The maximum number of parts accepted in a multipart request.
++
++    Each ``<input>`` element in an HTML form corresponds to at least one "part".
++    """
++
++    max_part_header_size: int = 10 * 1024
++    """The maximum size of the headers for each part of a multipart request.
++
++    The header for a part contains the name of the form field and optionally the filename
++    and content type of the uploaded file.
++    """
++
++
++@dataclasses.dataclass
++class ParseBodyConfig:
++    """This class configures the parsing of request bodies.
++
++    .. versionadded:: 6.5.5
++    """
++
++    multipart: ParseMultipartConfig = dataclasses.field(
++        default_factory=ParseMultipartConfig
++    )
++    """Configuration for ``multipart/form-data`` request bodies."""
++
++
++_DEFAULT_PARSE_BODY_CONFIG = ParseBodyConfig()
++
++
++def set_parse_body_config(config: ParseBodyConfig) -> None:
++    r"""Sets the **global** default configuration for parsing request bodies.
++
++    This global setting is provided as a stopgap for applications that need to raise the limits
++    introduced in Tornado 6.5.5, or who wish to disable the parsing of multipart/form-data bodies
++    entirely. Non-global configuration for this functionality will be introduced in a future
++    release.
++
++    >>> content_type = "multipart/form-data; boundary=foo"
++    >>> multipart_body = b"--foo--\r\n"
++    >>> parse_body_arguments(content_type, multipart_body, {}, {})
++    >>> multipart_config = ParseMultipartConfig(enabled=False)
++    >>> config = ParseBodyConfig(multipart=multipart_config)
++    >>> set_parse_body_config(config)
++    >>> parse_body_arguments(content_type, multipart_body, {}, {})
++    Traceback (most recent call last):
++        ...
++    tornado.httputil.HTTPInputError: ...: multipart/form-data parsing is disabled
++    >>> set_parse_body_config(ParseBodyConfig())  # reset to defaults
++
++    .. versionadded:: 6.5.5
++    """
++    global _DEFAULT_PARSE_BODY_CONFIG
++    _DEFAULT_PARSE_BODY_CONFIG = config
++
++
+ def parse_body_arguments(
+     content_type: str,
+     body: bytes,
+     arguments: Dict[str, List[bytes]],
+     files: Dict[str, List[HTTPFile]],
+     headers: Optional[HTTPHeaders] = None,
++    *,
++    config: Optional[ParseBodyConfig] = None,
+ ) -> None:
+     """Parses a form request body.
+ 
+@@ -924,6 +1003,8 @@ def parse_body_arguments(
+     and ``files`` parameters are dictionaries that will be updated
+     with the parsed contents.
+     """
++    if config is None:
++        config = _DEFAULT_PARSE_BODY_CONFIG
+     if content_type.startswith("application/x-www-form-urlencoded"):
+         if headers and "Content-Encoding" in headers:
+             raise HTTPInputError(
+@@ -944,10 +1025,15 @@ def parse_body_arguments(
+             )
+         try:
+             fields = content_type.split(";")
++            if fields[0].strip() != "multipart/form-data":
++                # This catches "Content-Type: multipart/form-dataxyz"
++                raise HTTPInputError("Invalid content type")
+             for field in fields:
+                 k, sep, v = field.strip().partition("=")
+                 if k == "boundary" and v:
+-                    parse_multipart_form_data(utf8(v), body, arguments, files)
++                    parse_multipart_form_data(
++                        utf8(v), body, arguments, files, config=config.multipart
++                    )
+                     break
+             else:
+                 raise HTTPInputError("multipart boundary not found")
+@@ -960,6 +1046,8 @@ def parse_multipart_form_data(
+     data: bytes,
+     arguments: Dict[str, List[bytes]],
+     files: Dict[str, List[HTTPFile]],
++    *,
++    config: Optional[ParseMultipartConfig] = None,
+ ) -> None:
+     """Parses a ``multipart/form-data`` body.
+ 
+@@ -972,6 +1060,10 @@ def parse_multipart_form_data(
+        Now recognizes non-ASCII filenames in RFC 2231/5987
+        (``filename*=``) format.
+     """
++    if config is None:
++        config = _DEFAULT_PARSE_BODY_CONFIG.multipart
++    if not config.enabled:
++        raise HTTPInputError("multipart/form-data parsing is disabled")
+     # The standard allows for the boundary to be quoted in the header,
+     # although it's rare (it happens at least for google app engine
+     # xmpp).  I think we're also supposed to handle backslash-escapes
+@@ -983,12 +1075,16 @@ def parse_multipart_form_data(
+     if final_boundary_index == -1:
+         raise HTTPInputError("Invalid multipart/form-data: no final boundary found")
+     parts = data[:final_boundary_index].split(b"--" + boundary + b"\r\n")
++    if len(parts) > config.max_parts:
++        raise HTTPInputError("multipart/form-data has too many parts")
+     for part in parts:
+         if not part:
+             continue
+         eoh = part.find(b"\r\n\r\n")
+         if eoh == -1:
+             raise HTTPInputError("multipart/form-data missing headers")
++        if eoh > config.max_part_header_size:
++            raise HTTPInputError("multipart/form-data part header too large")
+         headers = HTTPHeaders.parse(part[:eoh].decode("utf-8"), _chars_are_bytes=False)
+         disp_header = headers.get("Content-Disposition", "")
+         disposition, disp_params = _parse_header(disp_header)
+@@ -1196,7 +1292,7 @@ def doctests():
+     # type: () -> unittest.TestSuite
+     import doctest
+ 
+-    return doctest.DocTestSuite()
++    return doctest.DocTestSuite(optionflags=doctest.ELLIPSIS)
+ 
+ 
+ _netloc_re = re.compile(r"^(.+):(\d+)$")
+diff --git a/tornado/test/httputil_test.py b/tornado/test/httputil_test.py
+index 9c7ee093f..46034bba1 100644
+--- a/tornado/test/httputil_test.py
++++ b/tornado/test/httputil_test.py
+@@ -9,6 +9,7 @@
+     qs_to_qsl,
+     HTTPInputError,
+     HTTPFile,
++    ParseMultipartConfig,
+ )
+ from tornado.escape import utf8, native_str
+ from tornado.log import gen_log
+@@ -135,6 +136,8 @@ def test_special_filenames(self):
+             'a";";.txt',
+             'a\\"b.txt',
+             "a\\b.txt",
++            "a b.txt",
++            "a\tb.txt",
+         ]
+         for filename in filenames:
+             logging.debug("trying filename %r", filename)
+@@ -155,6 +158,29 @@ def test_special_filenames(self):
+             self.assertEqual(file["filename"], filename)
+             self.assertEqual(file["body"], b"Foo")
+ 
++    def test_invalid_chars(self):
++        filenames = [
++            "a\rb.txt",
++            "a\0b.txt",
++            "a\x08b.txt",
++        ]
++        for filename in filenames:
++            str_data = """\
++--1234
++Content-Disposition: form-data; name="files"; filename="%s"
++
++Foo
++--1234--""" % filename.replace(
++                "\\", "\\\\"
++            ).replace(
++                '"', '\\"'
++            )
++            data = utf8(str_data.replace("\n", "\r\n"))
++            args, files = form_data_args()
++            with self.assertRaises(HTTPInputError) as cm:
++                parse_multipart_form_data(b"1234", data, args, files)
++            self.assertIn("Invalid header value", str(cm.exception))
++
+     def test_non_ascii_filename_rfc5987(self):
+         data = b"""\
+ --1234
+@@ -298,10 +324,45 @@ def f(n):
+             return time.perf_counter() - start
+ 
+         d1 = f(1_000)
++        # Note that headers larger than this are blocked by the default configuration.
+         d2 = f(10_000)
+         if d2 / d1 > 20:
+             self.fail(f"Disposition param parsing is not linear: {d1=} vs {d2=}")
+ 
++    def test_multipart_config(self):
++        boundary = b"1234"
++        body = b"""--1234
++Content-Disposition: form-data; name="files"; filename="ab.txt"
++
++--1234--""".replace(
++            b"\n", b"\r\n"
++        )
++        config = ParseMultipartConfig()
++        args, files = form_data_args()
++        parse_multipart_form_data(boundary, body, args, files, config=config)
++        self.assertEqual(files["files"][0]["filename"], "ab.txt")
++
++        config_no_parts = ParseMultipartConfig(max_parts=0)
++        with self.assertRaises(HTTPInputError) as cm:
++            parse_multipart_form_data(
++                boundary, body, args, files, config=config_no_parts
++            )
++        self.assertIn("too many parts", str(cm.exception))
++
++        config_small_headers = ParseMultipartConfig(max_part_header_size=10)
++        with self.assertRaises(HTTPInputError) as cm:
++            parse_multipart_form_data(
++                boundary, body, args, files, config=config_small_headers
++            )
++        self.assertIn("header too large", str(cm.exception))
++
++        config_disabled = ParseMultipartConfig(enabled=False)
++        with self.assertRaises(HTTPInputError) as cm:
++            parse_multipart_form_data(
++                boundary, body, args, files, config=config_disabled
++            )
++        self.assertIn("multipart/form-data parsing is disabled", str(cm.exception))
++
+ 
+ class HTTPHeadersTest(unittest.TestCase):
+     def test_multi_line(self):
+diff --git a/tornado/test/web_test.py b/tornado/test/web_test.py
+index 27df3f7a8..a7886795d 100644
+--- a/tornado/test/web_test.py
++++ b/tornado/test/web_test.py
+@@ -1,3 +1,5 @@
++import http
++
+ from tornado.concurrent import Future
+ from tornado import gen
+ from tornado.escape import (
+@@ -292,11 +294,67 @@ def get(self):
+                 self.set_cookie("unicode_args", "blah", domain="foo.com", path="/foo")
+ 
+         class SetCookieSpecialCharHandler(RequestHandler):
++            # "Special" characters are allowed in cookie values, but trigger special quoting.
+             def get(self):
+                 self.set_cookie("equals", "a=b")
+                 self.set_cookie("semicolon", "a;b")
+                 self.set_cookie("quote", 'a"b')
+ 
++        class SetCookieForbiddenCharHandler(RequestHandler):
++            def get(self):
++                # Control characters and semicolons raise errors in cookie names and attributes
++                # (but not values, which are tested in SetCookieSpecialCharHandler)
++                for char in list(map(chr, range(0x20))) + [chr(0x7F), ";"]:
++                    try:
++                        self.set_cookie("foo" + char, "bar")
++                        self.write(
++                            "Didn't get expected exception for char %r in name\n" % char
++                        )
++                    except http.cookies.CookieError as e:
++                        if "Invalid cookie attribute name" not in str(e):
++                            self.write(
++                                "unexpected exception for char %r in name: %s\n"
++                                % (char, e)
++                            )
++
++                    try:
++                        self.set_cookie("foo", "bar", domain="example" + char + ".com")
++                        self.write(
++                            "Didn't get expected exception for char %r in domain\n"
++                            % char
++                        )
++                    except http.cookies.CookieError as e:
++                        if "Invalid cookie attribute domain" not in str(e):
++                            self.write(
++                                "unexpected exception for char %r in domain: %s\n"
++                                % (char, e)
++                            )
++
++                    try:
++                        self.set_cookie("foo", "bar", path="/" + char)
++                        self.write(
++                            "Didn't get expected exception for char %r in path\n" % char
++                        )
++                    except http.cookies.CookieError as e:
++                        if "Invalid cookie attribute path" not in str(e):
++                            self.write(
++                                "unexpected exception for char %r in path: %s\n"
++                                % (char, e)
++                            )
++
++                    try:
++                        self.set_cookie("foo", "bar", samesite="a" + char)
++                        self.write(
++                            "Didn't get expected exception for char %r in samesite\n"
++                            % char
++                        )
++                    except http.cookies.CookieError as e:
++                        if "Invalid cookie attribute samesite" not in str(e):
++                            self.write(
++                                "unexpected exception for char %r in samesite: %s\n"
++                                % (char, e)
++                            )
++
+         class SetCookieOverwriteHandler(RequestHandler):
+             def get(self):
+                 self.set_cookie("a", "b", domain="example.com")
+@@ -331,6 +389,7 @@ def get(self):
+             ("/get", GetCookieHandler),
+             ("/set_domain", SetCookieDomainHandler),
+             ("/special_char", SetCookieSpecialCharHandler),
++            ("/forbidden_char", SetCookieForbiddenCharHandler),
+             ("/set_overwrite", SetCookieOverwriteHandler),
+             ("/set_max_age", SetCookieMaxAgeHandler),
+             ("/set_expires_days", SetCookieExpiresDaysHandler),
+@@ -388,6 +447,12 @@ def test_cookie_special_char(self):
+             response = self.fetch("/get", headers={"Cookie": header})
+             self.assertEqual(response.body, utf8(expected))
+ 
++    def test_set_cookie_forbidden_char(self):
++        response = self.fetch("/forbidden_char")
++        self.assertEqual(response.code, 200)
++        self.maxDiff = 10000
++        self.assertMultiLineEqual(to_unicode(response.body), "")
++
+     def test_set_cookie_overwrite(self):
+         response = self.fetch("/set_overwrite")
+         headers = response.headers.get_list("Set-Cookie")
+diff --git a/tornado/web.py b/tornado/web.py
+index 2351afdbe..ec7ec3f53 100644
+--- a/tornado/web.py
++++ b/tornado/web.py
+@@ -693,9 +693,30 @@ def set_cookie(
+         # The cookie library only accepts type str, in both python 2 and 3
+         name = escape.native_str(name)
+         value = escape.native_str(value)
+-        if re.search(r"[\x00-\x20]", name + value):
+-            # Don't let us accidentally inject bad stuff
++        if re.search(r"[\x00-\x20]", value):
++            # Legacy check for control characters in cookie values. This check is no longer needed
++            # since the cookie library escapes these characters correctly now. It will be removed
++            # in the next feature release.
+             raise ValueError(f"Invalid cookie {name!r}: {value!r}")
++        for attr_name, attr_value in [
++            ("name", name),
++            ("domain", domain),
++            ("path", path),
++            ("samesite", samesite),
++        ]:
++            # Cookie attributes may not contain control characters or semicolons (except when
++            # escaped in the value). A check for control characters was added to the http.cookies
++            # library in a Feb 2026 security release; as of March it still does not check for
++            # semicolons.
++            #
++            # When a semicolon check is added to the standard library (and the release has had time
++            # for adoption), this check may be removed, but be mindful of the fact that this may
++            # change the timing of the exception (to the generation of the Set-Cookie header in
++            # flush()). We m
++            if attr_value is not None and re.search(r"[\x00-\x20\x3b\x7f]", attr_value):
++                raise http.cookies.CookieError(
++                    f"Invalid cookie attribute {attr_name}={attr_value!r} for cookie {name!r}"
++                )
+         if not hasattr(self, "_new_cookie"):
+             self._new_cookie = (
+                 http.cookies.SimpleCookie()

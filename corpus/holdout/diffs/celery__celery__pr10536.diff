@@ -1,0 +1,292 @@
+diff --git a/celery/backends/database/__init__.py b/celery/backends/database/__init__.py
+index e4838a7f995..330f6682b5d 100644
+--- a/celery/backends/database/__init__.py
++++ b/celery/backends/database/__init__.py
+@@ -1,10 +1,14 @@
+ """SQLAlchemy result store backend."""
+ import logging
++import pickle
+ from contextlib import contextmanager
+ 
++from kombu.utils.encoding import ensure_bytes
++
+ from celery import states
+ from celery.backends.base import BaseBackend
+ from celery.exceptions import ImproperlyConfigured
++from celery.result import result_from_tuple
+ from celery.utils.imports import symbol_by_name
+ from celery.utils.time import maybe_timedelta
+ 
+@@ -151,7 +155,7 @@ def _store_result(self, task_id, result, state, traceback=None,
+     def _update_result(self, task, result, state, traceback=None,
+                        request=None):
+ 
+-        meta = self._get_result_meta(result=result, state=state,
++        meta = self._get_result_meta(result=ensure_bytes(self.encode(result)), state=state,
+                                      traceback=traceback, request=request,
+                                      format_date=False, encode=True)
+ 
+@@ -178,12 +182,43 @@ def _get_task_meta_for(self, task_id):
+                 task.status = states.PENDING
+                 task.result = None
+             data = task.to_dict()
++            data['result'] = self._decode_stored_result(data['result'])
+             if data.get('args', None) is not None:
+                 data['args'] = self.decode(data['args'])
+             if data.get('kwargs', None) is not None:
+                 data['kwargs'] = self.decode(data['kwargs'])
+             return self.meta_from_decoded(data)
+ 
++    def _decode_stored_result(self, payload):
++        """Decode a value stored in the ``result`` column.
++
++        Rows written before the fix for celery/celery#3025 always stored a
++        raw pickle blob regardless of the configured ``result_serializer``,
++        so a row that can't be decoded with the current serializer, but
++        looks like a pickle payload (starts with the pickle protocol 2+
++        marker that every pickle Celery/kombu produces starts with), is
++        assumed to be one of those and is unpickled directly instead.
++        Anything else re-raises the original decode error instead of
++        blindly unpickling arbitrary bytes.
++        """
++        if payload is None:
++            return payload
++        payload = ensure_bytes(payload)
++        try:
++            return self.decode(payload)
++        except Exception:
++            # Legacy rows written before celery/celery#3025 were stored via
++            # SQLAlchemy's PickleType, which uses a binary pickle protocol.
++            if payload[:1] != b'\x80':
++                raise
++            logger.warning(
++                'Task result payload could not be decoded using the '
++                'configured result_serializer; falling back to pickle '
++                'for backward compatibility with pre-fix data.',
++                exc_info=True,
++            )
++            return pickle.loads(payload)
++
+     def task_result_exists(self, task_id):
+         """Check if a result exists in the database for the given task ID.
+ 
+@@ -203,7 +238,8 @@ def _save_group(self, group_id, result):
+         """Store the result of an executed group."""
+         session = self.ResultSession()
+         with session_cleanup(session):
+-            group = self.taskset_cls(group_id, result)
++            value = ensure_bytes(self.encode(self.prepare_value(result)))
++            group = self.taskset_cls(group_id, value)
+             session.add(group)
+             session.flush()
+             session.commit()
+@@ -216,7 +252,12 @@ def _restore_group(self, group_id):
+             group = session.query(self.taskset_cls).filter(
+                 self.taskset_cls.taskset_id == group_id).first()
+             if group:
+-                return group.to_dict()
++                data = group.to_dict()
++                value = self._decode_stored_result(data['result'])
++                data['result'] = (
++                    value if value is None else result_from_tuple(value, self.app)
++                )
++                return data
+ 
+     def _delete_group(self, group_id):
+         """Delete meta-data for group by id."""
+diff --git a/celery/backends/database/models.py b/celery/backends/database/models.py
+index f8ee6239349..56fa9054883 100644
+--- a/celery/backends/database/models.py
++++ b/celery/backends/database/models.py
+@@ -2,7 +2,6 @@
+ from datetime import datetime, timezone
+ 
+ import sqlalchemy as sa
+-from sqlalchemy.types import PickleType
+ 
+ from celery import states
+ 
+@@ -34,7 +33,7 @@ class Task(ResultModelBase):
+                    primary_key=True, autoincrement=True)
+     task_id = sa.Column(sa.String(155), unique=True)
+     status = sa.Column(sa.String(50), default=states.PENDING)
+-    result = sa.Column(PickleType, nullable=True)
++    result = sa.Column(sa.LargeBinary, nullable=True)
+     date_done = sa.Column(sa.DateTime, default=_get_utc_now,
+                           onupdate=_get_utc_now, nullable=True, index=True)
+     traceback = sa.Column(sa.Text, nullable=True)
+@@ -96,7 +95,7 @@ class TaskSet(ResultModelBase):
+     id = sa.Column(DialectSpecificInteger, sa.Sequence('taskset_id_sequence'),
+                    autoincrement=True, primary_key=True)
+     taskset_id = sa.Column(sa.String(155), unique=True)
+-    result = sa.Column(PickleType, nullable=True)
++    result = sa.Column(sa.LargeBinary, nullable=True)
+     date_done = sa.Column(sa.DateTime, default=_get_utc_now,
+                           nullable=True, index=True)
+ 
+diff --git a/docs/userguide/configuration.rst b/docs/userguide/configuration.rst
+index b0f1baab681..58166658570 100644
+--- a/docs/userguide/configuration.rst
++++ b/docs/userguide/configuration.rst
+@@ -954,6 +954,12 @@ Result serialization format.
+ See :ref:`calling-serializers` for information about supported
+ serialization formats.
+ 
++.. versionchanged:: 5.7
++
++    The database backend now honors this setting; see the note under
++    :ref:`conf-database-result-backend` for details on what changes for
++    existing deployments.
++
+ .. setting:: result_compression
+ 
+ ``result_compression``
+@@ -1110,6 +1116,24 @@ Database backend settings
+         result_backend_always_retry = True
+         result_backend_max_retries = 10
+ 
++.. note::
++
++    **Database backend now honors** :setting:`result_serializer`
++
++    Prior to Celery 5.7, the database backend always stored the ``result``
++    column of the ``celery_taskmeta`` and ``celery_tasksetmeta`` tables as a
++    Python pickle, regardless of the configured :setting:`result_serializer`
++    (see `celery/celery#3025 <https://github.com/celery/celery/issues/3025>`_).
++    As of 5.7, the column holds the bytes produced by whatever serializer you
++    configure, exactly like every other result backend.
++
++    No schema change or migration is required: the column type on the
++    database side is unchanged, only what gets written into it. Rows written
++    by an earlier Celery version are always a pickle blob no matter what
++    :setting:`result_serializer` says, and are still read back correctly
++    after upgrading — the backend detects and unpickles them automatically.
++    Only newly written results use the configured serializer.
++
+ Database URL Examples
+ ~~~~~~~~~~~~~~~~~~~~~
+ 
+diff --git a/t/unit/backends/test_database.py b/t/unit/backends/test_database.py
+index 0d977ed4cf3..7bf1b3f89f6 100644
+--- a/t/unit/backends/test_database.py
++++ b/t/unit/backends/test_database.py
+@@ -1,3 +1,4 @@
++import json
+ import os
+ from datetime import datetime
+ from pickle import dumps, loads
+@@ -529,6 +530,69 @@ def test_is_pickled(self):
+         assert rindb.get('foo') == 'baz'
+         assert rindb.get('bar').data == 12345
+ 
++    def test_result_respects_configured_serializer(self):
++        """Regression test for celery/celery#3025.
++
++        The result column must contain the bytes produced by the
++        configured ``result_serializer``, not an implicit pickle blob.
++        """
++        self.app.conf.result_serializer = 'json'
++        tb = DatabaseBackend(self.uri, app=self.app)
++        tid = uuid()
++        tb.mark_as_done(tid, {'answer': 42})
++
++        session = tb.ResultSession()
++        raw = session.query(Task).filter(Task.task_id == tid).first().result
++        session.close()
++
++        assert raw[:1] != b'\x80', 'result was pickled despite json serializer'
++        assert json.loads(raw) == {'answer': 42}
++        assert tb.get_result(tid) == {'answer': 42}
++
++    def test_result_decode_falls_back_to_pickle_for_legacy_rows(self):
++        """Rows written before the celery/celery#3025 fix are always
++        pickle, regardless of the configured serializer. Reading them
++        back after upgrading must still work.
++        """
++        self.app.conf.result_serializer = 'json'
++        tb = DatabaseBackend(self.uri, app=self.app)
++        tid = uuid()
++
++        session = tb.ResultSession()
++        task = Task(tid)
++        task.status = states.SUCCESS
++        task.result = dumps({'legacy': 'pickle-data'})
++        session.add(task)
++        session.commit()
++        session.close()
++
++        with patch('celery.backends.database.logger.warning') as warning:
++            meta = tb.get_task_meta(tid)
++
++        assert meta['result'] == {'legacy': 'pickle-data'}
++        warning.assert_called_once()
++
++    def test_result_decode_does_not_unpickle_non_pickle_garbage(self):
++        """The pickle fallback must not fire on arbitrary bytes that
++        merely fail to decode under the configured serializer -- only on
++        payloads that actually look like a pickle (see review discussion
++        on PR #10536).
++        """
++        self.app.conf.result_serializer = 'json'
++        tb = DatabaseBackend(self.uri, app=self.app)
++        tid = uuid()
++
++        session = tb.ResultSession()
++        task = Task(tid)
++        task.status = states.SUCCESS
++        task.result = b'not-json-and-not-pickle-either'
++        session.add(task)
++        session.commit()
++        session.close()
++
++        with pytest.raises(Exception):
++            tb.get_task_meta(tid)
++
+     def test_mark_as_started(self):
+         tb = DatabaseBackend(self.uri, app=self.app)
+         tid = uuid()
+@@ -586,11 +650,13 @@ def test_reduce(self):
+         tb = DatabaseBackend(self.uri, app=self.app)
+         assert loads(dumps(tb))
+ 
++    @pytest.mark.usefixtures('depends_on_current_app')
+     def test_save__restore__delete_group(self):
+         tb = DatabaseBackend(self.uri, app=self.app)
+ 
+         tid = uuid()
+-        res = {'something': 'special'}
++        res = self.app.GroupResult(
++            tid, [self.app.AsyncResult(uuid()), self.app.AsyncResult(uuid())])
+         assert tb.save_group(tid, res) == res
+ 
+         res2 = tb.restore_group(tid)
+@@ -601,6 +667,29 @@ def test_save__restore__delete_group(self):
+ 
+         assert tb.restore_group('xxx-nonexisting-id') is None
+ 
++    @pytest.mark.usefixtures('depends_on_current_app')
++    def test_save__restore_group_respects_configured_serializer(self):
++        """Regression test for celery/celery#3025 (group results).
++
++        Covers the real GroupResult.save()/.restore() path (see review
++        discussion on PR #10536), not just an arbitrary value.
++        """
++        self.app.conf.result_serializer = 'json'
++        tb = DatabaseBackend(self.uri, app=self.app)
++
++        tid = uuid()
++        res = self.app.GroupResult(
++            tid, [self.app.AsyncResult(uuid()), self.app.AsyncResult(uuid())])
++        tb.save_group(tid, res)
++
++        session = tb.ResultSession()
++        raw = session.query(TaskSet).filter(
++            TaskSet.taskset_id == tid).first().result
++        session.close()
++
++        assert raw[:1] != b'\x80', 'group result was pickled despite json serializer'
++        assert tb.restore_group(tid) == res
++
+     def test_cleanup(self):
+         tb = DatabaseBackend(self.uri, app=self.app)
+         for i in range(10):

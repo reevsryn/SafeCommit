@@ -1,0 +1,734 @@
+diff --git a/.cursor/rules/python_lib.mdc b/.cursor/rules/python_lib.mdc
+index bf32f6115b1..f76a0f51c44 100644
+--- a/.cursor/rules/python_lib.mdc
++++ b/.cursor/rules/python_lib.mdc
+@@ -22,8 +22,7 @@ not applicable to scripts and e2e tests.
+ 
+ ## Logging
+ 
+-If something needs to be logged, please use our logger - that returns a default
+-Python logger - with an appropriate logging level:
++Use our logger (a standard Python logger) with an appropriate level:
+ 
+ ```python
+ from streamlit.logger import get_logger
+@@ -31,6 +30,39 @@ from streamlit.logger import get_logger
+ _LOGGER: Final = get_logger(__name__)
+ ```
+ 
++Log diagnostics that a developer or coding agent needs to see: important API
++misuse, ignored parameters that change behavior, degraded or incomplete
++output, and unexpected fallbacks. Agents and CLI users only see the console;
++in-app `st.warning` / `st.error` / `st.exception` from library code are
++invisible to them unless they are also logged.
++
++Do not over-log. Console noise hides real issues. The library may handle
++potentially non-ideal API usage silently when it is not important enough to
++surface.
++
++Use `stack_info=True` when the user call site matters. Prefer
++`_LOGGER.warning("%s", message, stack_info=True)` when `message` may contain
++`%`. Raised `StreamlitAPIException` subclasses are already logged by the
++uncaught-exception handler; do not double-log those.
++
++### In-app UI vs console-only
++
++Do not use `st.warning`, `st.error`, or `st.exception` from library internals
++as the only signal. If you show one of those, also log the same message.
++
++- **Stay silent** when a quirk can be handled without it mattering to the
++  developer or agent (benign coercion, unused optional kwargs that never
++  applied, other smart fallbacks).
++- **Log only** when the command still works but a developer or agent should
++  know (explicitly provided `sample_rate` on non-numpy audio, number-input
++  format that does not match the value type).
++- **Log and show UI** when the app is actually misbehaving or data is
++  incomplete (widget inside a cached function, display commands in
++  `refresh_mode="background"`, JSON keys dropped, `st.echo` cannot read the
++  source file). Use `st.exception(StreamlitAPIWarning)` when the in-app stack
++  should point at user code.
++- **Deprecations:** use `show_deprecation_warning()`, which already logs.
++
+ ## Metrics
+ 
+ - Use `gather_metrics` only for public `st.*` APIs. Never use it for internal methods or functions.
+@@ -152,6 +184,12 @@ generic `StreamlitAPIException` with a one-off message. Do not raise native
+ validation. Optional-dependency import failures may stay native
+ (`st.connection` `ModuleNotFoundError`, `st.pyplot` matplotlib `ImportError`).
+ 
++Non-fatal library diagnostics (ignored parameters, degraded output, cached
++widget misuse) should not be raised. Log them only when they are important
++for the developer or coding agent to see; otherwise handle them silently.
++Add in-app `st.warning` / `st.error` / `st.exception` only when the app is
++actually wrong or data is incomplete — see Logging.
++
+ - `StreamlitAPIException`: base for malformed user interaction with the Streamlit
+   API. Prefer a more specific subclass when one fits. When a bare
+   `StreamlitAPIException` is still the right type, pass a stable kebab-case
+diff --git a/.github/instructions/python_lib.instructions.md b/.github/instructions/python_lib.instructions.md
+index 1bea6a47d35..9923cdf9562 100644
+--- a/.github/instructions/python_lib.instructions.md
++++ b/.github/instructions/python_lib.instructions.md
+@@ -20,8 +20,7 @@ not applicable to scripts and e2e tests.
+ 
+ ## Logging
+ 
+-If something needs to be logged, please use our logger - that returns a default
+-Python logger - with an appropriate logging level:
++Use our logger (a standard Python logger) with an appropriate level:
+ 
+ ```python
+ from streamlit.logger import get_logger
+@@ -29,6 +28,39 @@ from streamlit.logger import get_logger
+ _LOGGER: Final = get_logger(__name__)
+ ```
+ 
++Log diagnostics that a developer or coding agent needs to see: important API
++misuse, ignored parameters that change behavior, degraded or incomplete
++output, and unexpected fallbacks. Agents and CLI users only see the console;
++in-app `st.warning` / `st.error` / `st.exception` from library code are
++invisible to them unless they are also logged.
++
++Do not over-log. Console noise hides real issues. The library may handle
++potentially non-ideal API usage silently when it is not important enough to
++surface.
++
++Use `stack_info=True` when the user call site matters. Prefer
++`_LOGGER.warning("%s", message, stack_info=True)` when `message` may contain
++`%`. Raised `StreamlitAPIException` subclasses are already logged by the
++uncaught-exception handler; do not double-log those.
++
++### In-app UI vs console-only
++
++Do not use `st.warning`, `st.error`, or `st.exception` from library internals
++as the only signal. If you show one of those, also log the same message.
++
++- **Stay silent** when a quirk can be handled without it mattering to the
++  developer or agent (benign coercion, unused optional kwargs that never
++  applied, other smart fallbacks).
++- **Log only** when the command still works but a developer or agent should
++  know (explicitly provided `sample_rate` on non-numpy audio, number-input
++  format that does not match the value type).
++- **Log and show UI** when the app is actually misbehaving or data is
++  incomplete (widget inside a cached function, display commands in
++  `refresh_mode="background"`, JSON keys dropped, `st.echo` cannot read the
++  source file). Use `st.exception(StreamlitAPIWarning)` when the in-app stack
++  should point at user code.
++- **Deprecations:** use `show_deprecation_warning()`, which already logs.
++
+ ## Metrics
+ 
+ - Use `gather_metrics` only for public `st.*` APIs. Never use it for internal methods or functions.
+@@ -150,6 +182,12 @@ generic `StreamlitAPIException` with a one-off message. Do not raise native
+ validation. Optional-dependency import failures may stay native
+ (`st.connection` `ModuleNotFoundError`, `st.pyplot` matplotlib `ImportError`).
+ 
++Non-fatal library diagnostics (ignored parameters, degraded output, cached
++widget misuse) should not be raised. Log them only when they are important
++for the developer or coding agent to see; otherwise handle them silently.
++Add in-app `st.warning` / `st.error` / `st.exception` only when the app is
++actually wrong or data is incomplete — see Logging.
++
+ - `StreamlitAPIException`: base for malformed user interaction with the Streamlit
+   API. Prefer a more specific subclass when one fits. When a bare
+   `StreamlitAPIException` is still the right type, pass a stable kebab-case
+diff --git a/lib/streamlit/AGENTS.md b/lib/streamlit/AGENTS.md
+index 0d5d57a3ed1..625c0784dcb 100644
+--- a/lib/streamlit/AGENTS.md
++++ b/lib/streamlit/AGENTS.md
+@@ -14,8 +14,7 @@ not applicable to scripts and e2e tests.
+ 
+ ## Logging
+ 
+-If something needs to be logged, please use our logger - that returns a default
+-Python logger - with an appropriate logging level:
++Use our logger (a standard Python logger) with an appropriate level:
+ 
+ ```python
+ from streamlit.logger import get_logger
+@@ -23,6 +22,39 @@ from streamlit.logger import get_logger
+ _LOGGER: Final = get_logger(__name__)
+ ```
+ 
++Log diagnostics that a developer or coding agent needs to see: important API
++misuse, ignored parameters that change behavior, degraded or incomplete
++output, and unexpected fallbacks. Agents and CLI users only see the console;
++in-app `st.warning` / `st.error` / `st.exception` from library code are
++invisible to them unless they are also logged.
++
++Do not over-log. Console noise hides real issues. The library may handle
++potentially non-ideal API usage silently when it is not important enough to
++surface.
++
++Use `stack_info=True` when the user call site matters. Prefer
++`_LOGGER.warning("%s", message, stack_info=True)` when `message` may contain
++`%`. Raised `StreamlitAPIException` subclasses are already logged by the
++uncaught-exception handler; do not double-log those.
++
++### In-app UI vs console-only
++
++Do not use `st.warning`, `st.error`, or `st.exception` from library internals
++as the only signal. If you show one of those, also log the same message.
++
++- **Stay silent** when a quirk can be handled without it mattering to the
++  developer or agent (benign coercion, unused optional kwargs that never
++  applied, other smart fallbacks).
++- **Log only** when the command still works but a developer or agent should
++  know (explicitly provided `sample_rate` on non-numpy audio, number-input
++  format that does not match the value type).
++- **Log and show UI** when the app is actually misbehaving or data is
++  incomplete (widget inside a cached function, display commands in
++  `refresh_mode="background"`, JSON keys dropped, `st.echo` cannot read the
++  source file). Use `st.exception(StreamlitAPIWarning)` when the in-app stack
++  should point at user code.
++- **Deprecations:** use `show_deprecation_warning()`, which already logs.
++
+ ## Metrics
+ 
+ - Use `gather_metrics` only for public `st.*` APIs. Never use it for internal methods or functions.
+@@ -144,6 +176,12 @@ generic `StreamlitAPIException` with a one-off message. Do not raise native
+ validation. Optional-dependency import failures may stay native
+ (`st.connection` `ModuleNotFoundError`, `st.pyplot` matplotlib `ImportError`).
+ 
++Non-fatal library diagnostics (ignored parameters, degraded output, cached
++widget misuse) should not be raised. Log them only when they are important
++for the developer or coding agent to see; otherwise handle them silently.
++Add in-app `st.warning` / `st.error` / `st.exception` only when the app is
++actually wrong or data is incomplete — see Logging.
++
+ - `StreamlitAPIException`: base for malformed user interaction with the Streamlit
+   API. Prefer a more specific subclass when one fits. When a bare
+   `StreamlitAPIException` is still the right type, pass a stable kebab-case
+diff --git a/lib/streamlit/commands/echo.py b/lib/streamlit/commands/echo.py
+index c6433ffaa43..f4fc1695ff8 100644
+--- a/lib/streamlit/commands/echo.py
++++ b/lib/streamlit/commands/echo.py
+@@ -19,13 +19,15 @@
+ import re
+ import textwrap
+ import traceback
+-from typing import TYPE_CHECKING, Any, Literal, cast
++from typing import TYPE_CHECKING, Any, Final, Literal, cast
+ 
++from streamlit.logger import get_logger
+ from streamlit.runtime.metrics_util import gather_metrics
+ 
+ if TYPE_CHECKING:
+     from collections.abc import Generator, Iterable
+ 
++_LOGGER: Final = get_logger(__name__)
+ _SPACES_RE = re.compile(r"\s*")
+ _EMPTY_LINE_RE = re.compile(r"\s*\n")
+ 
+@@ -61,6 +63,8 @@ def echo(
+         show_code = placeholder.code
+         show_warning = placeholder.warning
+ 
++    code_string: str | None = None
++    error_message: str | None = None
+     try:
+         # Get stack frame *before* running the echoed code. The frame's
+         # line number will point to the `st.echo` statement we're running.
+@@ -102,15 +106,18 @@ def collect_body_statements(node: ast.AST) -> None:
+         lines_to_display = source_lines[echo_block_start_line:echo_block_end_line]
+ 
+         code_string = textwrap.dedent("".join(lines_to_display))
++    except OSError as err:
++        error_message = f"Unable to display code. {err}"
++        _LOGGER.warning("%s", error_message, stack_info=True)
+ 
+-        # Run the echoed code...
+-        yield
++    # Run the echoed block even when the source could not be read, so a
++    # missing or unreadable file does not skip the user's code.
++    yield
+ 
+-        # And draw the code string to the app!
++    if code_string is not None:
+         show_code(code_string, "python")
+-
+-    except FileNotFoundError as err:
+-        show_warning(f"Unable to display code. {err}")
++    elif error_message is not None:
++        show_warning(error_message)
+ 
+ 
+ def _get_initial_indent(lines: Iterable[str]) -> int:
+diff --git a/lib/streamlit/elements/json.py b/lib/streamlit/elements/json.py
+index 1a5f8a32728..4c233057417 100644
+--- a/lib/streamlit/elements/json.py
++++ b/lib/streamlit/elements/json.py
+@@ -17,10 +17,11 @@
+ import json
+ import types
+ from collections import ChainMap, UserDict
+-from typing import TYPE_CHECKING, Any, cast
++from typing import TYPE_CHECKING, Any, Final, cast
+ 
+ from streamlit.elements.lib.layout_utils import create_layout_config
+ from streamlit.errors import StreamlitInvalidParameterTypeError
++from streamlit.logger import get_logger
+ from streamlit.proto.Json_pb2 import Json as JsonProto
+ from streamlit.runtime.metrics_util import gather_metrics
+ from streamlit.type_util import (
+@@ -37,6 +38,8 @@
+     from streamlit.delta_generator import DeltaGenerator
+     from streamlit.elements.lib.layout_utils import WidthWithoutContent
+ 
++_LOGGER: Final = get_logger(__name__)
++
+ 
+ def _ensure_serialization(o: object) -> str | list[Any]:
+     """A repr function for json.dumps default arg, which tries to serialize sets
+@@ -138,10 +141,15 @@ def json(
+                 # Serialize body to string and try to interpret sets as lists
+                 body = json.dumps(body, default=_ensure_serialization)
+             except TypeError as err:
+-                self.dg.warning(
+-                    "Warning: this data structure was not fully serializable as "
++                # Incomplete JSON still gets an in-app warning; also log it
++                # with a stack trace so CLI and agent users can find the call
++                # site.
++                warning_message = (
++                    "this data structure was not fully serializable as "
+                     f"JSON due to one or more unexpected keys.  (Error was: {err})"
+                 )
++                _LOGGER.warning("%s", warning_message, stack_info=True)
++                self.dg.warning(f"Warning: {warning_message}")
+                 body = json.dumps(body, skipkeys=True, default=_ensure_serialization)
+ 
+         json_proto = JsonProto()
+diff --git a/lib/streamlit/elements/lib/policies.py b/lib/streamlit/elements/lib/policies.py
+index 93952e740ae..289ce0e5440 100644
+--- a/lib/streamlit/elements/lib/policies.py
++++ b/lib/streamlit/elements/lib/policies.py
+@@ -121,9 +121,11 @@ def check_cache_replay_rules() -> None:
+     if in_cached_function.get():
+         from streamlit import exception
+ 
+-        # We use an exception here to show a proper stack trace
+-        # that indicates to the user where the issue is.
+-        exception(CachedWidgetWarning())
++        # st.exception renders the warning at the widget call site; the log
++        # makes it visible to CLI users and agents.
++        warning = CachedWidgetWarning()
++        _LOGGER.warning("%s", warning, stack_info=True)
++        exception(warning)
+ 
+ 
+ def check_widget_policies(
+diff --git a/lib/streamlit/elements/media.py b/lib/streamlit/elements/media.py
+index 2f51148b070..40cdd79263d 100644
+--- a/lib/streamlit/elements/media.py
++++ b/lib/streamlit/elements/media.py
+@@ -31,6 +31,7 @@
+     StreamlitInvalidParameterTypeError,
+     StreamlitMissingRequiredParameterError,
+ )
++from streamlit.logger import get_logger
+ from streamlit.proto.Audio_pb2 import Audio as AudioProto
+ from streamlit.proto.Video_pb2 import Video as VideoProto
+ from streamlit.proto.WidthConfig_pb2 import WidthConfig
+@@ -45,6 +46,8 @@
+ 
+     from streamlit.delta_generator import DeltaGenerator
+ 
++_LOGGER: Final = get_logger(__name__)
++
+ 
+ MediaData: TypeAlias = Union[
+     str,
+@@ -210,9 +213,11 @@ def audio(
+                 detail="Must be specified when `data` is a numpy array.",
+             )
+         if not is_data_numpy_array and sample_rate is not None:
+-            self.dg.warning(
+-                "Warning: `sample_rate` will be ignored since data is not a numpy "
+-                "array."
++            # `sample_rate` only applies to NumPy data, so it is dropped here
++            # and surfaced to the developer via the console.
++            _LOGGER.warning(
++                "`sample_rate` will be ignored since data is not a numpy array.",
++                stack_info=True,
+             )
+         coordinates = self.dg._get_delta_path_str()
+         marshall_audio(
+diff --git a/lib/streamlit/elements/widgets/number_input.py b/lib/streamlit/elements/widgets/number_input.py
+index 2024125eec6..2d4fd371cd9 100644
+--- a/lib/streamlit/elements/widgets/number_input.py
++++ b/lib/streamlit/elements/widgets/number_input.py
+@@ -17,7 +17,7 @@
+ import math
+ import numbers
+ from dataclasses import dataclass
+-from typing import TYPE_CHECKING, Literal, TypeAlias, cast, overload
++from typing import TYPE_CHECKING, Final, Literal, TypeAlias, cast, overload
+ 
+ from streamlit.elements.lib.form_utils import current_form_id
+ from streamlit.elements.lib.js_number import JSNumber, JSNumberBoundsException
+@@ -43,6 +43,7 @@
+     StreamlitValueAboveMaxError,
+     StreamlitValueBelowMinError,
+ )
++from streamlit.logger import get_logger
+ from streamlit.proto.NumberInput_pb2 import NumberInput as NumberInputProto
+ from streamlit.runtime.metrics_util import gather_metrics
+ from streamlit.runtime.scriptrunner import ScriptRunContext, get_script_run_ctx
+@@ -60,6 +61,8 @@
+ if TYPE_CHECKING:
+     from streamlit.delta_generator import DeltaGenerator
+ 
++_LOGGER: Final = get_logger(__name__)
++
+ Number: TypeAlias = int | float
+ 
+ 
+@@ -683,20 +686,20 @@ def _number_input(
+         # Use default format depending on value type if format was not provided:
+         number_format = ("%d" if int_value else "%0.2f") if format is None else format
+ 
+-        # Warn user if they format an int type as a float or vice versa.
++        # A type/format mismatch only affects how the value is displayed, so it
++        # is reported to the developer via the console rather than the app.
+         if number_format in {"%d", "%u", "%i"} and float_value:
+-            import streamlit as st
+-
+-            st.warning(
+-                "Warning: NumberInput value below has type float,"
+-                f" but format {number_format} displays as integer."
++            _LOGGER.warning(
++                "st.number_input value has type float, but format %s displays as integer.",
++                number_format,
++                stack_info=True,
+             )
+         elif number_format[-1] == "f" and int_value:
+-            import streamlit as st
+-
+-            st.warning(
+-                "Warning: NumberInput value below has type int so is"
+-                f" displayed as int despite format string {number_format}."
++            _LOGGER.warning(
++                "st.number_input value has type int so is displayed as int despite "
++                "format string %s.",
++                number_format,
++                stack_info=True,
+             )
+ 
+         if step is None:
+diff --git a/lib/streamlit/runtime/caching/cache_utils.py b/lib/streamlit/runtime/caching/cache_utils.py
+index 87e5ffe8172..4ca3190dab9 100644
+--- a/lib/streamlit/runtime/caching/cache_utils.py
++++ b/lib/streamlit/runtime/caching/cache_utils.py
+@@ -842,13 +842,13 @@ def _emit_background_display_warning(self) -> None:
+         """Warn that display output won't replay on hits in background mode."""
+         from streamlit import exception
+ 
+-        # We use an exception here to show a proper stack trace pointing at the user's
+-        # cached function (same channel as the cached-widget warning).
+-        exception(
+-            CachedStFunctionInBackgroundModeWarning(
+-                self._info.cache_type, self._info.func
+-            )
++        # Mirrors the cached-widget warning: st.exception surfaces it in the
++        # app, the log surfaces it in the console.
++        warning = CachedStFunctionInBackgroundModeWarning(
++            self._info.cache_type, self._info.func
+         )
++        _LOGGER.warning("%s", warning, stack_info=True)
++        exception(warning)
+ 
+     @overload
+     def clear(self) -> None: ...
+diff --git a/lib/tests/streamlit/elements/audio_test.py b/lib/tests/streamlit/elements/audio_test.py
+index 4318d7b9435..86c4aac80f9 100644
+--- a/lib/tests/streamlit/elements/audio_test.py
++++ b/lib/tests/streamlit/elements/audio_test.py
+@@ -23,6 +23,7 @@
+ 
+ import streamlit as st
+ from streamlit.elements.media import (
++    _LOGGER,
+     _maybe_convert_to_wav_bytes,
+     _parse_start_time_end_time,
+ )
+@@ -30,7 +31,6 @@
+     StreamlitAPIException,
+     StreamlitMissingRequiredParameterError,
+ )
+-from streamlit.proto.Alert_pb2 import Alert as AlertProto
+ from streamlit.runtime.media_file_storage import MediaFileStorageError
+ from streamlit.runtime.memory_media_file_storage import _calculate_file_id
+ from streamlit.web.server.server import MEDIA_ENDPOINT
+@@ -126,21 +126,27 @@ def test_st_audio_missing_sample_rate_numpy_arr(self):
+ 
+         assert "sample_rate" in str(e.value)
+ 
+-    def test_st_audio_sample_rate_raises_warning(self):
+-        """Test st.audio raises streamlit warning when sample_rate parameter provided,
+-        but data is not a numpy array."""
++    def test_st_audio_sample_rate_logs_warning(self):
++        """Test st.audio logs a warning when sample_rate is provided but data
++        is not a numpy array.
++        """
+ 
+         fake_audio_data = b"\x11\x22\x33\x44\x55\x66"
+         sample_rate = 44100
+ 
+-        st.audio(fake_audio_data, sample_rate=sample_rate)
++        with self.assertLogs(_LOGGER) as logs:
++            st.audio(fake_audio_data, sample_rate=sample_rate)
+ 
+-        c = self.get_delta_from_queue(-2).new_element.alert
+-        assert c.format == AlertProto.WARNING
+         assert (
+-            c.body
+-            == "Warning: `sample_rate` will be ignored since data is not a numpy array."
++            "`sample_rate` will be ignored since data is not a numpy array."
++            in logs.records[0].getMessage()
++        )
++        assert logs.records[0].stack_info is not None
++        assert not any(
++            delta.new_element.WhichOneof("type") == "alert"
++            for delta in self.get_all_deltas_from_queue()
+         )
++        assert self.get_delta_from_queue().new_element.WhichOneof("type") == "audio"
+ 
+     def test_maybe_convert_to_wave_numpy_arr_empty(self):
+         """Test _maybe_convert_to_wave_bytes works correctly with empty numpy array."""
+diff --git a/lib/tests/streamlit/elements/echo_test.py b/lib/tests/streamlit/elements/echo_test.py
+index 0883d85a8c4..e162ed13ef7 100644
+--- a/lib/tests/streamlit/elements/echo_test.py
++++ b/lib/tests/streamlit/elements/echo_test.py
+@@ -12,10 +12,14 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++from unittest.mock import patch
++
++import pytest
+ from parameterized import parameterized
+ 
+ import streamlit as st
+-from streamlit.commands.echo import _get_indent, _get_initial_indent
++from streamlit.commands.echo import _LOGGER, _get_indent, _get_initial_indent
++from streamlit.proto.Alert_pb2 import Alert as AlertProto
+ from tests.delta_generator_test_case import DeltaGeneratorTestCase
+ 
+ 
+@@ -196,6 +200,42 @@ def test_echo_multiline_param(self):
+         element = self.get_delta_from_queue(0).new_element
+         assert echo_str == element.code.code_text
+ 
++    @parameterized.expand(
++        [
++            (FileNotFoundError, "missing.py"),
++            (PermissionError, "denied.py"),
++        ]
++    )
++    def test_echo_unreadable_source_file_warns_and_logs(self, error_cls, err_text):
++        """If the source file cannot be opened, echo still runs the block, shows a
++        warning, and logs it with a stack trace.
++        """
++        with patch(
++            "streamlit.source_util.open_python_file",
++            side_effect=error_cls(err_text),
++        ):
++            with self.assertLogs(_LOGGER) as logs:
++                with st.echo():
++                    st.write("Hello")
++
++        assert f"Unable to display code. {err_text}" in logs.records[0].getMessage()
++        assert logs.records[0].stack_info is not None
++
++        warning_el = self.get_delta_from_queue(0).new_element.alert
++        assert warning_el.format == AlertProto.WARNING
++        assert f"Unable to display code. {err_text}" in warning_el.body
++        assert self.get_delta_from_queue(1).new_element.markdown.body == "Hello"
++        assert not any(
++            delta.new_element.WhichOneof("type") == "code"
++            for delta in self.get_all_deltas_from_queue()
++        )
++
++    def test_echo_propagates_file_not_found_from_block(self):
++        """FileNotFoundError raised inside the echoed block is not swallowed."""
++        with pytest.raises(FileNotFoundError, match="from the block"):
++            with st.echo():
++                raise FileNotFoundError("from the block")
++
+ 
+ class EchoUtilsTest(DeltaGeneratorTestCase):
+     """Test echo utility functions for indent handling."""
+diff --git a/lib/tests/streamlit/elements/element_policies_test.py b/lib/tests/streamlit/elements/element_policies_test.py
+index cf1af004b87..b55509ea58d 100644
+--- a/lib/tests/streamlit/elements/element_policies_test.py
++++ b/lib/tests/streamlit/elements/element_policies_test.py
+@@ -185,10 +185,14 @@ def test_cache_replay_rules_succeeds(self, patched_st_exception):
+         patched_st_exception.assert_not_called()
+ 
+     @patch("streamlit.exception")
+-    def test_cache_replay_rules_fails(self, patched_st_exception):
++    @patch("streamlit.elements.lib.policies._LOGGER")
++    def test_cache_replay_rules_fails(self, patched_logger, patched_st_exception):
+         in_cached_function.set(True)
+         check_cache_replay_rules()
+         patched_st_exception.assert_called()
++        patched_logger.warning.assert_called_once()
++        _, kwargs = patched_logger.warning.call_args
++        assert kwargs.get("stack_info") is True
+         # Reset the global flag to avoid affecting other tests
+         in_cached_function.set(False)
+ 
+diff --git a/lib/tests/streamlit/elements/json_test.py b/lib/tests/streamlit/elements/json_test.py
+index 2e9b6e248d8..ecfefbd9979 100644
+--- a/lib/tests/streamlit/elements/json_test.py
++++ b/lib/tests/streamlit/elements/json_test.py
+@@ -20,6 +20,7 @@
+ from parameterized import parameterized
+ 
+ import streamlit as st
++from streamlit.elements.json import _LOGGER
+ from streamlit.errors import (
+     StreamlitInvalidParameterTypeError,
+     StreamlitInvalidWidthError,
+@@ -46,20 +47,24 @@ def test_st_json(self):
+         )
+         assert el.width_config.use_stretch is True
+ 
+-        # Test that an object containing non-json-friendly keys can still
+-        # be displayed.  Resultant json body will be missing those keys.
+-
++    def test_st_json_warns_and_logs_for_unserializable_keys(self):
++        """Non-JSON keys are omitted, logged, and shown as a warning."""
+         n = np.array([1, 2, 3, 4, 5])
+         data = {n[0]: "this key will not render as JSON", "array": n}
+-        st.json(data)
+-
+-        el = self.get_delta_from_queue().new_element
+-        assert el.json.body == '{"array": "array([1, 2, 3, 4, 5])"}'
+-        assert (
+-            el.width_config.WhichOneof("width_spec")
+-            == WidthConfigFields.USE_STRETCH.value
+-        )
+-        assert el.width_config.use_stretch is True
++        with self.assertLogs(_LOGGER) as logs:
++            st.json(data)
++
++        log_message = logs.records[0].getMessage()
++        assert "not fully serializable as JSON" in log_message
++        assert not log_message.startswith("Warning:")
++        assert logs.records[0].stack_info is not None
++
++        json_el = self.get_delta_from_queue().new_element
++        # Warning is enqueued first; JSON is last.
++        warning_el = self.get_delta_from_queue(-2).new_element
++        assert json_el.json.body == '{"array": "array([1, 2, 3, 4, 5])"}'
++        assert warning_el.alert.body.startswith("Warning:")
++        assert "not fully serializable as JSON" in warning_el.alert.body
+ 
+     def test_expanded_param(self):
+         """Test expanded parameter for `st.json`"""
+diff --git a/lib/tests/streamlit/elements/number_input_test.py b/lib/tests/streamlit/elements/number_input_test.py
+index 823252f2136..b0682486c14 100644
+--- a/lib/tests/streamlit/elements/number_input_test.py
++++ b/lib/tests/streamlit/elements/number_input_test.py
+@@ -21,7 +21,7 @@
+ 
+ import streamlit as st
+ from streamlit.elements.lib.js_number import JSNumber
+-from streamlit.elements.widgets.number_input import NumberInputSerde
++from streamlit.elements.widgets.number_input import _LOGGER, NumberInputSerde
+ from streamlit.errors import (
+     StreamlitAPIException,
+     StreamlitInvalidWidthError,
+@@ -29,7 +29,6 @@
+     StreamlitValueAboveMaxError,
+     StreamlitValueError,
+ )
+-from streamlit.proto.Alert_pb2 import Alert as AlertProto
+ from streamlit.proto.LabelVisibility_pb2 import LabelVisibility
+ from streamlit.proto.NumberInput_pb2 import NumberInput
+ from streamlit.proto.WidgetStates_pb2 import WidgetState
+@@ -219,25 +218,39 @@ def test_accept_valid_formats(self):
+             c = self.get_delta_from_queue().new_element.number_input
+             assert c.format == "%" + char
+ 
+-    def test_warns_on_float_type_with_int_format(self):
+-        st.number_input("the label", value=5.0, format="%d")
++    def test_logs_warning_on_float_type_with_int_format(self):
++        """Integer format with a float value logs a warning and still uses that format."""
++        with self.assertLogs(_LOGGER) as logs:
++            st.number_input("the label", value=5.0, format="%d")
+ 
+-        c = self.get_delta_from_queue(-2).new_element.alert
+-        assert c.format == AlertProto.WARNING
+         assert (
+-            c.body
+-            == "Warning: NumberInput value below has type float, but format %d displays as integer."
++            "st.number_input value has type float, but format %d displays as integer."
++            in logs.records[0].getMessage()
+         )
++        assert logs.records[0].stack_info is not None
++        assert not any(
++            delta.new_element.WhichOneof("type") == "alert"
++            for delta in self.get_all_deltas_from_queue()
++        )
++        c = self.get_delta_from_queue().new_element.number_input
++        assert c.format == "%d"
+ 
+-    def test_warns_on_int_type_with_float_format(self):
+-        st.number_input("the label", value=5, format="%0.2f")
++    def test_logs_warning_on_int_type_with_float_format(self):
++        """Float format with an int value logs a warning and still uses that format."""
++        with self.assertLogs(_LOGGER) as logs:
++            st.number_input("the label", value=5, format="%0.2f")
+ 
+-        c = self.get_delta_from_queue(-2).new_element.alert
+-        assert c.format == AlertProto.WARNING
+         assert (
+-            c.body
+-            == "Warning: NumberInput value below has type int so is displayed as int despite format string %0.2f."
++            "st.number_input value has type int so is displayed as int despite "
++            "format string %0.2f." in logs.records[0].getMessage()
+         )
++        assert logs.records[0].stack_info is not None
++        assert not any(
++            delta.new_element.WhichOneof("type") == "alert"
++            for delta in self.get_all_deltas_from_queue()
++        )
++        c = self.get_delta_from_queue().new_element.number_input
++        assert c.format == "%0.2f"
+ 
+     def test_error_on_unsupported_formatters(self):
+         UNSUPPORTED = "pAn"
+diff --git a/lib/tests/streamlit/runtime/caching/common_cache_test.py b/lib/tests/streamlit/runtime/caching/common_cache_test.py
+index 316a25090a3..14c73e8528d 100644
+--- a/lib/tests/streamlit/runtime/caching/common_cache_test.py
++++ b/lib/tests/streamlit/runtime/caching/common_cache_test.py
+@@ -42,7 +42,7 @@
+     CachedStFunctionInBackgroundModeWarning,
+     CacheReplayClosureError,
+ )
+-from streamlit.runtime.caching.cache_utils import CachedResult
++from streamlit.runtime.caching.cache_utils import _LOGGER, CachedResult
+ from streamlit.runtime.caching.storage.dummy_cache_storage import (
+     MemoryCacheStorageManager,
+ )
+@@ -1570,7 +1570,8 @@ def foo() -> int:
+ 
+         with patch.object(st, "exception") as mock_exception:
+             timer_patch.return_value = 0
+-            assert foo() == 1
++            with self.assertLogs(_LOGGER) as logs:
++                assert foo() == 1
+             # Display output renders live during the actual miss.
+             assert self._text_deltas() == ["hello"]
+             # A warning is emitted about background-mode display commands.
+@@ -1579,6 +1580,8 @@ def foo() -> int:
+                 mock_exception.call_args[0][0],
+                 CachedStFunctionInBackgroundModeWarning,
+             )
++            assert 'refresh_mode="background"' in logs.records[0].getMessage()
++            assert logs.records[0].stack_info is not None
+ 
+             mock_exception.reset_mock()
+             self.clear_queue()

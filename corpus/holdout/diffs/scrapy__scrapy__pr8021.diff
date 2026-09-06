@@ -1,0 +1,941 @@
+diff --git a/scrapy/core/downloader/__init__.py b/scrapy/core/downloader/__init__.py
+index 2089b122475..31aba4c3e72 100644
+--- a/scrapy/core/downloader/__init__.py
++++ b/scrapy/core/downloader/__init__.py
+@@ -252,7 +252,7 @@ def close(self) -> None:
+     def _slot_gc(self, age: float = 60) -> None:
+         mintime = monotonic() - age
+         for key, slot in list(self.slots.items()):
+-            if not slot.active and slot.lastseen + slot.delay < mintime:
++            if not slot.active and slot.lastseen + slot.delay <= mintime:
+                 self.slots.pop(key).close()
+ 
+     def _start_slot_gc(self) -> None:
+diff --git a/scrapy/core/downloader/handlers/ftp.py b/scrapy/core/downloader/handlers/ftp.py
+index 29b3e3c0f0d..dab5809366c 100644
+--- a/scrapy/core/downloader/handlers/ftp.py
++++ b/scrapy/core/downloader/handlers/ftp.py
+@@ -114,11 +114,12 @@ async def download_request(self, request: Request) -> Response:
+             await maybe_deferred_to_future(client.retrieveFile(filepath, protocol))
+         except CommandFailed as e:
+             message = str(e)
+-            if m := _CODE_RE.search(message):
+-                ftpcode = m.group()
+-                httpcode = self.CODE_MAPPING.get(ftpcode, self.CODE_MAPPING["default"])
+-                return Response(url=request.url, status=httpcode, body=message.encode())
+-            raise
++            # Twisted only raises CommandFailed for a reply whose numeric code
++            # it has parsed, so the message always carries that code.
++            m = _CODE_RE.search(message)
++            assert m
++            httpcode = self.CODE_MAPPING.get(m.group(), self.CODE_MAPPING["default"])
++            return Response(url=request.url, status=httpcode, body=message.encode())
+         finally:
+             protocol.close()
+             assert client.transport
+diff --git a/scrapy/core/downloader/handlers/http11.py b/scrapy/core/downloader/handlers/http11.py
+index da2174f6ff1..f8a1707145a 100644
+--- a/scrapy/core/downloader/handlers/http11.py
++++ b/scrapy/core/downloader/handlers/http11.py
+@@ -163,7 +163,9 @@ async def close(self) -> None:
+         try:
+             await maybe_deferred_to_future(d)
+         finally:
+-            if delayed_call.active():
++            # Only inactive if the timeout above won the race, which the tests
++            # cannot force.
++            if delayed_call.active():  # pragma: no branch
+                 delayed_call.cancel()
+ 
+ 
+@@ -591,11 +593,8 @@ def _cancel(_: Any, txresponse: TxResponse) -> None:
+ 
+     def _cb_bodydone(self, result: _ResultT, url: str) -> Response:
+         headers = self._headers_from_twisted_response(result["txresponse"])
+-        try:
+-            version = result["txresponse"].version
+-            protocol = f"{to_unicode(version[0])}/{version[1]}.{version[2]}"
+-        except (AttributeError, TypeError, IndexError):
+-            protocol = None
++        version = result["txresponse"].version
++        protocol = f"{to_unicode(version[0])}/{version[1]}.{version[2]}"
+         return make_response(
+             url=url,
+             status=int(result["txresponse"].code),
+@@ -670,16 +669,11 @@ def _finish_response(
+ 
+     def connectionMade(self) -> None:
+         assert self.transport
+-        if self._certificate is None:
+-            with suppress(AttributeError):
+-                self._certificate = ssl.Certificate(
+-                    self.transport._producer.getPeerCertificate()
+-                )
+-
+-        if self._ip_address is None:
+-            self._ip_address = ipaddress.ip_address(
+-                self.transport._producer.getPeer().host
++        with suppress(AttributeError):
++            self._certificate = ssl.Certificate(
++                self.transport._producer.getPeerCertificate()
+             )
++        self._ip_address = ipaddress.ip_address(self.transport._producer.getPeer().host)
+ 
+         if self._tls_verbose_logging:
+             connection = self.transport._producer.getHandle()
+@@ -737,18 +731,21 @@ def connectionLost(self, reason: Failure = connectionDone) -> None:
+             self._finish_response(flags=["partial"])
+             return
+ 
+-        if reason.check(ResponseFailed) and any(
++        # Twisted ends a response body in one of three ways: ResponseDone,
++        # PotentialDataLoss, or a ResponseFailed wrapping _DataLoss. See
++        # twisted.web._newclient.HTTPClientParser.connectionLost().
++        assert reason.check(ResponseFailed)
++        assert any(
+             r.check(_DataLoss)
+             for r in reason.value.reasons  # type: ignore[union-attr]
+-        ):
+-            if not self._fail_on_dataloss:
+-                self._finish_response(flags=["dataloss"])
+-                return
+-
+-            exc = ResponseDataLossError()
+-            exc.__cause__ = reason.value
+-            reason = Failure(exc)
++        )
++        if not self._fail_on_dataloss:
++            self._finish_response(flags=["dataloss"])
++            return
+ 
++        exc = ResponseDataLossError()
++        exc.__cause__ = reason.value
++        reason = Failure(exc)
+         self._finished.errback(reason)
+ 
+ 
+diff --git a/scrapy/core/downloader/tls.py b/scrapy/core/downloader/tls.py
+index c5cf1156df2..1995d735beb 100644
+--- a/scrapy/core/downloader/tls.py
++++ b/scrapy/core/downloader/tls.py
+@@ -81,9 +81,8 @@ class _ScrapyClientTLSOptions(ClientTLSOptions):
+     (for genuinely invalid certificates or bugs in verification code).
+ 
+     Same as Twisted's private _sslverify.ClientTLSOptions,
+-    except that VerificationError, CertificateError and ValueError
+-    exceptions are caught, so that the connection is not closed, only
+-    logging warnings.
++    except that VerificationError and CertificateError exceptions are caught,
++    so that the connection is not closed, only logging warnings.
+ 
+     Instances of this class are returned from
+     :class:`._ScrapyClientContextFactory`.
+@@ -106,13 +105,6 @@ def _identityVerifyingInfoCallback(
+                     self._hostnameASCII,
+                     e,
+                 )
+-            except ValueError as e:
+-                logger.warning(
+-                    "Ignoring error while verifying certificate "
+-                    'from host "%s" (exception: %r)',
+-                    self._hostnameASCII,
+-                    e,
+-                )
+         else:
+             super()._identityVerifyingInfoCallback(connection, where, ret)  # type: ignore[misc]
+ 
+@@ -173,13 +165,6 @@ def verifyCallback(
+                     hostnameASCII,
+                     e,
+                 )
+-            except ValueError as e:
+-                logger.warning(
+-                    "Ignoring error while verifying certificate "
+-                    'from host "%s" (exception: %r)',
+-                    hostnameASCII,
+-                    e,
+-                )
+ 
+             return True
+ 
+diff --git a/scrapy/core/engine.py b/scrapy/core/engine.py
+index 83e3381d6df..d6683d7ddf3 100644
+--- a/scrapy/core/engine.py
++++ b/scrapy/core/engine.py
+@@ -92,10 +92,9 @@ async def close(self) -> None:
+ 
+     def _maybe_fire_closing(self) -> None:
+         if self.closing is not None and not self.inprogress:
+-            if self.nextcall:
+-                self.nextcall.cancel()
+-                if self.heartbeat.running:
+-                    self.heartbeat.stop()
++            self.nextcall.cancel()
++            if self.heartbeat.running:
++                self.heartbeat.stop()
+             self.closing.callback(None)
+ 
+ 
+@@ -257,7 +256,7 @@ async def close_async(self, *, reason: str = "shutdown") -> None:
+             await self.stop_async()  # will also close spider and downloader
+         elif self.spider is not None:
+             await self.close_spider_async(reason=reason)  # will also close downloader
+-        elif hasattr(self, "downloader"):
++        else:
+             self.downloader.close()
+ 
+     def pause(self) -> None:
+@@ -413,11 +412,6 @@ def _start_scheduled_request(self) -> bool:
+     def _handle_downloader_output(
+         self, result: Request | Response | Failure, request: Request
+     ) -> Generator[Deferred[Any], Any, None]:
+-        if not isinstance(result, (Request, Response, Failure)):
+-            raise TypeError(
+-                f"Incorrect type: expected Request, Response or Failure, got {type(result)}: {result!r}"
+-            )
+-
+         # downloader middleware can return requests (for example, redirects)
+         if isinstance(result, Request):
+             self.crawl(result)
+diff --git a/scrapy/pqueues.py b/scrapy/pqueues.py
+index f4c35c0fe68..bbbd3309368 100644
+--- a/scrapy/pqueues.py
++++ b/scrapy/pqueues.py
+@@ -410,6 +410,7 @@ def pop(self) -> Request | None:
+         request = queue.pop()
+         if len(queue) == 0:
+             del self.pqueues[slot]
++            queue.close()
+             if self.key:
+                 # Reclaim the slot directory; rmdir leaves it alone if the
+                 # downstream queues did not remove all their files.
+diff --git a/scrapy/utils/asyncio.py b/scrapy/utils/asyncio.py
+index 7c7697f568c..e8d81f56af2 100644
+--- a/scrapy/utils/asyncio.py
++++ b/scrapy/utils/asyncio.py
+@@ -92,6 +92,17 @@ def is_asyncio_available() -> bool:
+     return is_asyncio_reactor_installed()
+ 
+ 
++class _QueueEnd:
++    """Marks the end of the work queue of :func:`_parallel_asyncio`.
++
++    A dedicated type is needed because any value, ``None`` included, can be an
++    item of the iterable being worked on.
++    """
++
++
++_QUEUE_END = _QueueEnd()
++
++
+ async def _parallel_asyncio(
+     iterable: Iterable[_T] | AsyncIterator[_T],
+     count: int,
+@@ -107,12 +118,12 @@ async def _parallel_asyncio(
+     assumes that neither *callable* nor iterating *iterable* will raise an
+     exception.
+     """
+-    queue: asyncio.Queue[_T | None] = asyncio.Queue(count * 2)
++    queue: asyncio.Queue[_T | _QueueEnd] = asyncio.Queue(count * 2)
+ 
+     async def worker() -> None:
+         while True:
+             item = await queue.get()
+-            if item is None:
++            if isinstance(item, _QueueEnd):
+                 break
+             try:
+                 await callable_(item, *args, **kwargs)
+@@ -123,7 +134,7 @@ async def fill_queue() -> None:
+         async for item in as_async_generator(iterable):
+             await queue.put(item)
+         for _ in range(count):
+-            await queue.put(None)
++            await queue.put(_QUEUE_END)
+ 
+     fill_task = asyncio.create_task(fill_queue())
+     work_tasks = [asyncio.create_task(worker()) for _ in range(count)]
+diff --git a/tests/test_core_downloader.py b/tests/test_core_downloader.py
+index 7e46f6c6ebd..b441e1baf9e 100644
+--- a/tests/test_core_downloader.py
++++ b/tests/test_core_downloader.py
+@@ -34,6 +34,7 @@
+ )
+ from scrapy.core.downloader.handlers.http11 import _RequestBodyProducer
+ from scrapy.exceptions import ScrapyDeprecationWarning
++from scrapy.resolver import dnscache
+ from scrapy.utils._deps_compat import PYOPENSSL_SET_CIPHER_LIST_TMP_CONN
+ from scrapy.utils.defer import maybe_deferred_to_future
+ from scrapy.utils.misc import build_from_crawler
+@@ -50,7 +51,7 @@
+     from pathlib import Path
+ 
+     from twisted.internet.defer import Deferred
+-    from twisted.internet.interfaces import IListeningPort
++    from twisted.internet.interfaces import IConsumer, IListeningPort
+     from twisted.web.iweb import IBodyProducer
+ 
+     from scrapy.http import Response
+@@ -509,3 +510,64 @@ def test_deprecated_tls_module_names() -> None:
+         assert tls.DEFAULT_CIPHERS._ciphers == (
+             AcceptableCiphers.fromOpenSSLCipherString("DEFAULT")._ciphers
+         )
++
++
++def test_slot_str() -> None:
++    slot = Slot(concurrency=2, delay=0.5, randomize_delay=False)
++    assert str(slot).startswith(
++        "<downloader.Slot concurrency=2 delay=0.50 randomize_delay=False"
++        " len(active)=0 len(queue)=0 len(transferring)=0 lastseen="
++    )
++
++
++def test_get_slot_key_by_ip() -> None:
++    with warnings.catch_warnings():
++        warnings.filterwarnings(
++            "ignore",
++            category=ScrapyDeprecationWarning,
++            message="The CONCURRENT_REQUESTS_PER_IP setting is deprecated",
++        )
++        crawler = get_crawler(settings_dict={"CONCURRENT_REQUESTS_PER_IP": 1})
++        downloader = Downloader(crawler)
++    dnscache["example.com"] = "127.0.0.1"
++    try:
++        assert downloader.get_slot_key(Request("http://example.com")) == "127.0.0.1"
++    finally:
++        del dnscache["example.com"]
++        downloader.close()
++
++
++@coroutine_test
++async def test_slot_gc() -> None:
++    """Slots that have been idle for long enough are discarded."""
++    crawler = get_crawler(DefaultSpider)
++    crawler.spider = crawler._create_spider()
++    downloader = Downloader(crawler)
++    try:
++        await maybe_deferred_to_future(downloader.fetch(Request("data:,")))
++        assert set(downloader.slots) == {""}
++        downloader._slot_gc()
++        assert set(downloader.slots) == {""}
++        downloader._slot_gc(age=0)
++        assert not downloader.slots
++    finally:
++        downloader.close()
++
++
++@coroutine_test
++async def test_request_body_producer() -> None:
++    class Consumer:
++        def __init__(self) -> None:
++            self.written: list[bytes] = []
++
++        def write(self, data: bytes) -> None:
++            self.written.append(data)
++
++    producer = _RequestBodyProducer(b"body")
++    assert producer.length == 4
++    consumer = Consumer()
++    await maybe_deferred_to_future(producer.startProducing(cast("IConsumer", consumer)))
++    assert consumer.written == [b"body"]
++    # The body is written in a single call, so there is nothing to pause or stop.
++    producer.pauseProducing()
++    producer.stopProducing()
+diff --git a/tests/test_core_scraper.py b/tests/test_core_scraper.py
+index 1b8ba08ab64..c4732ff3fb9 100644
+--- a/tests/test_core_scraper.py
++++ b/tests/test_core_scraper.py
+@@ -1,13 +1,24 @@
+ from __future__ import annotations
+ 
+-from typing import TYPE_CHECKING
++import logging
++from typing import TYPE_CHECKING, Any, cast
+ 
++import pytest
++
++from scrapy import Request, Spider
++from scrapy.core.scraper import Scraper
++from scrapy.exceptions import IgnoreRequest
++from scrapy.http import Response
++from scrapy.utils.defer import maybe_deferred_to_future
++from scrapy.utils.spider import DefaultSpider
+ from scrapy.utils.test import get_crawler
+ from tests.spiders import SimpleSpider
+-from tests.utils.decorators import coroutine_test
++from tests.utils.decorators import coroutine_test, inline_callbacks_test
+ 
+ if TYPE_CHECKING:
+-    import pytest
++    from collections.abc import AsyncIterator, Generator, Iterable
++
++    from twisted.internet.defer import Deferred
+ 
+     from tests.mockserver.http import MockServer
+ 
+@@ -25,3 +36,104 @@ async def test_scraper_exception(
+     )
+     await crawler.crawl_async(url=mockserver.url("/"))
+     assert "Scraper bug processing" in caplog.text
++
++
++@coroutine_test
++async def test_open_spider_without_spider() -> None:
++    scraper = Scraper(get_crawler(DefaultSpider))
++    with pytest.raises(RuntimeError, match=r"called before Crawler\.spider is set"):
++        await scraper.open_spider_async()
++
++
++@inline_callbacks_test
++def test_enqueue_scrape_without_slot() -> Generator[Deferred[Any], Any, None]:
++    scraper = Scraper(get_crawler(DefaultSpider))
++    with pytest.raises(RuntimeError, match="Scraper slot not assigned"):
++        yield scraper.enqueue_scrape(Response("data:,"), Request("data:,"))
++
++
++@coroutine_test
++async def test_enqueue_scrape_wrong_type(caplog: pytest.LogCaptureFixture) -> None:
++    crawler = get_crawler(DefaultSpider)
++    crawler.spider = crawler._create_spider()
++    scraper = Scraper(crawler)
++    await scraper.open_spider_async()
++    try:
++        await maybe_deferred_to_future(
++            scraper.enqueue_scrape("not a response", Request("data:,"))  # type: ignore[arg-type]
++        )
++    finally:
++        await scraper.close_spider_async()
++    assert "expected Response or Failure, got <class 'str'>" in caplog.text
++
++
++@coroutine_test
++async def test_call_spider_sets_request_on_response() -> None:
++    class ParsingSpider(Spider):
++        name = "parsing"
++
++        def parse(self, response: Response) -> Iterable[Any]:
++            return [response.url]
++
++    crawler = get_crawler(ParsingSpider)
++    crawler.spider = crawler._create_spider()
++    scraper = Scraper(crawler)
++    response = Response("data:,")
++    request = Request("data:,")
++    output = await scraper.call_spider_async(response, request)
++    assert response.request is request
++    assert list(cast("Iterable[Any]", output)) == ["data:,"]
++
++
++@coroutine_test
++async def test_errback_error_on_ignored_request(
++    caplog: pytest.LogCaptureFixture,
++) -> None:
++    """An errback failing on an ignored request does not log a download error."""
++
++    class IgnoreMiddleware:
++        def process_request(self, request: Request) -> None:
++            raise IgnoreRequest("nope")
++
++    class ErrbackSpider(Spider):
++        name = "errback"
++
++        async def start(self) -> AsyncIterator[Any]:
++            yield Request("data:,", errback=self.errback)
++
++        def errback(self, failure: Any) -> None:
++            raise ValueError("errback error")
++
++    crawler = get_crawler(
++        ErrbackSpider, {"DOWNLOADER_MIDDLEWARES": {IgnoreMiddleware: 1}}
++    )
++    with caplog.at_level(logging.DEBUG):
++        await crawler.crawl_async()
++    assert "Error downloading" not in caplog.text
++    assert crawler.stats.get_value("spider_exceptions/ValueError") == 1
++
++
++@coroutine_test
++async def test_none_in_callback_output() -> None:
++    """``None`` in the callback output is dropped, without dropping later items."""
++
++    class NoneSpider(Spider):
++        name = "none"
++
++        async def start(self) -> AsyncIterator[Any]:
++            yield Request("data:,")
++
++        def parse(self, response: Response) -> Iterable[Any]:
++            yield {"index": 1}
++            yield None
++            yield {"index": 2}
++
++    crawler = get_crawler(
++        NoneSpider,
++        # The built-in spider middlewares would drop the None before the
++        # scraper gets to see it. A single concurrent item makes sure that the
++        # None and the item that follows it are handled by the same worker.
++        {"CONCURRENT_ITEMS": 1, "SPIDER_MIDDLEWARES_BASE": {}},
++    )
++    await crawler.crawl_async()
++    assert crawler.stats.get_value("item_scraped_count") == 2
+diff --git a/tests/test_downloader_handler_httpx.py b/tests/test_downloader_handler_httpx.py
+index 66a761f06ef..b5dfa937f5c 100644
+--- a/tests/test_downloader_handler_httpx.py
++++ b/tests/test_downloader_handler_httpx.py
+@@ -217,3 +217,47 @@ async def test_pool_limits(concurrency: int, expected: int | None) -> None:
+         assert handler._limits.max_keepalive_connections == expected
+     finally:
+         await handler.close()
++
++
++@coroutine_test
++async def test_experimental_warning(caplog: pytest.LogCaptureFixture) -> None:
++    class StableHandler(HttpxDownloadHandler):
++        experimental = False
++
++    crawler = get_crawler()
++    for handler_cls, expected in ((HttpxDownloadHandler, True), (StableHandler, False)):
++        caplog.clear()
++        handler = build_from_crawler(handler_cls, crawler)
++        await handler.close()
++        assert ("is experimental" in caplog.text) is expected
++
++
++@coroutine_test
++async def test_proxies_not_supported() -> None:
++    class NoProxyHandler(HttpxDownloadHandler):
++        supports_proxies = False
++
++    crawler = get_crawler()
++    handler = build_from_crawler(NoProxyHandler, crawler)
++    request = Request("http://example.com", meta={"proxy": "http://proxy.example:8080"})
++    try:
++        with pytest.raises(NotImplementedError, match="doesn't support proxies"):
++            await handler.download_request(request)
++    finally:
++        await handler.close()
++
++
++@coroutine_test
++async def test_non_basic_proxy_auth() -> None:
++    crawler = get_crawler()
++    handler = build_from_crawler(HttpxDownloadHandler, crawler)
++    request = Request(
++        "http://example.com",
++        meta={"proxy": "http://proxy.example:8080"},
++        headers={"Proxy-Authorization": "Digest deadbeef"},
++    )
++    try:
++        with pytest.raises(ValueError, match="got Digest"):
++            await handler.download_request(request)
++    finally:
++        await handler.close()
+diff --git a/tests/test_downloader_handler_twisted_http11.py b/tests/test_downloader_handler_twisted_http11.py
+index db353750dde..c7e128a22f0 100644
+--- a/tests/test_downloader_handler_twisted_http11.py
++++ b/tests/test_downloader_handler_twisted_http11.py
+@@ -3,15 +3,25 @@
+ from __future__ import annotations
+ 
+ import sys
++from contextlib import asynccontextmanager
+ from typing import TYPE_CHECKING, Any
+ 
+ import pytest
++from twisted.internet.protocol import Factory, Protocol
+ 
+-from scrapy import Spider
+-from scrapy.core.downloader.handlers.http11 import HTTP11DownloadHandler
++from scrapy import Request, Spider
++from scrapy.core.downloader.handlers.http11 import HTTP11DownloadHandler, TunnelError
+ from scrapy.crawler import Crawler
+-from scrapy.exceptions import NotConfigured
++from scrapy.exceptions import (
++    CannotResolveHostError,
++    DownloadConnectionRefusedError,
++    NotConfigured,
++)
++from scrapy.utils.defer import maybe_deferred_to_future
+ from scrapy.utils.misc import build_from_crawler
++from scrapy.utils.spider import DefaultSpider
++from scrapy.utils.test import get_crawler
++from tests import NON_EXISTING_RESOLVABLE
+ from tests.utils.bases.download_handlers_http import (
+     TestHttpBase,
+     TestHttpProxyBase,
+@@ -26,8 +36,11 @@
+     TestRealWebsiteBase,
+     TestSimpleHttpsBase,
+ )
++from tests.utils.decorators import coroutine_test
+ 
+ if TYPE_CHECKING:
++    from collections.abc import AsyncGenerator
++
+     from scrapy.core.downloader.handlers import DownloadHandlerProtocol
+ 
+ 
+@@ -118,3 +131,92 @@ class TestRealWebsite(HTTP11DownloadHandlerMixin, TestRealWebsiteBase):
+     @property
+     def platform_cert_store_works(self) -> bool:
+         return sys.platform != "win32"
++
++
++class _CannedConnectProxy(Protocol):
++    """Answers any request with a canned response."""
++
++    factory: _CannedConnectProxyFactory
++
++    def dataReceived(self, data: bytes) -> None:
++        from twisted.internet import reactor
++
++        assert self.transport
++        response = self.factory.response
++        if not self.factory.split_at:
++            self.transport.write(response)
++            return
++        self.transport.write(response[: self.factory.split_at])
++        reactor.callLater(0.1, self.transport.write, response[self.factory.split_at :])
++
++
++class _CannedConnectProxyFactory(Factory):
++    protocol = _CannedConnectProxy  # type: ignore[assignment]
++
++    def __init__(self, response: bytes, split_at: int = 0):
++        self.response = response
++        self.split_at = split_at
++
++
++@asynccontextmanager
++async def _canned_proxy(response: bytes, split_at: int = 0) -> AsyncGenerator[str]:
++    from twisted.internet import reactor
++
++    port = reactor.listenTCP(
++        0, _CannedConnectProxyFactory(response, split_at), interface="127.0.0.1"
++    )
++    try:
++        yield f"http://127.0.0.1:{port.getHost().port}"
++    finally:
++        await maybe_deferred_to_future(port.stopListening())
++
++
++@asynccontextmanager
++async def _get_dh() -> AsyncGenerator[HTTP11DownloadHandler]:
++    crawler = get_crawler(DefaultSpider)
++    crawler.spider = crawler._create_spider()
++    dh = build_from_crawler(HTTP11DownloadHandler, crawler)
++    try:
++        yield dh
++    finally:
++        await dh.close()
++
++
++class TestTunnelingErrors:
++    @coroutine_test
++    async def test_response_in_two_packets(self) -> None:
++        """A CONNECT response split across packets is buffered until complete."""
++        response = b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"
++        async with _canned_proxy(response, split_at=len(response) - 2) as proxy:
++            request = Request("https://example.com", meta={"proxy": proxy})
++            async with _get_dh() as dh:
++                with pytest.raises(TunnelError, match="407"):
++                    await dh.download_request(request)
++
++    @coroutine_test
++    async def test_unparsable_response(self) -> None:
++        async with _canned_proxy(b"not an HTTP response\r\n\r\n") as proxy:
++            request = Request("https://example.com", meta={"proxy": proxy})
++            async with _get_dh() as dh:
++                with pytest.raises(TunnelError, match="not an HTTP response"):
++                    await dh.download_request(request)
++
++    @coroutine_test
++    async def test_proxy_connection_refused(self) -> None:
++        request = Request(
++            "https://example.com", meta={"proxy": "http://127.0.0.1:65432"}
++        )
++        async with _get_dh() as dh:
++            with pytest.raises(DownloadConnectionRefusedError):
++                await dh.download_request(request)
++
++    @coroutine_test
++    async def test_proxy_without_port(self) -> None:
++        if NON_EXISTING_RESOLVABLE:
++            pytest.skip("Non-existing hosts are resolvable")
++        request = Request(
++            "https://example.com", meta={"proxy": "http://no-such-domain.nosuch"}
++        )
++        async with _get_dh() as dh:
++            with pytest.raises(CannotResolveHostError):
++                await dh.download_request(request)
+diff --git a/tests/test_downloader_handlers.py b/tests/test_downloader_handlers.py
+index 8f5c13d627e..2e7eedf341a 100644
+--- a/tests/test_downloader_handlers.py
++++ b/tests/test_downloader_handlers.py
+@@ -418,6 +418,14 @@ async def test_base64(self):
+         response = await self.download_request(request)
+         assert response.text == "Hello, world."
+ 
++    @coroutine_test
++    async def test_binary_mediatype(self):
++        request = Request("data:image/png;base64,iVBORw0KGgo%3D")
++        response = await self.download_request(request)
++        assert response.body == b"\x89PNG\r\n\x1a\n"
++        assert type(response) is responsetypes.from_mimetype("image/png")  # pylint: disable=unidiomatic-typecheck
++        assert not isinstance(response, TextResponse)
++
+     @coroutine_test
+     async def test_protocol(self):
+         request = Request("data:,")
+diff --git a/tests/test_downloadermiddleware.py b/tests/test_downloadermiddleware.py
+index 9b89b076017..46cb6b920fd 100644
+--- a/tests/test_downloadermiddleware.py
++++ b/tests/test_downloadermiddleware.py
+@@ -69,6 +69,18 @@ async def test_request_response(self):
+             ret = await self._download(mwman, req, resp)
+         assert isinstance(ret, Response), "Non-response returned"
+ 
++    @coroutine_test
++    async def test_none_from_download_func(self):
++        async def download_func(request: Request) -> None:
++            return None
++
++        async with self.get_mwman() as mwman:
++            with pytest.raises(TypeError, match="Received None in process_response"):
++                await mwman.download_async(
++                    download_func,  # type: ignore[arg-type]
++                    Request("http://example.com/index.html"),
++                )
++
+     @coroutine_test
+     async def test_3xx_and_invalid_gzipped_body_must_redirect(self):
+         """Regression test for a failure when redirecting a compressed
+diff --git a/tests/test_engine.py b/tests/test_engine.py
+index dbb4cde9181..86831f8da2c 100644
+--- a/tests/test_engine.py
++++ b/tests/test_engine.py
+@@ -10,9 +10,10 @@
+ import pytest
+ 
+ from scrapy import signals
++from scrapy.core.downloader import Downloader
+ from scrapy.core.engine import ExecutionEngine, _Slot
+ from scrapy.core.scheduler import BaseScheduler
+-from scrapy.exceptions import CloseSpider, IgnoreRequest
++from scrapy.exceptions import CloseSpider, DontCloseSpider, IgnoreRequest
+ from scrapy.http import Request
+ from scrapy.spiders import Spider
+ from scrapy.utils.defer import _schedule_coro, deferred_from_coro
+@@ -281,3 +282,144 @@ def test_deferred_crawl(self) -> Generator[Deferred[Any], Any, None]:
+         crawler = get_crawler(DefaultSpider, {"ITEM_PIPELINES": {ClosingPipeline: 1}})
+         yield crawler.crawl()
+         assert crawler.stats.get_value("finish_reason") == "pipeline_reason"
++
++
++class TestMisuse:
++    """The engine raises on operations that its state does not allow."""
++
++    @coroutine_test
++    async def test_stop_not_running(self) -> None:
++        engine = ExecutionEngine(get_crawler(DefaultSpider), lambda _: None)
++        try:
++            with pytest.raises(RuntimeError, match="Engine not running"):
++                await engine.stop_async()
++        finally:
++            await engine.close_async()
++
++    def test_invalid_scheduler_class(self) -> None:
++        class NotAScheduler:
++            pass
++
++        with pytest.raises(
++            TypeError, match="does not fully implement the scheduler interface"
++        ):
++            ExecutionEngine(
++                get_crawler(DefaultSpider, {"SCHEDULER": NotAScheduler}),
++                lambda _: None,
++            )
++
++    @coroutine_test
++    async def test_spider_is_idle_without_slot(self) -> None:
++        engine = ExecutionEngine(get_crawler(DefaultSpider), lambda _: None)
++        try:
++            with pytest.raises(RuntimeError, match="Engine slot not assigned"):
++                engine.spider_is_idle()
++        finally:
++            await engine.close_async()
++
++    @coroutine_test
++    async def test_crawl_without_spider(self) -> None:
++        engine = ExecutionEngine(get_crawler(DefaultSpider), lambda _: None)
++        try:
++            with pytest.raises(RuntimeError, match="No open spider to crawl"):
++                engine.crawl(Request("data:,"))
++        finally:
++            await engine.close_async()
++
++    @coroutine_test
++    async def test_open_spider_twice(self) -> None:
++        crawler = get_crawler(DefaultSpider)
++        crawler.spider = crawler._create_spider()
++        engine = crawler.engine = ExecutionEngine(crawler, lambda _: None)
++        await engine.open_spider_async()
++        try:
++            with pytest.raises(RuntimeError, match="No free spider slot"):
++                await engine.open_spider_async()
++        finally:
++            await engine.close_async()
++
++
++@coroutine_test
++async def test_pause_unpause() -> None:
++    engine = ExecutionEngine(get_crawler(DefaultSpider), lambda _: None)
++    try:
++        engine.pause()
++        assert engine.paused
++        engine.unpause()
++        assert not engine.paused
++    finally:
++        await engine.close_async()
++
++
++class TestSpiderIdle:
++    @coroutine_test
++    async def test_dont_close_spider(self) -> None:
++        """A ``DontCloseSpider`` handler keeps the spider open for one more loop."""
++        idle_calls = 0
++
++        def spider_idle() -> None:
++            nonlocal idle_calls
++            idle_calls += 1
++            if idle_calls == 1:
++                # Schedule a request so that the engine loops again soon
++                # instead of waiting for the slot heartbeat.
++                crawler.engine.crawl(Request("data:,"))
++                raise DontCloseSpider
++
++        crawler = get_crawler(DefaultSpider)
++        crawler.signals.connect(spider_idle, signals.spider_idle)
++        await crawler.crawl_async()
++        assert idle_calls == 2
++        assert crawler.stats.get_value("finish_reason") == "finished"
++
++    @coroutine_test
++    async def test_not_idle_anymore(self) -> None:
++        """A handler that schedules a request keeps the spider open."""
++        urls: list[str] = []
++
++        def spider_idle() -> None:
++            if not urls:
++                urls.append("data:,")
++                crawler.engine.crawl(Request(urls[0]))
++
++        crawler = get_crawler(DefaultSpider)
++        crawler.signals.connect(spider_idle, signals.spider_idle)
++        await crawler.crawl_async()
++        assert crawler.stats.get_value("downloader/request_count") == 1
++
++
++@coroutine_test
++async def test_download_wrong_type(caplog: pytest.LogCaptureFixture) -> None:
++    class WrongTypeDownloader(Downloader):
++        def fetch(self, request: Request) -> str:  # type: ignore[override]
++            return "not a response"
++
++    class WrongTypeSpider(Spider):
++        name = "wrong_type"
++
++        async def start(self):
++            yield Request("data:,")
++
++    crawler = get_crawler(WrongTypeSpider, {"DOWNLOADER": WrongTypeDownloader})
++    await crawler.crawl_async()
++    assert "expected Response or Request, got <class 'str'>" in caplog.text
++
++
++@coroutine_test
++async def test_enqueue_scrape_error(
++    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    def enqueue_scrape(self, result, request):
++        raise ValueError("enqueue error")
++
++    monkeypatch.setattr("scrapy.core.engine.Scraper.enqueue_scrape", enqueue_scrape)
++
++    class SimpleSpider(Spider):
++        name = "simple"
++
++        async def start(self):
++            yield Request("data:,")
++
++    crawler = get_crawler(SimpleSpider)
++    await crawler.crawl_async()
++    assert "Error while enqueuing scrape" in caplog.text
+diff --git a/tests/test_scheduler.py b/tests/test_scheduler.py
+index 0aa32eb05b2..43cdab1835a 100644
+--- a/tests/test_scheduler.py
++++ b/tests/test_scheduler.py
+@@ -11,6 +11,7 @@
+ from scrapy.core.downloader import Downloader
+ from scrapy.core.scheduler import Scheduler
+ from scrapy.crawler import Crawler
++from scrapy.dupefilters import BaseDupeFilter
+ from scrapy.exceptions import ScrapyDeprecationWarning
+ from scrapy.http import Request
+ from scrapy.spiders import Spider
+@@ -328,3 +329,31 @@ def test_incompatibility(self):
+                 ValueError, match="does not support CONCURRENT_REQUESTS_PER_IP"
+             ):
+                 self._incompatible()
++
++
++def test_scheduler_without_crawler() -> None:
++    """The crawler argument of Scheduler is optional."""
++    scheduler = Scheduler(BaseDupeFilter())
++    assert scheduler.crawler is None
++
++
++@coroutine_test
++async def test_unserializable_requests(
++    tmp_path: Path, caplog: pytest.LogCaptureFixture
++) -> None:
++    """Requests that cannot be serialized fall back to the memory queue."""
++
++    class UnserializableSpider(Spider):
++        name = "unserializable"
++
++        async def start(self):
++            for index in range(2):
++                yield Request(f"data:,{index}", meta={"callable": lambda: None})
++
++    crawler = get_crawler(
++        UnserializableSpider, {"JOBDIR": str(tmp_path), "SCHEDULER_DEBUG": True}
++    )
++    await crawler.crawl_async()
++    assert crawler.stats.get_value("scheduler/unserializable") == 2
++    assert crawler.stats.get_value("scheduler/enqueued/memory") == 2
++    assert caplog.text.count("Unable to serialize request") == 1
+diff --git a/tests/test_spidermiddleware.py b/tests/test_spidermiddleware.py
+index d446fd147bb..62037234caa 100644
+--- a/tests/test_spidermiddleware.py
++++ b/tests/test_spidermiddleware.py
+@@ -497,3 +497,19 @@ async def test_deprecated_mwman_spider_arg_no_crawler(self):
+             r" is deprecated, SpiderMiddlewareManager should be instantiated with a Crawler",
+         ):
+             await mwman.process_start(DefaultSpider())
++
++    @coroutine_test
++    async def test_scrape_response_no_crawler(self):
++        with pytest.warns(
++            ScrapyDeprecationWarning,
++            match=r"MiddlewareManager.__init__\(\) was called without the crawler argument",
++        ):
++            mwman = SpiderMiddlewareManager()
++
++        async def scrape_func(
++            response: Response | Failure, request: Request
++        ) -> Iterable[Any]:
++            return []
++
++        with pytest.raises(RuntimeError, match="created without a crawler"):
++            await mwman.scrape_response_async(scrape_func, self.response, self.request)

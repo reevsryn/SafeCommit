@@ -1,0 +1,129 @@
+diff --git a/providers/celery/src/airflow/providers/celery/cli/celery_command.py b/providers/celery/src/airflow/providers/celery/cli/celery_command.py
+index 3a953f2a26b8b..830c5d42cc818 100644
+--- a/providers/celery/src/airflow/providers/celery/cli/celery_command.py
++++ b/providers/celery/src/airflow/providers/celery/cli/celery_command.py
+@@ -36,14 +36,13 @@
+ 
+ from airflow import settings
+ from airflow.cli.simple_table import AirflowConsole
+-from airflow.exceptions import AirflowConfigException
+ from airflow.providers.celery.version_compat import (
+     AIRFLOW_V_3_0_PLUS,
+     AIRFLOW_V_3_1_PLUS,
+     AIRFLOW_V_3_2_PLUS,
+     AIRFLOW_V_3_3_PLUS,
+ )
+-from airflow.providers.common.compat.sdk import conf
++from airflow.providers.common.compat.sdk import AirflowConfigException, conf
+ from airflow.utils import cli as cli_utils
+ from airflow.utils.cli import setup_locations
+ 
+diff --git a/providers/celery/src/airflow/providers/celery/executors/default_celery.py b/providers/celery/src/airflow/providers/celery/executors/default_celery.py
+index c5cd8773d5f01..8cc8a0ca445af 100644
+--- a/providers/celery/src/airflow/providers/celery/executors/default_celery.py
++++ b/providers/celery/src/airflow/providers/celery/executors/default_celery.py
+@@ -25,9 +25,9 @@
+ import ssl
+ from typing import TYPE_CHECKING
+ 
+-from airflow.exceptions import AirflowConfigException
++from airflow.exceptions import AirflowConfigException as CoreAirflowConfigException
+ from airflow.providers.celery.version_compat import AIRFLOW_V_3_0_PLUS
+-from airflow.providers.common.compat.sdk import AirflowException, conf
++from airflow.providers.common.compat.sdk import AirflowConfigException, AirflowException, conf
+ 
+ if TYPE_CHECKING:
+     from typing import Any
+@@ -195,7 +195,9 @@ def get_default_celery_config(team_conf: AirflowSDKConfigParser | Any) -> dict[s
+     # Handle SSL configuration
+     try:
+         celery_ssl_active = team_conf.getboolean("celery", "SSL_ACTIVE", fallback=False)
+-    except AirflowConfigException:
++    # ``team_conf`` is the Task SDK parser at module scope and core's ``ExecutorConf`` on the
++    # multi-team path. Their ``AirflowConfigException`` classes share a name but are not the same class.
++    except (AirflowConfigException, CoreAirflowConfigException):
+         log.warning("Celery Executor will run without SSL")
+         celery_ssl_active = False
+ 
+diff --git a/providers/celery/tests/unit/celery/cli/test_celery_command.py b/providers/celery/tests/unit/celery/cli/test_celery_command.py
+index 8a91aac7efc8a..9b9f4bcd7fd77 100644
+--- a/providers/celery/tests/unit/celery/cli/test_celery_command.py
++++ b/providers/celery/tests/unit/celery/cli/test_celery_command.py
+@@ -799,6 +799,15 @@ def test_stale_bundle_cleanup(mock_process):
+     assert actual[0] is _bundle_cleanup_main
+ 
+ 
++@patch("airflow.providers.celery.cli.celery_command.Process")
++@pytest.mark.skipif(not AIRFLOW_V_3_0_PLUS, reason="Doesn't apply to pre-3.0")
++@conf_vars({("dag_processor", "stale_bundle_cleanup_interval"): "not-an-int"})
++def test_stale_bundle_cleanup_skipped_on_non_integer_interval(mock_process):
++    with _run_stale_bundle_cleanup():
++        ...
++    mock_process.assert_not_called()
++
++
+ @pytest.mark.skipif(not AIRFLOW_V_3_0_PLUS, reason="Doesn't apply to pre-3.0")
+ def test_bundle_cleanup_main_is_picklable():
+     """Regression test: _bundle_cleanup_main must be a module-level function so it can be
+diff --git a/providers/celery/tests/unit/celery/executors/test_celery_executor.py b/providers/celery/tests/unit/celery/executors/test_celery_executor.py
+index 62c74c56ef67a..c4641ae249373 100644
+--- a/providers/celery/tests/unit/celery/executors/test_celery_executor.py
++++ b/providers/celery/tests/unit/celery/executors/test_celery_executor.py
+@@ -1571,6 +1571,25 @@ def test_one_way_tls_ignores_key_cert(self):
+         assert "certfile" not in broker_ssl
+ 
+ 
++@pytest.mark.parametrize(
++    "get_team_conf",
++    [
++        pytest.param(lambda: conf, id="sdk_conf"),
++        pytest.param(
++            lambda: ExecutorConf(team_name=None),
++            id="executor_conf",
++            marks=pytest.mark.skipif(not AIRFLOW_V_3_2_PLUS, reason="ExecutorConf requires Airflow 3.2+"),
++        ),
++    ],
++)
++@conf_vars({("celery", "SSL_ACTIVE"): "yes"})
++def test_non_boolean_ssl_active_degrades_to_no_ssl(get_team_conf):
++    """A malformed [celery] ssl_active must degrade to a no-SSL config instead of raising."""
++    config = default_celery.get_default_celery_config(get_team_conf())
++
++    assert "broker_use_ssl" not in config
++
++
+ class TestCreateCeleryAppTeamIsolation:
+     """Tests for create_celery_app() multi-team config isolation."""
+ 
+diff --git a/providers/edge3/src/airflow/providers/edge3/plugins/edge_executor_plugin.py b/providers/edge3/src/airflow/providers/edge3/plugins/edge_executor_plugin.py
+index f18b438fa65f4..0d2af696ebd20 100644
+--- a/providers/edge3/src/airflow/providers/edge3/plugins/edge_executor_plugin.py
++++ b/providers/edge3/src/airflow/providers/edge3/plugins/edge_executor_plugin.py
+@@ -20,8 +20,7 @@
+ import sys
+ from typing import TYPE_CHECKING, Any
+ 
+-from airflow.exceptions import AirflowConfigException
+-from airflow.providers.common.compat.sdk import AirflowPlugin, conf
++from airflow.providers.common.compat.sdk import AirflowConfigException, AirflowPlugin, conf
+ from airflow.providers.edge3.version_compat import AIRFLOW_V_3_1_PLUS
+ from airflow.utils.session import NEW_SESSION, provide_session
+ 
+diff --git a/providers/edge3/tests/unit/edge3/plugins/test_edge_executor_plugin.py b/providers/edge3/tests/unit/edge3/plugins/test_edge_executor_plugin.py
+index 2f06bb9c2d554..b374fc89f7292 100644
+--- a/providers/edge3/tests/unit/edge3/plugins/test_edge_executor_plugin.py
++++ b/providers/edge3/tests/unit/edge3/plugins/test_edge_executor_plugin.py
+@@ -43,6 +43,13 @@ def test_plugin_inactive():
+         assert len(rep.appbuilder_views) == 0
+ 
+ 
++def test_plugin_inactive_on_non_boolean_api_enabled():
++    with conf_vars({("edge", "api_enabled"): "yes"}):
++        importlib.reload(edge_executor_plugin)
++
++        assert edge_executor_plugin.EDGE_EXECUTOR_ACTIVE is False
++
++
+ @pytest.mark.db_test
+ def test_plugin_active_apiserver():
+     mock_cli = ["airflow", "api-server"]

@@ -1,0 +1,460 @@
+diff --git a/pydantic-core/src/validators/decimal.rs b/pydantic-core/src/validators/decimal.rs
+index b35abe3205..3b7393542f 100644
+--- a/pydantic-core/src/validators/decimal.rs
++++ b/pydantic-core/src/validators/decimal.rs
+@@ -102,37 +102,79 @@ impl_py_gc_traverse!(DecimalValidator {
+     gt
+ });
+ 
+-fn extract_decimal_digits_info(decimal: &Bound<'_, PyAny>, normalized: bool) -> ValResult<(u64, u64)> {
+-    let py = decimal.py();
+-    let mut normalized_decimal: Option<Bound<'_, PyAny>> = None;
+-    if normalized {
+-        normalized_decimal = decimal.call_method0(intern!(py, "normalize")).ok();
+-    }
+-    let (_, digit_tuple, exponent): (Bound<'_, PyAny>, Bound<'_, PyTuple>, Bound<'_, PyAny>) = normalized_decimal
+-        .as_ref()
+-        .unwrap_or(decimal)
+-        .call_method0(intern!(py, "as_tuple"))?
+-        .extract()?;
+-
+-    // finite values have numeric exponent, we checked is_finite above
+-    let exponent: i64 = exponent.extract()?;
+-    let mut digits: u64 = u64::try_from(digit_tuple.len()).map_err(|e| ValError::InternalErr(e.into()))?;
+-    let decimals;
++fn count_digits(num_digits: u64, exponent: i64) -> (u64, u64) {
+     if exponent >= 0 {
+         // A positive exponent adds that many trailing zeros.
+-        digits += exponent as u64;
+-        decimals = 0;
++        (0, num_digits.saturating_add(exponent as u64))
+     } else {
+         // If the absolute value of the negative exponent is larger than the
+         // number of digits, then it's the same as the number of digits,
+         // because it'll consume all the digits in digit_tuple and then
+         // add abs(exponent) - len(digit_tuple) leading zeros after the
+         // decimal point.
+-        decimals = exponent.unsigned_abs();
+-        digits = digits.max(decimals);
++        let decimals = exponent.unsigned_abs();
++        (decimals, num_digits.max(decimals))
+     }
++}
++
++fn extract_decimal_digits_info(decimal: &Bound<'_, PyAny>) -> ValResult<((u64, u64), (u64, u64))> {
++    let py = decimal.py();
++    let (_, digit_tuple, exponent): (Bound<'_, PyAny>, Bound<'_, PyTuple>, Bound<'_, PyAny>) =
++        decimal.call_method0(intern!(py, "as_tuple"))?.extract()?;
++
++    let num_digits: u64 = u64::try_from(digit_tuple.len()).map_err(|e| ValError::InternalErr(e.into()))?;
++
++    // While we could use `Decimal.normalize()` to strip trailing zeros, this method also
++    // rounds according to current context (with default precision of 28). Instead, we
++    // strip them manually:
++    let mut trailing_zeros: u64 = 0;
++    for digit in digit_tuple.iter().rev() {
++        if digit.extract::<u8>()? != 0 {
++            break;
++        }
++        trailing_zeros += 1;
++    }
++    // `Decimal.normalize()` canonicalizes any zero to `0E0`, whatever the exponent is:
++    let is_zero = trailing_zeros == num_digits;
++
++    // Finite values have a numeric exponent (we checked `Decimal.is_finite()` before calling
++    // `extract_decimal_digits_info()`). The C implementation of the `decimal` module bounds
++    // the exponent (see https://docs.python.org/3/library/decimal.html#constants), so it always fits
++    // in an `i64`. However, the pure Python implementation does not, and the exponent can be an arbitrarily
++    // large integer.
++    let Ok(exponent) = exponent.extract::<i64>() else {
++        // We don't need the exact number of digits and decimal places: they are only ever compared
++        // against the `max_digits` and `decimal_places` constraints, which are `u64`s. If the exponent
++        // doesn't fit in an `i64`, the value has more than `i64::MAX` digits (when the exponent is
++        // positive) or more than `i64::MAX` decimal places and digits (when the exponent is negative),
++        // so the result of these comparisons is already known: any constraint one can set is exceeded.
++        // Saturating the counts to `u64::MAX` gives that outcome (except for the theoretical `u64::MAX`
++        // constraint) without having to represent the actual exponent.
++        let is_negative: bool = exponent.lt(0)?;
++        let counts = if is_negative {
++            (u64::MAX, u64::MAX)
++        } else {
++            (0, u64::MAX)
++        };
++        let normalized = if is_zero { (0, 1) } else { counts };
++        return Ok((counts, normalized));
++    };
++
++    let counts = count_digits(num_digits, exponent);
++    let normalized = if is_zero {
++        (0, 1)
++    } else if exponent >= 0 {
++        // Stripping `k` trailing zeros increments the exponent by `k`, and the number of digits is
++        // `num_digits + exponent` for a non-negative exponent, so the counts are unchanged. Reusing
++        // them also avoids overflowing the exponent when it is close to `i64::MAX`.
++        counts
++    } else {
++        // Each stripped trailing zero is compensated by incrementing the exponent. This can't
++        // overflow, as the exponent is negative and `trailing_zeros <= num_digits`.
++        count_digits(num_digits - trailing_zeros, exponent + trailing_zeros as i64)
++    };
+ 
+-    Ok((decimals, digits))
++    Ok((counts, normalized))
+ }
+ 
+ impl Validator for DecimalValidator {
+@@ -151,8 +193,8 @@ impl Validator for DecimalValidator {
+ 
+             if self.check_digits
+                 // TODO: should errors be raised if extract_decimal_digits_info fails?
+-                && let Ok((normalized_decimals, normalized_digits)) = extract_decimal_digits_info(&decimal, true)
+-                && let Ok((decimals, digits)) = extract_decimal_digits_info(&decimal, false)
++                && let Ok(((decimals, digits), (normalized_decimals, normalized_digits))) =
++                    extract_decimal_digits_info(&decimal)
+             {
+                 if let Some(max_digits) = self.max_digits
+                     && (digits > max_digits)
+diff --git a/pydantic-core/tests/validators/test_decimal.py b/pydantic-core/tests/validators/test_decimal.py
+index 53f1204f05..654dee2b85 100644
+--- a/pydantic-core/tests/validators/test_decimal.py
++++ b/pydantic-core/tests/validators/test_decimal.py
+@@ -3,6 +3,8 @@
+ import json
+ import math
+ import re
++import subprocess
++import sys
+ from decimal import Decimal
+ from typing import Any
+ 
+@@ -502,32 +504,85 @@ def test_validate_scientific_notation_from_json(input_value, expected):
+     assert v.validate_json(input_value) == expected
+ 
+ 
+-def test_validate_max_digits_and_decimal_places() -> None:
+-    v = SchemaValidator(cs.decimal_schema(max_digits=5, decimal_places=2))
+-
+-    # valid inputs
+-    assert v.validate_json('1.23') == Decimal('1.23')
+-    assert v.validate_json('123.45') == Decimal('123.45')
+-    assert v.validate_json('-123.45') == Decimal('-123.45')
+-
+-    # invalid inputs
+-    with pytest.raises(ValidationError):
+-        v.validate_json('1234.56')  # too many digits
+-    with pytest.raises(ValidationError):
+-        v.validate_json('123.456')  # too many decimal places
+-    with pytest.raises(ValidationError):
+-        v.validate_json('123456')  # too many digits
+-    with pytest.raises(ValidationError):
+-        v.validate_json('abc')  # not a valid decimal
++@pytest.mark.parametrize(
++    ('schema_kwargs', 'input_value', 'error_type'),
++    [
++        ({'max_digits': 5, 'decimal_places': 2}, '1.23', None),
++        ({'max_digits': 5, 'decimal_places': 2}, '123.45', None),
++        ({'max_digits': 5, 'decimal_places': 2}, '-123.45', None),
++        ({'max_digits': 5, 'decimal_places': 2}, '1234.56', 'decimal_max_digits'),
++        ({'max_digits': 5, 'decimal_places': 2}, '12.345', 'decimal_max_places'),
++        ({'max_digits': 5, 'decimal_places': 2}, '123456', 'decimal_max_digits'),
++        ({'max_digits': 5, 'decimal_places': 2}, 'abc', 'decimal_parsing'),
++        ({'max_digits': 34, 'decimal_places': 18}, '9999999999999999.999999999999999999', None),
++        # Trailing zeros should not count towards the constraints:
++        ({'max_digits': 3}, '1.00', None),
++        ({'max_digits': 3}, '100.00', None),
++        ({'decimal_places': 1}, '1.00', None),
++        ({'decimal_places': 0}, '0.000', None),
++        ({'max_digits': 1, 'decimal_places': 0}, '0.000', None),
++        ({'max_digits': 1, 'decimal_places': 0}, '0E+5', None),
++        ({'max_digits': 3, 'decimal_places': 1}, '10.00', None),
++        ({'max_digits': 3, 'decimal_places': 1}, '10.10', None),
++        ({'max_digits': 3, 'decimal_places': 1}, '1000.0', 'decimal_max_digits'),
++        ({'max_digits': 3, 'decimal_places': 1}, '1.150', 'decimal_max_places'),
++        ({'max_digits': 3, 'decimal_places': 1}, '100.0', 'decimal_whole_digits'),
++        # Values with more significant digits than the precision of the (default) decimal context
++        # must not be rounded when counting digits and decimal places:
++        ({'max_digits': 29}, '1234567890123456789012345678.91', 'decimal_max_digits'),
++        ({'max_digits': 30}, '1234567890123456789012345678.91', None),
++        ({'decimal_places': 30}, '0.1234567890123456789012345678901', 'decimal_max_places'),
++        ({'decimal_places': 31}, '0.1234567890123456789012345678901', None),
++        ({'max_digits': 30, 'decimal_places': 1}, '1234567890123456789012345678.91', 'decimal_max_places'),
++        ({'max_digits': 30, 'decimal_places': 2}, '1234567890123456789012345678.91', None),
++    ],
++)
++def test_validate_max_digits_and_decimal_places(
++    schema_kwargs: dict[str, Any], input_value: str, error_type: str | None
++) -> None:
++    v = SchemaValidator(cs.decimal_schema(**schema_kwargs))
+ 
++    if error_type is None:
++        assert v.validate_python(input_value) == Decimal(input_value)
++    else:
++        with pytest.raises(ValidationError) as exc_info:
++            v.validate_python(input_value)
++        assert exc_info.value.errors()[0]['type'] == error_type
+ 
+-def test_validate_max_digits_and_decimal_places_edge_case() -> None:
+-    v = SchemaValidator(cs.decimal_schema(max_digits=34, decimal_places=18))
+ 
+-    # valid inputs
+-    assert v.validate_python(Decimal('9999999999999999.999999999999999999')) == Decimal(
+-        '9999999999999999.999999999999999999'
+-    )
++@pytest.mark.skipif(sys.platform == 'emscripten', reason='no subprocesses on emscripten')
++@pytest.mark.parametrize(
++    ('schema_kwargs', 'input_value', 'error_type'),
++    [
++        ({'max_digits': 1}, '1e9223372036854775808', 'decimal_max_digits'),
++        ({'max_digits': 1}, '1e-9223372036854775809', 'decimal_max_digits'),
++        ({'decimal_places': 1}, '1e-9223372036854775809', 'decimal_max_places'),
++        ({'decimal_places': 1}, '1e9223372036854775808', None),
++        ({'max_digits': 1, 'decimal_places': 0}, '0e9223372036854775808', None),
++        ({'max_digits': 1, 'decimal_places': 0}, '0e-9223372036854775809', None),
++    ],
++)
++def test_validate_max_digits_and_decimal_places_pydecimal_huge_exponent(
++    schema_kwargs: dict[str, Any], input_value: str, error_type: str | None
++) -> None:
++    pytest.importorskip('_pydecimal')
++
++    code = f"""
++import sys, _pydecimal
++sys.modules['decimal'] = _pydecimal
++import decimal
++from pydantic_core import SchemaValidator, ValidationError, core_schema as cs
++
++v = SchemaValidator(cs.decimal_schema(**{schema_kwargs!r}))
++try:
++    v.validate_python(decimal.Decimal({input_value!r}))
++except ValidationError as e:
++    print(e.errors()[0]['type'])
++else:
++    print(None)
++"""
++    result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=True)
++    assert result.stdout.strip() == str(error_type)
+ 
+ 
+ def test_str_validation_w_strict() -> None:
+diff --git a/pydantic/_internal/_validators.py b/pydantic/_internal/_validators.py
+index 9ce71efe70..4d33d3cc1e 100644
+--- a/pydantic/_internal/_validators.py
++++ b/pydantic/_internal/_validators.py
+@@ -330,20 +330,31 @@ def max_length_validator(x: Any, max_length: Any) -> Any:
+         raise TypeError(f"Unable to apply constraint 'max_length' to supplied value {x}")
+ 
+ 
+-def _extract_decimal_digits_info(decimal: Decimal) -> tuple[int, int]:
+-    """Compute the number of decimal places and total digits for a given [`Decimal`][decimal.Decimal] instance.
++def _count_digits(num_digits: int, exponent: int) -> tuple[int, int]:
++    if exponent >= 0:
++        # A positive exponent adds that many trailing zeros
++        # Ex: digit_tuple=(1, 2, 3), exponent=2 -> 12300 -> 0 decimal places, 5 digits
++        return 0, num_digits + exponent
++    else:
++        # If the absolute value of the negative exponent is larger than the
++        # number of digits, then it's the same as the number of digits,
++        # because it'll consume all the digits in digit_tuple and then
++        # add abs(exponent) - len(digit_tuple) leading zeros after the decimal point.
++        # Ex: digit_tuple=(1, 2, 3), exponent=-2 -> 1.23 -> 2 decimal places, 3 digits
++        # Ex: digit_tuple=(1, 2, 3), exponent=-4 -> 0.0123 -> 4 decimal places, 4 digits
++        decimal_places = abs(exponent)
++        return decimal_places, max(num_digits, decimal_places)
+ 
+-    This function handles both normalized and non-normalized Decimal instances.
+-    Example: `Decimal('1.230')` returns `(3, 4)` — 3 decimal places, 4 total digits.
+ 
+-    Args:
+-        decimal (Decimal): The decimal number to analyze.
++def _extract_decimal_digits_info(decimal: Decimal) -> tuple[tuple[int, int], tuple[int, int]]:
++    """Compute the number of decimal places and total digits for a given [`Decimal`][decimal.Decimal] instance.
+ 
+-    Returns:
+-        tuple[int, int]: A tuple containing the number of decimal places and total digits.
++    Returns a tuple of two `(decimal_places, num_digits)` pairs: the first one for the decimal as is,
++    the second one for its normalized form (i.e. with trailing zeros stripped).
++    Example: `Decimal('1.230')` returns `((3, 4), (2, 3))`.
+ 
+-    Though this could be divided into two separate functions, the logic is easier to follow if we couple the computation
+-    of the number of decimals and digits together.
++    Trailing zeros are stripped by hand rather than by calling [`Decimal.normalize()`][decimal.Decimal.normalize],
++    as the latter also rounds the value to the precision of the current decimal context.
+     """
+     try:
+         decimal_tuple = decimal.as_tuple()
+@@ -351,32 +362,30 @@ def _extract_decimal_digits_info(decimal: Decimal) -> tuple[int, int]:
+         assert isinstance(decimal_tuple.exponent, int)
+ 
+         exponent = decimal_tuple.exponent
+-        num_digits = len(decimal_tuple.digits)
+-
+-        if exponent >= 0:
+-            # A positive exponent adds that many trailing zeros
+-            # Ex: digit_tuple=(1, 2, 3), exponent=2 -> 12300 -> 0 decimal places, 5 digits
+-            num_digits += exponent
+-            decimal_places = 0
++        digits = decimal_tuple.digits
++        num_digits = len(digits)
++
++        trailing_zeros = 0
++        for digit in reversed(digits):
++            if digit != 0:
++                break
++            trailing_zeros += 1
++
++        if trailing_zeros == num_digits:
++            # All digits are zero: `Decimal.normalize()` canonicalizes any zero to `0E0`.
++            normalized = (0, 1)
+         else:
+-            # If the absolute value of the negative exponent is larger than the
+-            # number of digits, then it's the same as the number of digits,
+-            # because it'll consume all the digits in digit_tuple and then
+-            # add abs(exponent) - len(digit_tuple) leading zeros after the decimal point.
+-            # Ex: digit_tuple=(1, 2, 3), exponent=-2 -> 1.23 -> 2 decimal places, 3 digits
+-            # Ex: digit_tuple=(1, 2, 3), exponent=-4 -> 0.0123 -> 4 decimal places, 4 digits
+-            decimal_places = abs(exponent)
+-            num_digits = max(num_digits, decimal_places)
+-
+-        return decimal_places, num_digits
++            # Each stripped trailing zero is compensated by incrementing the exponent.
++            normalized = _count_digits(num_digits - trailing_zeros, exponent + trailing_zeros)
++
++        return _count_digits(num_digits, exponent), normalized
+     except (AssertionError, AttributeError):
+         raise TypeError(f'Unable to extract decimal digits info from supplied value {decimal}')
+ 
+ 
+ def max_digits_validator(x: Any, max_digits: Any) -> Any:
+     try:
+-        _, num_digits = _extract_decimal_digits_info(x)
+-        _, normalized_num_digits = _extract_decimal_digits_info(x.normalize())
++        (_, num_digits), (_, normalized_num_digits) = _extract_decimal_digits_info(x)
+         if (num_digits > max_digits) and (normalized_num_digits > max_digits):
+             raise PydanticKnownError(
+                 'decimal_max_digits',
+@@ -389,14 +398,12 @@ def max_digits_validator(x: Any, max_digits: Any) -> Any:
+ 
+ def decimal_places_validator(x: Any, decimal_places: Any) -> Any:
+     try:
+-        decimal_places_, _ = _extract_decimal_digits_info(x)
+-        if decimal_places_ > decimal_places:
+-            normalized_decimal_places, _ = _extract_decimal_digits_info(x.normalize())
+-            if normalized_decimal_places > decimal_places:
+-                raise PydanticKnownError(
+-                    'decimal_max_places',
+-                    {'decimal_places': decimal_places},
+-                )
++        (decimal_places_, _), (normalized_decimal_places, _) = _extract_decimal_digits_info(x)
++        if (decimal_places_ > decimal_places) and (normalized_decimal_places > decimal_places):
++            raise PydanticKnownError(
++                'decimal_max_places',
++                {'decimal_places': decimal_places},
++            )
+         return x
+     except TypeError:
+         raise TypeError(f"Unable to apply constraint 'decimal_places' to supplied value {x}")
+diff --git a/tests/test_annotated.py b/tests/test_annotated.py
+index 2d3627c58e..65b8d435ad 100644
+--- a/tests/test_annotated.py
++++ b/tests/test_annotated.py
+@@ -623,18 +623,42 @@ def test_compatible_metadata_raises_correct_validation_error() -> None:
+         ta.validate_python('def')
+ 
+ 
+-def test_decimal_constraints_after_annotation() -> None:
+-    DecimalAnnotation = Annotated[Decimal, BeforeValidator(lambda v: v), Field(max_digits=10, decimal_places=4)]
++@pytest.mark.parametrize(
++    ['field_kwargs', 'input_value', 'error_type'],
++    [
++        ({'max_digits': 10, 'decimal_places': 4}, '123.4567', None),
++        ({'max_digits': 10, 'decimal_places': 4}, '123.45678', 'decimal_max_places'),
++        ({'max_digits': 10, 'decimal_places': 4}, '12345678.901', 'decimal_max_digits'),
++        # Trailing zeros should not count towards the constraints:
++        ({'max_digits': 3}, '1.00', None),
++        ({'max_digits': 3}, '100.00', None),
++        ({'decimal_places': 1}, '1.00', None),
++        ({'decimal_places': 0}, '0.000', None),
++        ({'max_digits': 1, 'decimal_places': 0}, '0.000', None),
++        ({'max_digits': 1, 'decimal_places': 0}, '0E+5', None),
++        ({'max_digits': 3, 'decimal_places': 1}, '10.10', None),
++        ({'max_digits': 3, 'decimal_places': 1}, '1000.0', 'decimal_max_digits'),
++        ({'max_digits': 3, 'decimal_places': 1}, '1.150', 'decimal_max_places'),
++        # Values with more significant digits than the precision of the (default) decimal context
++        # must not be rounded when counting digits and decimal places:
++        ({'max_digits': 29}, '1234567890123456789012345678.91', 'decimal_max_digits'),
++        ({'max_digits': 30}, '1234567890123456789012345678.91', None),
++        ({'decimal_places': 30}, '0.1234567890123456789012345678901', 'decimal_max_places'),
++        ({'decimal_places': 31}, '0.1234567890123456789012345678901', None),
++        ({'max_digits': 30, 'decimal_places': 1}, '1234567890123456789012345678.91', 'decimal_max_places'),
++        ({'max_digits': 30, 'decimal_places': 2}, '1234567890123456789012345678.91', None),
++    ],
++)
++def test_decimal_constraints_after_annotation(
++    field_kwargs: dict[str, Any], input_value: str, error_type: str | None
++) -> None:
++    DecimalAnnotation = Annotated[Decimal, BeforeValidator(lambda v: v), Field(**field_kwargs)]
+ 
+     ta = TypeAdapter(DecimalAnnotation)
+-    assert ta.validate_python(Decimal('123.4567')) == Decimal('123.4567')
+ 
+-    with pytest.raises(ValidationError) as e:
+-        ta.validate_python(Decimal('123.45678'))
+-
+-    assert e.value.errors()[0]['type'] == 'decimal_max_places'
+-
+-    with pytest.raises(ValidationError) as e:
+-        ta.validate_python(Decimal('12345678.901'))
+-
+-    assert e.value.errors()[0]['type'] == 'decimal_max_digits'
++    if error_type is None:
++        assert ta.validate_python(Decimal(input_value)) == Decimal(input_value)
++    else:
++        with pytest.raises(ValidationError) as exc_info:
++            ta.validate_python(Decimal(input_value))
++        assert exc_info.value.errors()[0]['type'] == error_type
+diff --git a/tests/test_internal.py b/tests/test_internal.py
+index c3912bc7ef..3bfc123f30 100644
+--- a/tests/test_internal.py
++++ b/tests/test_internal.py
+@@ -171,19 +171,31 @@ class Obj(Representation):
+ 
+ 
+ @pytest.mark.parametrize(
+-    'decimal,decimal_places,digits',
++    'decimal,decimal_places,digits,normalized_decimal_places,normalized_digits',
+     [
+-        (Decimal('0.0'), 1, 1),
+-        (Decimal('0.'), 0, 1),
+-        (Decimal('0.000'), 3, 3),
+-        (Decimal('0.0001'), 4, 4),
+-        (Decimal('.0001'), 4, 4),
+-        (Decimal('123.123'), 3, 6),
+-        (Decimal('123.1230'), 4, 7),
++        (Decimal('0.0'), 1, 1, 0, 1),
++        (Decimal('0.'), 0, 1, 0, 1),
++        (Decimal('0.000'), 3, 3, 0, 1),
++        (Decimal('0E+5'), 0, 6, 0, 1),
++        (Decimal('0.0001'), 4, 4, 4, 4),
++        (Decimal('.0001'), 4, 4, 4, 4),
++        (Decimal('100'), 0, 3, 0, 3),
++        (Decimal('1E+2'), 0, 3, 0, 3),
++        (Decimal('1.00'), 2, 3, 0, 1),
++        (Decimal('100.00'), 2, 5, 0, 3),
++        (Decimal('123.123'), 3, 6, 3, 6),
++        (Decimal('123.1230'), 4, 7, 3, 6),
++        # More significant digits than the precision of the (default) decimal context, no rounding should happen:
++        (Decimal('1234567890123456789012345678.910'), 3, 31, 2, 30),
+     ],
+ )
+-def test_decimal_digits_calculation(decimal: Decimal, decimal_places: int, digits: int) -> None:
+-    assert _extract_decimal_digits_info(decimal) == (decimal_places, digits)
++def test_decimal_digits_calculation(
++    decimal: Decimal, decimal_places: int, digits: int, normalized_decimal_places: int, normalized_digits: int
++) -> None:
++    assert _extract_decimal_digits_info(decimal) == (
++        (decimal_places, digits),
++        (normalized_decimal_places, normalized_digits),
++    )
+ 
+ 
+ @pytest.mark.parametrize(

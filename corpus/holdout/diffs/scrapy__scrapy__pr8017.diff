@@ -1,0 +1,802 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index ddfef02a61d..a1e12592ba5 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -113,26 +113,6 @@ module = "tests.*"
+ allow_untyped_defs = true
+ allow_incomplete_defs = true # 59 errors
+ 
+-# TODO
+-[[tool.mypy.overrides]]
+-module = [
+-    "tests.test_cmdline",
+-    "tests.test_downloaderslotssettings",
+-    "tests.test_dupefilters",
+-    "tests.test_extension_statsmailer",
+-    "tests.test_extension_throttle",
+-    "tests.test_linkextractors",
+-    "tests.test_logformatter",
+-    "tests.test_mail",
+-    "tests.test_pqueues",
+-    "tests.test_scheduler_base",
+-    "tests.test_settings",
+-    "tests.test_squeues",
+-    "tests.test_squeues_request",
+-    "tests.test_stats",
+-]
+-check_untyped_defs = false
+-
+ # Interface classes are hard to support
+ [[tool.mypy.overrides]]
+ module = "twisted.internet.interfaces"
+diff --git a/scrapy/linkextractors/lxmlhtml.py b/scrapy/linkextractors/lxmlhtml.py
+index 75f9753e747..0a636e2d7eb 100644
+--- a/scrapy/linkextractors/lxmlhtml.py
++++ b/scrapy/linkextractors/lxmlhtml.py
+@@ -309,8 +309,8 @@ def __init__(
+         allow_domains: str | Iterable[str] = (),
+         deny_domains: str | Iterable[str] = (),
+         restrict_xpaths: str | Iterable[str] = (),
+-        tags: str | Iterable[str] = ("a", "area"),
+-        attrs: str | Iterable[str] = ("href",),
++        tags: str | Iterable[str] | None = ("a", "area"),
++        attrs: str | Iterable[str] | None = ("href",),
+         canonicalize: bool = False,
+         unique: bool = True,
+         process_value: Callable[[Any], Any] | None = None,
+diff --git a/tests/test_cmdline/__init__.py b/tests/test_cmdline/__init__.py
+index c068bb0f35c..26c822a9326 100644
+--- a/tests/test_cmdline/__init__.py
++++ b/tests/test_cmdline/__init__.py
+@@ -8,18 +8,19 @@
+ from io import StringIO
+ from pathlib import Path
+ from subprocess import PIPE, Popen
++from typing import Any
+ 
+ from scrapy.utils.test import get_testenv
+ 
+ 
+-def _execute(*new_args, **kwargs):
++def _execute(*new_args: str, **kwargs: Any) -> str:
+     env = get_testenv()
+     tests_path = Path(__file__).parent.parent
+     env["PYTHONPATH"] += os.pathsep + str(tests_path.parent)
+     env["SCRAPY_SETTINGS_MODULE"] = "tests.test_cmdline.settings"
+     encoding = sys.stdout.encoding or "utf-8"
+     args = (sys.executable, "-m", "scrapy.cmdline", *new_args)
+-    proc = Popen(args, stdout=PIPE, stderr=PIPE, env=env, **kwargs)
++    proc: Popen[bytes] = Popen(args, stdout=PIPE, stderr=PIPE, env=env, **kwargs)
+     comm = proc.communicate()[0].strip()
+     return comm.decode(encoding)
+ 
+@@ -42,9 +43,9 @@ def test_profiling():
+         stats = pstats.Stats(str(filename), stream=out)
+         stats.print_stats()
+         out.seek(0)
+-        stats = out.read()
+-        assert str(Path("scrapy", "commands", "version.py")) in stats
+-        assert "tottime" in stats
++        stats_text = out.read()
++        assert str(Path("scrapy", "commands", "version.py")) in stats_text
++        assert "tottime" in stats_text
+     finally:
+         shutil.rmtree(path)
+ 
+diff --git a/tests/test_downloaderslotssettings.py b/tests/test_downloaderslotssettings.py
+index 4cf4cf2b13b..56a8751f180 100644
+--- a/tests/test_downloaderslotssettings.py
++++ b/tests/test_downloaderslotssettings.py
+@@ -37,6 +37,7 @@ def __init__(self, *args: Any, **kwargs: Any):
+         self.times: dict[str, list[float]] = {}
+ 
+     async def start(self):
++        assert self.mockserver
+         slots = [*self.custom_settings.get("DOWNLOAD_SLOTS", {}), None]
+         for slot in slots:
+             url = self.mockserver.url(f"/?downloader_slot={slot}")
+@@ -44,6 +45,7 @@ async def start(self):
+             yield Request(url, callback=self.parse, meta={"download_slot": slot})
+ 
+     def parse(self, response):
++        assert self.mockserver
+         slot = response.meta.get("download_slot", self.default_slot)
+         self.times[slot].append(time.time())
+         url = self.mockserver.url(f"/?downloader_slot={slot}&req=2")
+@@ -73,7 +75,7 @@ def test_delay(mockserver: MockServer):
+ 
+ @coroutine_test
+ async def test_params():
+-    params = {
++    params: dict[str, Any] = {
+         "concurrency": 1,
+         "delay": 2,
+         "randomize_delay": False,
+diff --git a/tests/test_dupefilters.py b/tests/test_dupefilters.py
+index 4b984406a40..1dc90d1e3a6 100644
+--- a/tests/test_dupefilters.py
++++ b/tests/test_dupefilters.py
+@@ -6,7 +6,7 @@
+ import sys
+ import tempfile
+ from pathlib import Path
+-from typing import TYPE_CHECKING, Any
++from typing import TYPE_CHECKING, Any, cast
+ 
+ import pytest
+ 
+@@ -39,6 +39,8 @@ def _get_dupefilter(
+ 
+ 
+ class FromCrawlerRFPDupeFilter(RFPDupeFilter):
++    method: str
++
+     @classmethod
+     def from_crawler(cls, crawler):
+         df = super().from_crawler(crawler)
+@@ -58,8 +60,9 @@ def test_df_from_crawler_scheduler(self):
+         }
+         crawler = get_crawler(settings_dict=settings)
+         scheduler = build_from_crawler(Scheduler, crawler)
+-        assert scheduler.df.debug
+-        assert scheduler.df.method == "from_crawler"
++        dupefilter = cast("FromCrawlerRFPDupeFilter", scheduler.df)
++        assert dupefilter.debug
++        assert dupefilter.method == "from_crawler"
+ 
+     def test_df_direct_scheduler(self):
+         settings = {
+@@ -67,7 +70,7 @@ def test_df_direct_scheduler(self):
+         }
+         crawler = get_crawler(settings_dict=settings)
+         scheduler = build_from_crawler(Scheduler, crawler)
+-        assert scheduler.df.method == "n/a"
++        assert cast("DirectDupeFilter", scheduler.df).method == "n/a"
+ 
+     def test_filter(self):
+         dupefilter = _get_dupefilter()
+@@ -237,4 +240,4 @@ def test_log_deprecation(self):
+             ScrapyDeprecationWarning,
+             match=r"Calling BaseDupeFilter\.log\(\) is deprecated.",
+         ):
+-            dupefilter.log(None, None)
++            dupefilter.log(None, None)  # type: ignore[arg-type]
+diff --git a/tests/test_extension_statsmailer.py b/tests/test_extension_statsmailer.py
+index a0e0618f4a2..8fd861e4342 100644
+--- a/tests/test_extension_statsmailer.py
++++ b/tests/test_extension_statsmailer.py
+@@ -1,9 +1,10 @@
+ import warnings
++from typing import Any
+ from unittest.mock import MagicMock
+ 
+ import pytest
+ 
+-from scrapy import signals
++from scrapy import Spider, signals
+ from scrapy.exceptions import NotConfigured, ScrapyDeprecationWarning
+ from scrapy.signalmanager import SignalManager
+ from scrapy.statscollectors import StatsCollector
+@@ -28,11 +29,11 @@
+ @pytest.fixture
+ def dummy_stats():
+     class DummyStats(StatsCollector):
+-        def __init__(self):
++        def __init__(self) -> None:
+             # pylint: disable=super-init-not-called
+             self._stats = {"global_item_scraped_count": 42}
+ 
+-        def get_stats(self):
++        def get_stats(self, spider: Spider | None = None) -> dict[str, Any]:
+             return {"item_scraped_count": 10, **self._stats}
+ 
+     return DummyStats()
+@@ -54,7 +55,7 @@ def test_from_crawler_with_recipients_initializes_extension(dummy_stats, monkeyp
+     crawler.signals = SignalManager(crawler)
+ 
+     mailer = MagicMock(spec=MailSender)
+-    monkeypatch.setattr(statsmailer.MailSender, "from_crawler", lambda _: mailer)
++    monkeypatch.setattr(MailSender, "from_crawler", lambda _: mailer)
+ 
+     ext = build_from_crawler(statsmailer.StatsMailer, crawler)
+ 
+@@ -70,7 +71,7 @@ def test_from_crawler_connects_spider_closed_signal(dummy_stats, monkeypatch):
+     crawler.signals = SignalManager(crawler)
+ 
+     mailer = MagicMock(spec=MailSender)
+-    monkeypatch.setattr(statsmailer.MailSender, "from_crawler", lambda _: mailer)
++    monkeypatch.setattr(MailSender, "from_crawler", lambda _: mailer)
+ 
+     build_from_crawler(statsmailer.StatsMailer, crawler)
+ 
+diff --git a/tests/test_extension_throttle.py b/tests/test_extension_throttle.py
+index 078b78fac32..69f1eb303bc 100644
+--- a/tests/test_extension_throttle.py
++++ b/tests/test_extension_throttle.py
+@@ -1,9 +1,11 @@
+ from logging import INFO
++from typing import Any
+ from unittest.mock import Mock
+ 
+ import pytest
+ 
+-from scrapy import Request
++from scrapy import Request, Spider
++from scrapy.crawler import Crawler
+ from scrapy.exceptions import NotConfigured
+ from scrapy.extensions.throttle import AutoThrottle
+ from scrapy.http.response import Response
+@@ -19,17 +21,20 @@
+ UNSET = object()
+ 
+ 
+-def get_crawler(settings=None, spidercls=None):
++def get_crawler(
++    settings: dict[str, Any] | None = None, spidercls: type[Spider] | None = None
++) -> Crawler:
+     settings = settings or {}
+     settings["AUTOTHROTTLE_ENABLED"] = True
+     return _get_crawler(settings_dict=settings, spidercls=spidercls)
+ 
+ 
+-def _mock_downloader(crawler):
++def _mock_downloader(crawler: Crawler) -> Mock:
+     """Give *crawler* a mock engine, whose downloader AutoThrottle reads."""
+     crawler.engine = Mock()
+-    crawler.engine.downloader.slots = {}
+-    return crawler.engine.downloader
++    downloader: Mock = crawler.engine.downloader
++    downloader.slots = {}
++    return downloader
+ 
+ 
+ @pytest.mark.parametrize(
+@@ -155,7 +160,7 @@ def test_startdelay_definition(min_setting, start_setting, expected):
+         ),
+     ],
+ )
+-def test_skipped(meta, slot):
++def test_skipped(meta, slot, monkeypatch):
+     crawler = get_crawler()
+     at = build_from_crawler(AutoThrottle, crawler)
+     downloader = _mock_downloader(crawler)
+@@ -165,9 +170,10 @@ def test_skipped(meta, slot):
+ 
+     if slot is not None:
+         downloader.slots[slot] = object()
+-    at._adjust_delay = None  # Raise exception if called.
++    # Fail instead of adjusting the delay.
++    monkeypatch.setattr(at, "_adjust_delay", Mock(side_effect=AssertionError))
+ 
+-    at._response_downloaded(None, request, spider)
++    at._response_downloaded(Response("https://example.com"), request, spider)
+ 
+ 
+ @pytest.mark.parametrize(
+diff --git a/tests/test_linkextractors.py b/tests/test_linkextractors.py
+index d144532c1b6..57bb7b0b23d 100644
+--- a/tests/test_linkextractors.py
++++ b/tests/test_linkextractors.py
+@@ -2,8 +2,11 @@
+ 
+ import pickle
+ import re
++from typing import Any
+ 
+-from scrapy.http import HtmlResponse, XmlResponse
++from w3lib.url import canonicalize_url
++
++from scrapy.http import HtmlResponse, TextResponse, XmlResponse
+ from scrapy.link import Link
+ from scrapy.linkextractors import lxmlhtml
+ from scrapy.linkextractors.lxmlhtml import LxmlLinkExtractor, LxmlParserLinkExtractor
+@@ -499,7 +502,7 @@ def test_tags_attrs_wildcard_and_deny(self):
+         """
+         response = HtmlResponse("http://example.com/index.html", body=html)
+ 
+-        def urls(**kwargs):
++        def urls(**kwargs: Any) -> list[str]:
+             lx = LxmlLinkExtractor(**kwargs)
+             return [link.url for link in lx.extract_links(response)]
+ 
+@@ -570,7 +573,9 @@ def test_xhtml(self):
+ </html>
+         """
+ 
+-        response = HtmlResponse("http://example.com/index.xhtml", body=xhtml)
++        response: TextResponse = HtmlResponse(
++            "http://example.com/index.xhtml", body=xhtml
++        )
+ 
+         lx = LxmlLinkExtractor()
+         assert lx.extract_links(response) == [
+@@ -782,7 +787,6 @@ def test_link_extractor_aggregation(self):
+         ]
+ 
+     def test_canonicalize_once_per_link(self, monkeypatch):
+-        canonicalize_url = lxmlhtml.canonicalize_url
+         calls = []
+ 
+         def counting_canonicalize_url(url, *args, **kwargs):
+diff --git a/tests/test_logformatter.py b/tests/test_logformatter.py
+index 2e17de4a505..dc70e6413ff 100644
+--- a/tests/test_logformatter.py
++++ b/tests/test_logformatter.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ 
+ import logging
+-from typing import TYPE_CHECKING
++from typing import TYPE_CHECKING, Any, cast
+ 
+ import pytest
+ from twisted.python.failure import Failure
+@@ -63,7 +63,7 @@ def test_flags_in_request(self):
+         )
+ 
+     def test_dropped(self):
+-        item = {}
++        item: dict[str, Any] = {}
+         exception = Exception("\u2018")
+         response = Response("http://www.example.com")
+         logkws = self.formatter.dropped(item, exception, response, self.spider)
+@@ -73,7 +73,7 @@ def test_dropped(self):
+         assert lines == ["Dropped: \u2018", "{}"]
+ 
+     def test_dropitem_default_log_level(self):
+-        item = {}
++        item: dict[str, Any] = {}
+         exception = DropItem("Test drop")
+         response = Response("http://www.example.com")
+         spider = Spider.from_crawler(get_crawler(Spider), "foo")
+@@ -116,7 +116,7 @@ def test_dropitem_default_log_level(self):
+             logging.log(logkws["level"], "message")  # noqa: LOG015
+ 
+     def test_dropitem_custom_log_level(self):
+-        item = {}
++        item: dict[str, Any] = {}
+         response = Response("http://www.example.com")
+ 
+         exception = DropItem("Test drop", log_level="INFO")
+@@ -187,7 +187,7 @@ class LogFormatterSubclass(LogFormatter):
+     def crawled(self, request, response, spider):
+         kwargs = super().crawled(request, response, spider)
+         CRAWLEDMSG = "Crawled (%(status)s) %(request)s (referer: %(referer)s) %(flags)s"
+-        log_args = kwargs["args"]
++        log_args = cast("dict[str, Any]", kwargs["args"])
+         log_args["flags"] = str(request.flags)
+         return {
+             "level": kwargs["level"],
+@@ -259,7 +259,7 @@ def process_item(self, item):
+ 
+ class TestShowOrSkipMessages:
+     def setup_method(self):
+-        self.base_settings = {
++        self.base_settings: dict[str, Any] = {
+             "LOG_LEVEL": "DEBUG",
+             "ITEM_PIPELINES": {
+                 DropSomeItemsPipeline: 300,
+diff --git a/tests/test_mail.py b/tests/test_mail.py
+index e6d65cd100c..a43dca7bd71 100644
+--- a/tests/test_mail.py
++++ b/tests/test_mail.py
+@@ -157,7 +157,7 @@ def test_create_sender_factory_with_host(self):
+         mailsender = MailSender(debug=False, smtphost="smtp.testhost.com")
+ 
+         factory = mailsender._create_sender_factory(
+-            to_addrs=["test@scrapy.org"], msg="test", d=defer.Deferred()
++            to_addrs=["test@scrapy.org"], msg=BytesIO(b"test"), d=defer.Deferred()
+         )
+ 
+         context = factory.buildProtocol("test@scrapy.org").context
+diff --git a/tests/test_pqueues.py b/tests/test_pqueues.py
+index 25cfb3a127c..f0792851011 100644
+--- a/tests/test_pqueues.py
++++ b/tests/test_pqueues.py
+@@ -1,4 +1,5 @@
+ import tempfile
++from typing import Any
+ from unittest.mock import Mock
+ 
+ import pytest
+@@ -14,6 +15,18 @@
+ from tests.utils.downloader import MockDownloader
+ 
+ 
++def _pop(queue: ScrapyPriorityQueue | DownloaderAwarePriorityQueue) -> Request:
++    request = queue.pop()
++    assert request is not None
++    return request
++
++
++def _peek(queue: ScrapyPriorityQueue | DownloaderAwarePriorityQueue) -> Request:
++    request = queue.peek()
++    assert request is not None
++    return request
++
++
+ class TestPriorityQueue:
+     def setup_method(self):
+         self.crawler = get_crawler(Spider)
+@@ -29,7 +42,7 @@ def test_queue_push_pop_one(self):
+         req1 = Request("https://example.org/1", priority=1)
+         queue.push(req1)
+         assert len(queue) == 1
+-        dequeued = queue.pop()
++        dequeued = _pop(queue)
+         assert len(queue) == 0
+         assert dequeued.url == req1.url
+         assert dequeued.priority == req1.priority
+@@ -66,14 +79,14 @@ def test_peek(self):
+         queue.push(req2)
+         queue.push(req3)
+         assert len(queue) == 3
+-        assert queue.peek().url == req1.url
+-        assert queue.pop().url == req1.url
++        assert _peek(queue).url == req1.url
++        assert _pop(queue).url == req1.url
+         assert len(queue) == 2
+-        assert queue.peek().url == req2.url
+-        assert queue.pop().url == req2.url
++        assert _peek(queue).url == req2.url
++        assert _pop(queue).url == req2.url
+         assert len(queue) == 1
+-        assert queue.peek().url == req3.url
+-        assert queue.pop().url == req3.url
++        assert _peek(queue).url == req3.url
++        assert _pop(queue).url == req3.url
+         assert not queue.close()
+ 
+     def test_init_prios_with_start_queue(self):
+@@ -98,7 +111,7 @@ def test_init_prios_with_start_queue(self):
+             start_queue_cls=PickleFifoDiskQueue,
+         )
+         assert len(queue2) == 1
+-        assert queue2.pop().url == req.url
++        assert _pop(queue2).url == req.url
+         queue2.close()
+ 
+     def test_queue_push_pop_priorities(self):
+@@ -115,7 +128,7 @@ def test_queue_push_pop_priorities(self):
+         queue.push(req2)
+         queue.push(req3)
+         assert len(queue) == 3
+-        dequeued = queue.pop()
++        dequeued = _pop(queue)
+         assert len(queue) == 2
+         assert dequeued.url == req3.url
+         assert dequeued.priority == req3.priority
+@@ -125,7 +138,8 @@ def test_queue_push_pop_priorities(self):
+ class TestDownloaderAwarePriorityQueue:
+     def setup_method(self):
+         crawler = get_crawler(Spider)
+-        crawler.engine = Mock(downloader=MockDownloader())
++        self.downloader = MockDownloader()
++        crawler.engine = Mock(downloader=self.downloader)
+         self.queue = build_from_crawler(
+             DownloaderAwarePriorityQueue,
+             crawler,
+@@ -146,11 +160,11 @@ def test_push_pop(self):
+         self.queue.push(req2)
+         self.queue.push(req3)
+         assert len(self.queue) == 3
+-        assert self.queue.pop().url == req1.url
++        assert _pop(self.queue).url == req1.url
+         assert len(self.queue) == 2
+-        assert self.queue.pop().url == req2.url
++        assert _pop(self.queue).url == req2.url
+         assert len(self.queue) == 1
+-        assert self.queue.pop().url == req3.url
++        assert _pop(self.queue).url == req3.url
+         assert len(self.queue) == 0
+         assert self.queue.pop() is None
+ 
+@@ -175,14 +189,14 @@ def test_peek(self):
+         self.queue.push(req2)
+         self.queue.push(req3)
+         assert len(self.queue) == 3
+-        assert self.queue.peek().url == req1.url
+-        assert self.queue.pop().url == req1.url
++        assert _peek(self.queue).url == req1.url
++        assert _pop(self.queue).url == req1.url
+         assert len(self.queue) == 2
+-        assert self.queue.peek().url == req2.url
+-        assert self.queue.pop().url == req2.url
++        assert _peek(self.queue).url == req2.url
++        assert _pop(self.queue).url == req2.url
+         assert len(self.queue) == 1
+-        assert self.queue.peek().url == req3.url
+-        assert self.queue.pop().url == req3.url
++        assert _peek(self.queue).url == req3.url
++        assert _pop(self.queue).url == req3.url
+         assert self.queue.peek() is None
+ 
+     def test_tie_breaking_rotates_slots(self):
+@@ -201,10 +215,10 @@ def test_tie_breaking_rotates_slots(self):
+             self.queue.push(request)
+ 
+         slots = [
+-            self.queue.pop().meta[Downloader.DOWNLOAD_SLOT],
+-            self.queue.pop().meta[Downloader.DOWNLOAD_SLOT],
+-            self.queue.pop().meta[Downloader.DOWNLOAD_SLOT],
+-            self.queue.pop().meta[Downloader.DOWNLOAD_SLOT],
++            _pop(self.queue).meta[Downloader.DOWNLOAD_SLOT],
++            _pop(self.queue).meta[Downloader.DOWNLOAD_SLOT],
++            _pop(self.queue).meta[Downloader.DOWNLOAD_SLOT],
++            _pop(self.queue).meta[Downloader.DOWNLOAD_SLOT],
+         ]
+ 
+         assert slots == ["slot-a", "slot-b", "slot-a", "slot-b"]
+@@ -225,17 +239,15 @@ def test_tie_breaking_keeps_rotation_after_selected_slot_is_deleted(self):
+             self.queue.push(request)
+ 
+         slots = [
+-            self.queue.pop().meta[Downloader.DOWNLOAD_SLOT],
+-            self.queue.pop().meta[Downloader.DOWNLOAD_SLOT],
+-            self.queue.pop().meta[Downloader.DOWNLOAD_SLOT],
+-            self.queue.pop().meta[Downloader.DOWNLOAD_SLOT],
++            _pop(self.queue).meta[Downloader.DOWNLOAD_SLOT],
++            _pop(self.queue).meta[Downloader.DOWNLOAD_SLOT],
++            _pop(self.queue).meta[Downloader.DOWNLOAD_SLOT],
++            _pop(self.queue).meta[Downloader.DOWNLOAD_SLOT],
+         ]
+ 
+         assert slots == ["slot-a", "slot-b", "slot-c", "slot-a"]
+ 
+     def test_pop_prefers_slot_with_fewer_active_downloads(self):
+-        downloader = self.queue._downloader_interface.downloader
+-
+         req_a = Request("https://example.org/a")
+         req_a.meta[Downloader.DOWNLOAD_SLOT] = "slot-a"
+         req_b = Request("https://example.org/b")
+@@ -246,10 +258,10 @@ def test_pop_prefers_slot_with_fewer_active_downloads(self):
+         for req in (req_a, req_b, req_c):
+             self.queue.push(req)
+ 
+-        downloader.increment("slot-a")
+-        downloader.increment("slot-c")
++        self.downloader.increment("slot-a")
++        self.downloader.increment("slot-c")
+ 
+-        popped = self.queue.pop()
++        popped = _pop(self.queue)
+         assert popped.url == req_b.url
+ 
+     def test_contains(self):
+@@ -277,7 +289,7 @@ def test_slot_directory_removed_when_slot_drains(tmp_path):
+     queue.push(request)
+     assert slot_dir.is_dir()
+ 
+-    assert queue.pop().url == request.url
++    assert _pop(queue).url == request.url
+     assert not slot_dir.exists()
+ 
+     queue.push(request)
+@@ -300,11 +312,11 @@ def test_slot_directory_removed_when_slot_drains(tmp_path):
+     ],
+ )
+ def test_pop_order(input_, output):
+-    def make_url(index):
++    def make_url(index: int) -> str:
+         return f"https://toscrape.com/{index}"
+ 
+-    def make_request(index, data):
+-        meta = {}
++    def make_request(index: int, data: dict[str, Any]) -> Request:
++        meta: dict[str, Any] = {}
+         if data.get("start", False):
+             meta["is_start_request"] = True
+         return Request(
+@@ -332,7 +344,7 @@ def make_request(index, data):
+         queue.push(request)
+ 
+     actual_output_urls = []
+-    while request := queue.pop():
+-        actual_output_urls.append(request.url)
++    while popped := queue.pop():
++        actual_output_urls.append(popped.url)
+ 
+     assert actual_output_urls == expected_output_urls
+diff --git a/tests/test_scheduler_base.py b/tests/test_scheduler_base.py
+index 2c2d26d53a1..91c2481ba77 100644
+--- a/tests/test_scheduler_base.py
++++ b/tests/test_scheduler_base.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ 
+ import logging
+-from typing import TYPE_CHECKING
++from typing import TYPE_CHECKING, Any
+ from urllib.parse import urljoin
+ 
+ import pytest
+@@ -59,13 +59,15 @@ class PathsSpider(Spider):
+ 
+     def __init__(self, mockserver, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+-        self.start_urls = map(mockserver.url, PATHS)
++        self.start_urls = [mockserver.url(path) for path in PATHS]
+ 
+     def parse(self, response):
+         return {"path": urlparse_cached(response).path}
+ 
+ 
+ class InterfaceCheckMixin:
++    scheduler: Any
++
+     def test_scheduler_class(self):
+         assert isinstance(self.scheduler, BaseScheduler)
+         assert issubclass(self.scheduler.__class__, BaseScheduler)
+@@ -73,7 +75,7 @@ def test_scheduler_class(self):
+ 
+ class TestBaseScheduler(InterfaceCheckMixin):
+     def setup_method(self):
+-        self.scheduler = BaseScheduler()
++        self.scheduler = BaseScheduler()  # type: ignore[abstract]
+ 
+     def test_methods(self):
+         assert self.scheduler.open(Spider("foo")) is None
+diff --git a/tests/test_settings/__init__.py b/tests/test_settings/__init__.py
+index 97c095ae054..2ad65f9bb92 100644
+--- a/tests/test_settings/__init__.py
++++ b/tests/test_settings/__init__.py
+@@ -160,7 +160,7 @@ class ModuleMock:
+             lowercase_var = "anothervalue"
+ 
+         self.settings.attributes = {}
+-        self.settings.setmodule(ModuleMock(), 10)
++        self.settings.setmodule(ModuleMock(), 10)  # type: ignore[arg-type]
+         assert "UPPERCASE_VAR" in self.settings.attributes
+         assert "MIXEDcase_VAR" not in self.settings.attributes
+         assert "lowercase_var" not in self.settings.attributes
+@@ -219,7 +219,7 @@ def test_update(self):
+     )
+     def test_update_kwargs(self):
+         settings = BaseSettings({"key": 0})
+-        settings.update(key=1)  # pylint: disable=unexpected-keyword-arg
++        settings.update(key=1)  # type: ignore[call-arg]  # pylint: disable=unexpected-keyword-arg
+ 
+     def test_update_iterable(self):
+         settings = BaseSettings({"key": 0}, priority=0)
+@@ -337,13 +337,13 @@ def test_getpriority(self):
+     def test_getwithbase(self):
+         s = BaseSettings(
+             {
+-                "TEST_BASE": BaseSettings({1: 1, 2: 2}, "project"),
+-                "TEST": BaseSettings({1: 10, 3: 30}, "default"),
+-                "HASNOBASE": BaseSettings({3: 3000}, "default"),
++                "TEST_BASE": BaseSettings({"1": 1, "2": 2}, "project"),
++                "TEST": BaseSettings({"1": 10, "3": 30}, "default"),
++                "HASNOBASE": BaseSettings({"3": 3000}, "default"),
+             }
+         )
+-        s["TEST"].set(2, 200, "cmdline")
+-        assert set(s.getwithbase("TEST")) == {1, 2, 3}
++        s["TEST"].set("2", 200, "cmdline")
++        assert set(s.getwithbase("TEST")) == {"1", "2", "3"}
+         assert set(s.getwithbase("HASNOBASE")) == set(s["HASNOBASE"])
+         assert s.getwithbase("NONEXISTENT") == {}
+ 
+@@ -527,7 +527,7 @@ def test_get_component_priority_dict_with_base_warns_on_duplicate_mixed_type_and
+     ):
+         settings = BaseSettings()
+         settings["FOO"] = BaseSettings(
+-            {Component1: 1, "tests.test_settings.Component1": 2}
++            {Component1: 1, "tests.test_settings.Component1": 2}  # type: ignore[arg-type]
+         )
+         with caplog.at_level(logging.WARNING):
+             value = settings.get_component_priority_dict_with_base("FOO")
+@@ -592,14 +592,14 @@ def test_getwithbase_invalid_setting_name(self):
+         with pytest.raises(
+             ValueError, match="Base setting key must be a string, got 123"
+         ):
+-            settings.getwithbase(123)
++            settings.getwithbase(123)  # type: ignore[arg-type]
+ 
+     def test_get_component_priority_dict_with_base_invalid_setting_name(self):
+         settings = BaseSettings()
+         with pytest.raises(
+             ValueError, match="Base setting key must be a string, got 123"
+         ):
+-            settings.get_component_priority_dict_with_base(123)
++            settings.get_component_priority_dict_with_base(123)  # type: ignore[arg-type]
+ 
+ 
+ class TestSettings:
+diff --git a/tests/test_squeues.py b/tests/test_squeues.py
+index 6bbc4482908..067343b67fa 100644
+--- a/tests/test_squeues.py
++++ b/tests/test_squeues.py
+@@ -18,6 +18,12 @@
+     _serializable_queue,
+ )
+ 
++# The disk queue classes are built at run time, so they are untyped.
++_MarshalFifoQueue: Any = _MarshalFifoSerializationDiskQueue
++_MarshalLifoQueue: Any = _MarshalLifoSerializationDiskQueue
++_PickleFifoQueue: Any = _PickleFifoSerializationDiskQueue
++_PickleLifoQueue: Any = _PickleLifoSerializationDiskQueue
++
+ 
+ class MyItem(Item):
+     name = Field()
+@@ -71,6 +77,9 @@ def nonserializable_object_test(self):
+ 
+ 
+ class FifoDiskQueueTestMixin:
++    def queue(self) -> Any:
++        raise NotImplementedError
++
+     def test_serialize(self):
+         q = self.queue()
+         q.push("a")
+@@ -87,8 +96,8 @@ def test_serialize(self):
+ class MarshalFifoDiskQueueTest(t.FifoDiskQueueTest, FifoDiskQueueTestMixin):
+     chunksize = 100000
+ 
+-    def queue(self):
+-        return _MarshalFifoSerializationDiskQueue(self.qpath, chunksize=self.chunksize)
++    def queue(self) -> Any:
++        return _MarshalFifoQueue(self.qpath, chunksize=self.chunksize)
+ 
+ 
+ class ChunkSize1MarshalFifoDiskQueueTest(MarshalFifoDiskQueueTest):
+@@ -110,8 +119,8 @@ class ChunkSize4MarshalFifoDiskQueueTest(MarshalFifoDiskQueueTest):
+ class PickleFifoDiskQueueTest(t.FifoDiskQueueTest, FifoDiskQueueTestMixin):
+     chunksize = 100000
+ 
+-    def queue(self):
+-        return _PickleFifoSerializationDiskQueue(self.qpath, chunksize=self.chunksize)
++    def queue(self) -> Any:
++        return _PickleFifoQueue(self.qpath, chunksize=self.chunksize)
+ 
+     def test_serialize_item(self):
+         q = self.queue()
+@@ -180,6 +189,9 @@ class ChunkSize4PickleFifoDiskQueueTest(PickleFifoDiskQueueTest):
+ 
+ 
+ class LifoDiskQueueTestMixin:
++    def queue(self) -> Any:
++        raise NotImplementedError
++
+     def test_serialize(self):
+         q = self.queue()
+         q.push("a")
+@@ -194,13 +206,13 @@ def test_serialize(self):
+ 
+ 
+ class MarshalLifoDiskQueueTest(t.LifoDiskQueueTest, LifoDiskQueueTestMixin):
+-    def queue(self):
+-        return _MarshalLifoSerializationDiskQueue(self.qpath)
++    def queue(self) -> Any:
++        return _MarshalLifoQueue(self.qpath)
+ 
+ 
+ class PickleLifoDiskQueueTest(t.LifoDiskQueueTest, LifoDiskQueueTestMixin):
+-    def queue(self):
+-        return _PickleLifoSerializationDiskQueue(self.qpath)
++    def queue(self) -> Any:
++        return _PickleLifoQueue(self.qpath)
+ 
+     def test_serialize_item(self):
+         q = self.queue()
+diff --git a/tests/test_stats.py b/tests/test_stats.py
+index 0f031fa021c..6a762b3eaf5 100644
+--- a/tests/test_stats.py
++++ b/tests/test_stats.py
+@@ -179,13 +179,13 @@ def close_spider(self, spider, reason):
+     @coroutine_test
+     async def test_deprecated_spider_arg_custom_collector_subclass(self) -> None:
+         class CustomStatsCollector(StatsCollector):
+-            def open_spider(self, spider):  # pylint: disable=signature-differs
++            def open_spider(self, spider):  # type: ignore[override]  # pylint: disable=signature-differs
+                 super().open_spider(spider)
+ 
+             def inc_value(self, key, count=1, start=0, spider=None):  # pylint: disable=useless-parent-delegation
+                 super().inc_value(key, count, start, spider)
+ 
+-            def close_spider(self, spider, reason):  # pylint: disable=signature-differs
++            def close_spider(self, spider, reason):  # type: ignore[override]  # pylint: disable=signature-differs
+                 super().close_spider(spider, reason)
+ 
+         crawler = get_crawler(SimpleSpider, {"STATS_CLASS": CustomStatsCollector})

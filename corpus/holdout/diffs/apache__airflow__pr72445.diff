@@ -1,0 +1,13 @@
+diff --git a/providers/informatica/src/airflow/providers/informatica/plugins/listener.py b/providers/informatica/src/airflow/providers/informatica/plugins/listener.py
+index 783226573b55c..090f93f74ebfa 100644
+--- a/providers/informatica/src/airflow/providers/informatica/plugins/listener.py
++++ b/providers/informatica/src/airflow/providers/informatica/plugins/listener.py
+@@ -31,7 +31,7 @@
+ 
+ if TYPE_CHECKING:
+     from airflow.models import TaskInstance
+-    from airflow.utils.state import TaskInstanceState
++    from airflow.sdk import TaskInstanceState
+ 
+ _informatica_listener: InformaticaListener | None = None
+ 

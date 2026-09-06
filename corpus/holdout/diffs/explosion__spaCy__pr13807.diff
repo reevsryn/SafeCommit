@@ -1,0 +1,895 @@
+diff --git a/spacy/lang/ht/__init__.py b/spacy/lang/ht/__init__.py
+new file mode 100644
+index 00000000000..e5c1c27702a
+--- /dev/null
++++ b/spacy/lang/ht/__init__.py
+@@ -0,0 +1,52 @@
++from typing import Callable, Optional
++
++from thinc.api import Model
++
++from ...language import BaseDefaults, Language
++from .lemmatizer import HaitianCreoleLemmatizer
++from .lex_attrs import LEX_ATTRS
++from .punctuation import TOKENIZER_PREFIXES, TOKENIZER_INFIXES, TOKENIZER_SUFFIXES
++from .stop_words import STOP_WORDS
++from .syntax_iterators import SYNTAX_ITERATORS
++from .tokenizer_exceptions import TOKENIZER_EXCEPTIONS
++from .tag_map import TAG_MAP
++
++
++class HaitianCreoleDefaults(BaseDefaults):
++    tokenizer_exceptions = TOKENIZER_EXCEPTIONS
++    prefixes = TOKENIZER_PREFIXES
++    infixes = TOKENIZER_INFIXES
++    suffixes = TOKENIZER_SUFFIXES
++    lex_attr_getters = LEX_ATTRS
++    syntax_iterators = SYNTAX_ITERATORS
++    stop_words = STOP_WORDS
++    tag_map = TAG_MAP
++
++class HaitianCreole(Language):
++    lang = "ht"
++    Defaults = HaitianCreoleDefaults
++
++@HaitianCreole.factory(
++    "lemmatizer",
++    assigns=["token.lemma"],
++    default_config={
++        "model": None,
++        "mode": "rule",
++        "overwrite": False,
++        "scorer": {"@scorers": "spacy.lemmatizer_scorer.v1"},
++    },
++    default_score_weights={"lemma_acc": 1.0},
++)
++def make_lemmatizer(
++    nlp: Language,
++    model: Optional[Model],
++    name: str,
++    mode: str,
++    overwrite: bool,
++    scorer: Optional[Callable],
++):
++    return HaitianCreoleLemmatizer(
++        nlp.vocab, model, name, mode=mode, overwrite=overwrite, scorer=scorer
++    )
++
++__all__ = ["HaitianCreole"]
+diff --git a/spacy/lang/ht/examples.py b/spacy/lang/ht/examples.py
+new file mode 100644
+index 00000000000..456d34a5f66
+--- /dev/null
++++ b/spacy/lang/ht/examples.py
+@@ -0,0 +1,18 @@
++"""
++Example sentences to test spaCy and its language models.
++
++>>> from spacy.lang.ht.examples import sentences
++>>> docs = nlp.pipe(sentences)
++"""
++
++
++sentences = [
++    "Apple ap panse achte yon demaraj nan Wayòm Ini pou $1 milya dola",
++    "Machin otonòm fè responsablite asirans lan ale sou men fabrikan yo",
++    "San Francisco ap konsidere entèdi robo ki livre sou twotwa yo",
++    "Lond se yon gwo vil nan Wayòm Ini",
++    "Kote ou ye?",
++    "Kilès ki prezidan Lafrans?",
++    "Ki kapital Etazini?",
++    "Kile Barack Obama te fèt?",
++]
+diff --git a/spacy/lang/ht/lemmatizer.py b/spacy/lang/ht/lemmatizer.py
+new file mode 100644
+index 00000000000..9ac096f6df1
+--- /dev/null
++++ b/spacy/lang/ht/lemmatizer.py
+@@ -0,0 +1,51 @@
++from typing import List, Tuple
++
++from ...pipeline import Lemmatizer
++from ...tokens import Token
++from ...lookups import Lookups
++
++
++class HaitianCreoleLemmatizer(Lemmatizer):
++    """
++    Minimal Haitian Creole lemmatizer.
++    Returns a word's base form based on rules and lookup,
++    or defaults to the original form.
++    """
++
++    def is_base_form(self, token: Token) -> bool:
++        morph = token.morph.to_dict()
++        upos = token.pos_.lower()
++
++        # Consider unmarked forms to be base
++        if upos in {"noun", "verb", "adj", "adv"}:
++            if not morph:
++                return True
++            if upos == "noun" and morph.get("Number") == "Sing":
++                return True
++            if upos == "verb" and morph.get("VerbForm") == "Inf":
++                return True
++            if upos == "adj" and morph.get("Degree") == "Pos":
++                return True
++        return False
++
++    def rule_lemmatize(self, token: Token) -> List[str]:
++        string = token.text.lower()
++        pos = token.pos_.lower()
++        cache_key = (token.orth, token.pos)
++        if cache_key in self.cache:
++            return self.cache[cache_key]
++
++        forms = []
++
++        # fallback rule: just return lowercased form
++        forms.append(string)
++
++        self.cache[cache_key] = forms
++        return forms
++
++    @classmethod
++    def get_lookups_config(cls, mode: str) -> Tuple[List[str], List[str]]:
++        if mode == "rule":
++            required = ["lemma_lookup", "lemma_rules", "lemma_exc", "lemma_index"]
++            return (required, [])
++        return super().get_lookups_config(mode)
+diff --git a/spacy/lang/ht/lex_attrs.py b/spacy/lang/ht/lex_attrs.py
+new file mode 100644
+index 00000000000..8a3ec1ff9ee
+--- /dev/null
++++ b/spacy/lang/ht/lex_attrs.py
+@@ -0,0 +1,78 @@
++from ...attrs import LIKE_NUM, NORM
++
++# Cardinal numbers in Creole
++_num_words = set(
++    """
++zewo youn en de twa kat senk sis sèt uit nèf dis
++onz douz trèz katoz kenz sèz disèt dizwit diznèf
++vent trant karant sinkant swasant swasann-dis
++san mil milyon milya
++""".split()
++)
++
++# Ordinal numbers in Creole (some are French-influenced, some simplified)
++_ordinal_words = set(
++    """
++premye dezyèm twazyèm katryèm senkyèm sizyèm sètvyèm uitvyèm nèvyèm dizyèm
++onzèm douzyèm trèzyèm katozyèm kenzèm sèzyèm disetyèm dizwityèm diznèvyèm
++ventyèm trantyèm karantyèm sinkantyèm swasantyèm
++swasann-disyèm santyèm milyèm milyonnyèm milyadyèm
++""".split()
++)
++
++NORM_MAP = {
++    "'m": "mwen",
++    "'w": "ou",
++    "'l": "li",
++    "'n": "nou",
++    "'y": "yo",
++    "’m": "mwen",
++    "’w": "ou",
++    "’l": "li",
++    "’n": "nou",
++    "’y": "yo",
++    "m": "mwen",
++    "n": "nou",
++    "l": "li",
++    "y": "yo",
++    "w": "ou",
++    "t": "te",
++    "k": "ki",
++    "p": "pa",
++    "M": "Mwen",
++    "N": "Nou",
++    "L": "Li",
++    "Y": "Yo",
++    "W": "Ou",
++    "T": "Te",
++    "K": "Ki",
++    "P": "Pa",
++}
++
++def like_num(text):
++    text = text.strip().lower()
++    if text.startswith(("+", "-", "±", "~")):
++        text = text[1:]
++    text = text.replace(",", "").replace(".", "")
++    if text.isdigit():
++        return True
++    if text.count("/") == 1:
++        num, denom = text.split("/")
++        if num.isdigit() and denom.isdigit():
++            return True
++    if text in _num_words:
++        return True
++    if text in _ordinal_words:
++        return True
++    # Handle things like "3yèm", "10yèm", "25yèm", etc.
++    if text.endswith("yèm") and text[:-3].isdigit():
++        return True
++    return False
++
++def norm_custom(text):
++    return NORM_MAP.get(text, text.lower())
++
++LEX_ATTRS = {
++    LIKE_NUM: like_num,
++    NORM: norm_custom,
++}
+diff --git a/spacy/lang/ht/punctuation.py b/spacy/lang/ht/punctuation.py
+new file mode 100644
+index 00000000000..61d88d6e1a5
+--- /dev/null
++++ b/spacy/lang/ht/punctuation.py
+@@ -0,0 +1,43 @@
++from ..char_classes import (
++    ALPHA,
++    ALPHA_LOWER,
++    ALPHA_UPPER,
++    CONCAT_QUOTES,
++    HYPHENS,
++    LIST_PUNCT,
++    LIST_QUOTES,
++    LIST_ELLIPSES,
++    LIST_ICONS,
++    merge_chars,
++)
++
++ELISION = "'’".replace(" ", "")
++
++_prefixes_elision = "m n l y t k w"
++_prefixes_elision += " " + _prefixes_elision.upper()
++
++TOKENIZER_PREFIXES = LIST_PUNCT + LIST_QUOTES + [
++    r"(?:({pe})[{el}])(?=[{a}])".format(
++        a=ALPHA, el=ELISION, pe=merge_chars(_prefixes_elision)
++    )
++]
++
++TOKENIZER_SUFFIXES = LIST_PUNCT + LIST_QUOTES + LIST_ELLIPSES + [
++    r"(?<=[0-9])%",  # numbers like 10%
++    r"(?<=[0-9])(?:{h})".format(h=HYPHENS),  # hyphens after numbers
++    r"(?<=[{a}])['’]".format(a=ALPHA),  # apostrophes after letters
++    r"(?<=[{a}])['’][mwlnytk](?=\s|$)".format(a=ALPHA),  # contractions
++    r"(?<=[{a}0-9])\)",  # right parenthesis after letter/number
++    r"(?<=[{a}])\.(?=\s|$)".format(a=ALPHA),  # period after letter if space or end of string
++    r"(?<=\))[\.\?!]",  # punctuation immediately after right parenthesis
++]
++
++TOKENIZER_INFIXES = LIST_ELLIPSES + LIST_ICONS + [
++    r"(?<=[0-9])[+\-\*^](?=[0-9-])",
++    r"(?<=[{al}{q}])\.(?=[{au}{q}])".format(
++        al=ALPHA_LOWER, au=ALPHA_UPPER, q=CONCAT_QUOTES
++    ),
++    r"(?<=[{a}]),(?=[{a}])".format(a=ALPHA),
++    r"(?<=[{a}0-9])(?:{h})(?=[{a}])".format(a=ALPHA, h=HYPHENS),
++    r"(?<=[{a}][{el}])(?=[{a}])".format(a=ALPHA, el=ELISION),
++]
+diff --git a/spacy/lang/ht/stop_words.py b/spacy/lang/ht/stop_words.py
+new file mode 100644
+index 00000000000..6243887a4dc
+--- /dev/null
++++ b/spacy/lang/ht/stop_words.py
+@@ -0,0 +1,50 @@
++STOP_WORDS = set(
++    """
++a ak an ankò ant apre ap atò avan avanlè
++byen bò byenke
++
++chak
++
++de depi deja deja
++
++e en epi èske
++
++fò fòk
++
++gen genyen
++
++ki kisa kilès kote koukou konsa konbyen konn konnen kounye kouman
++
++la l laa le lè li lye lò
++
++m m' mwen
++
++nan nap nou n'
++
++ou oumenm
++
++pa paske pami pandan pito pou pral preske pwiske
++
++se selman si sou sòt
++
++ta tap tankou te toujou tou tan tout toutotan twòp tèl
++
++w w' wi wè
++
++y y' yo yon yonn
++
++non o oh eh
++
++sa san si swa si
++
++men mèsi oswa osinon
++
++"""
++.split()
++)
++
++# Add common contractions, with and without apostrophe variants
++contractions = ["m'", "n'", "w'", "y'", "l'", "t'", "k'"]
++for apostrophe in ["'", "’", "‘"]:
++    for word in contractions:
++        STOP_WORDS.add(word.replace("'", apostrophe))
+diff --git a/spacy/lang/ht/syntax_iterators.py b/spacy/lang/ht/syntax_iterators.py
+new file mode 100644
+index 00000000000..44ff17f7443
+--- /dev/null
++++ b/spacy/lang/ht/syntax_iterators.py
+@@ -0,0 +1,74 @@
++from typing import Iterator, Tuple, Union
++
++from ...errors import Errors
++from ...symbols import NOUN, PRON, PROPN
++from ...tokens import Doc, Span
++
++
++def noun_chunks(doclike: Union[Doc, Span]) -> Iterator[Tuple[int, int, int]]:
++    """
++    Detect base noun phrases from a dependency parse for Haitian Creole.
++    Works on both Doc and Span objects.
++    """
++
++    # Core nominal dependencies common in Haitian Creole
++    labels = [
++        "nsubj",
++        "obj",
++        "obl",
++        "nmod",
++        "appos",
++        "ROOT",
++    ]
++
++    # Modifiers to optionally include in chunk (to the right)
++    post_modifiers = ["compound", "flat", "flat:name", "fixed"]
++
++    doc = doclike.doc
++    if not doc.has_annotation("DEP"):
++        raise ValueError(Errors.E029)
++
++    np_deps = {doc.vocab.strings.add(label) for label in labels}
++    np_mods = {doc.vocab.strings.add(mod) for mod in post_modifiers}
++    conj_label = doc.vocab.strings.add("conj")
++    np_label = doc.vocab.strings.add("NP")
++    adp_pos = doc.vocab.strings.add("ADP")
++    cc_pos = doc.vocab.strings.add("CCONJ")
++
++    prev_end = -1
++    for i, word in enumerate(doclike):
++        if word.pos not in (NOUN, PROPN, PRON):
++            continue
++        if word.left_edge.i <= prev_end:
++            continue
++
++        if word.dep in np_deps:
++            right_end = word
++            # expand to include known modifiers to the right
++            for child in word.rights:
++                if child.dep in np_mods:
++                    right_end = child.right_edge
++                elif child.pos == NOUN:
++                    right_end = child.right_edge
++
++            left_index = word.left_edge.i
++            # Skip prepositions at the start
++            if word.left_edge.pos == adp_pos:
++                left_index += 1
++
++            prev_end = right_end.i
++            yield left_index, right_end.i + 1, np_label
++
++        elif word.dep == conj_label:
++            head = word.head
++            while head.dep == conj_label and head.head.i < head.i:
++                head = head.head
++            if head.dep in np_deps:
++                left_index = word.left_edge.i
++                if word.left_edge.pos == cc_pos:
++                    left_index += 1
++                prev_end = word.i
++                yield left_index, word.i + 1, np_label
++
++
++SYNTAX_ITERATORS = {"noun_chunks": noun_chunks}
+diff --git a/spacy/lang/ht/tag_map.py b/spacy/lang/ht/tag_map.py
+new file mode 100644
+index 00000000000..8c9cdd6d49b
+--- /dev/null
++++ b/spacy/lang/ht/tag_map.py
+@@ -0,0 +1,21 @@
++from spacy.symbols import NOUN, VERB, AUX, ADJ, ADV, PRON, DET, ADP, SCONJ, CCONJ, PART, INTJ, NUM, PROPN, PUNCT, SYM, X
++
++TAG_MAP = {
++    "NOUN": {"pos": NOUN},
++    "VERB": {"pos": VERB},
++    "AUX": {"pos": AUX},
++    "ADJ": {"pos": ADJ},
++    "ADV": {"pos": ADV},
++    "PRON": {"pos": PRON},
++    "DET": {"pos": DET},
++    "ADP": {"pos": ADP},
++    "SCONJ": {"pos": SCONJ},
++    "CCONJ": {"pos": CCONJ},
++    "PART": {"pos": PART},
++    "INTJ": {"pos": INTJ},
++    "NUM": {"pos": NUM},
++    "PROPN": {"pos": PROPN},
++    "PUNCT": {"pos": PUNCT},
++    "SYM": {"pos": SYM},
++    "X": {"pos": X},
++}
+diff --git a/spacy/lang/ht/tokenizer_exceptions.py b/spacy/lang/ht/tokenizer_exceptions.py
+new file mode 100644
+index 00000000000..b44ad7a6fbc
+--- /dev/null
++++ b/spacy/lang/ht/tokenizer_exceptions.py
+@@ -0,0 +1,121 @@
++from spacy.symbols import ORTH, NORM
++
++def make_variants(base, first_norm, second_orth, second_norm):
++    return {
++        base: [
++            {ORTH: base.split("'")[0] + "'", NORM: first_norm},
++            {ORTH: second_orth, NORM: second_norm},
++        ],
++        base.capitalize(): [
++            {ORTH: base.split("'")[0].capitalize() + "'", NORM: first_norm.capitalize()},
++            {ORTH: second_orth, NORM: second_norm},
++        ]
++    }
++
++TOKENIZER_EXCEPTIONS = {
++    "Dr.": [{ORTH: "Dr."}]
++}
++
++# Apostrophe forms
++TOKENIZER_EXCEPTIONS.update(make_variants("m'ap", "mwen", "ap", "ap"))
++TOKENIZER_EXCEPTIONS.update(make_variants("n'ap", "nou", "ap", "ap"))
++TOKENIZER_EXCEPTIONS.update(make_variants("l'ap", "li", "ap", "ap"))
++TOKENIZER_EXCEPTIONS.update(make_variants("y'ap", "yo", "ap", "ap"))
++TOKENIZER_EXCEPTIONS.update(make_variants("m'te", "mwen", "te", "te"))
++TOKENIZER_EXCEPTIONS.update(make_variants("m'pral", "mwen", "pral", "pral"))
++TOKENIZER_EXCEPTIONS.update(make_variants("w'ap", "ou", "ap", "ap"))
++TOKENIZER_EXCEPTIONS.update(make_variants("k'ap", "ki", "ap", "ap"))
++TOKENIZER_EXCEPTIONS.update(make_variants("p'ap", "pa", "ap", "ap"))
++TOKENIZER_EXCEPTIONS.update(make_variants("t'ap", "te", "ap", "ap"))
++
++# Non-apostrophe contractions (with capitalized variants)
++TOKENIZER_EXCEPTIONS.update({
++    "map": [
++        {ORTH: "m", NORM: "mwen"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "Map": [
++        {ORTH: "M", NORM: "Mwen"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "lem": [
++        {ORTH: "le", NORM: "le"},
++        {ORTH: "m", NORM: "mwen"},
++    ],
++    "Lem": [
++        {ORTH: "Le", NORM: "Le"},
++        {ORTH: "m", NORM: "mwen"},
++    ],
++    "lew": [
++        {ORTH: "le", NORM: "le"},
++        {ORTH: "w", NORM: "ou"},
++    ],
++    "Lew": [
++        {ORTH: "Le", NORM: "Le"},
++        {ORTH: "w", NORM: "ou"},
++    ],
++    "nap": [
++        {ORTH: "n", NORM: "nou"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "Nap": [
++        {ORTH: "N", NORM: "Nou"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "lap": [
++        {ORTH: "l", NORM: "li"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "Lap": [
++        {ORTH: "L", NORM: "Li"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "yap": [
++        {ORTH: "y", NORM: "yo"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "Yap": [
++        {ORTH: "Y", NORM: "Yo"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "mte": [
++        {ORTH: "m", NORM: "mwen"},
++        {ORTH: "te", NORM: "te"},
++    ],
++    "Mte": [
++        {ORTH: "M", NORM: "Mwen"},
++        {ORTH: "te", NORM: "te"},
++    ],
++    "mpral": [
++        {ORTH: "m", NORM: "mwen"},
++        {ORTH: "pral", NORM: "pral"},
++    ],
++    "Mpral": [
++        {ORTH: "M", NORM: "Mwen"},
++        {ORTH: "pral", NORM: "pral"},
++    ],
++    "wap": [
++        {ORTH: "w", NORM: "ou"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "Wap": [
++        {ORTH: "W", NORM: "Ou"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "kap": [
++        {ORTH: "k", NORM: "ki"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "Kap": [
++        {ORTH: "K", NORM: "Ki"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "tap": [
++        {ORTH: "t", NORM: "te"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++    "Tap": [
++        {ORTH: "T", NORM: "Te"},
++        {ORTH: "ap", NORM: "ap"},
++    ],
++})
+diff --git a/spacy/tests/conftest.py b/spacy/tests/conftest.py
+index e30300a33e6..ae5255c287b 100644
+--- a/spacy/tests/conftest.py
++++ b/spacy/tests/conftest.py
+@@ -212,6 +212,16 @@ def hr_tokenizer():
+     return get_lang_class("hr")().tokenizer
+ 
+ 
++@pytest.fixture(scope="session")
++def ht_tokenizer():
++    return get_lang_class("ht")().tokenizer
++
++
++@pytest.fixture(scope="session")
++def ht_vocab():
++    return get_lang_class("ht")().vocab
++
++
+ @pytest.fixture
+ def hu_tokenizer():
+     return get_lang_class("hu")().tokenizer
+diff --git a/spacy/tests/lang/ht/__init__.py b/spacy/tests/lang/ht/__init__.py
+new file mode 100644
+index 00000000000..e69de29bb2d
+diff --git a/spacy/tests/lang/ht/test_exceptions.py b/spacy/tests/lang/ht/test_exceptions.py
+new file mode 100644
+index 00000000000..685b72c0767
+--- /dev/null
++++ b/spacy/tests/lang/ht/test_exceptions.py
+@@ -0,0 +1,32 @@
++import pytest
++
++
++def test_ht_tokenizer_handles_basic_contraction(ht_tokenizer):
++    text = "m'ap ri"
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++    assert tokens[0].text == "m'"
++    assert tokens[1].text == "ap"
++    assert tokens[2].text == "ri"
++
++    text = "mwen di'w non!"
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 5
++    assert tokens[0].text == "mwen"
++    assert tokens[1].text == "di"
++    assert tokens[2].text == "'w"
++    assert tokens[3].text == "non"
++    assert tokens[4].text == "!"
++
++
++@pytest.mark.parametrize("text", ["Dr."])
++def test_ht_tokenizer_handles_basic_abbreviation(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 1
++    assert tokens[0].text == text
++
++
++def test_ht_tokenizer_full_sentence(ht_tokenizer):
++    text = "Si'm ka vini, m'ap pale ak li."
++    tokens = [t.text for t in ht_tokenizer(text)]
++    assert tokens == ["Si", "'m", "ka", "vini", ",", "m'", "ap", "pale", "ak", "li", "."]
+diff --git a/spacy/tests/lang/ht/test_noun_chunks.py b/spacy/tests/lang/ht/test_noun_chunks.py
+new file mode 100644
+index 00000000000..76c5a1df32d
+--- /dev/null
++++ b/spacy/tests/lang/ht/test_noun_chunks.py
+@@ -0,0 +1,44 @@
++import pytest
++from spacy.tokens import Doc
++
++
++@pytest.fixture
++def doc(ht_vocab):
++    words = ["Pitit", "gen", "gwo", "pwoblèm", "ak", "kontwòl"]
++    heads = [1, 1, 5, 5, 3, 3]
++    deps = ["nsubj", "ROOT", "amod", "obj", "case", "nmod"]
++    pos = ["NOUN", "VERB", "ADJ", "NOUN", "ADP", "NOUN"]
++    return Doc(ht_vocab, words=words, heads=heads, deps=deps, pos=pos)
++
++
++def test_noun_chunks_is_parsed(ht_tokenizer):
++    """Test that noun_chunks raises Value Error for 'ht' language if Doc is not parsed."""
++    doc = ht_tokenizer("Sa a se yon fraz")
++    with pytest.raises(ValueError):
++        list(doc.noun_chunks)
++
++
++def test_ht_noun_chunks_not_nested(doc, ht_vocab):
++    """Test that each token only appears in one noun chunk at most"""
++    word_occurred = {}
++    chunks = list(doc.noun_chunks)
++    assert len(chunks) > 1
++    for chunk in chunks:
++        for word in chunk:
++            word_occurred.setdefault(word.text, 0)
++            word_occurred[word.text] += 1
++    assert len(word_occurred) > 0
++    for word, freq in word_occurred.items():
++        assert freq == 1, (word, [chunk.text for chunk in doc.noun_chunks])
++
++
++def test_noun_chunks_span(doc, ht_tokenizer):
++    """Test that the span.noun_chunks property works correctly"""
++    doc_chunks = list(doc.noun_chunks)
++    span = doc[0:3]
++    span_chunks = list(span.noun_chunks)
++    assert 0 < len(span_chunks) < len(doc_chunks)
++    for chunk in span_chunks:
++        assert chunk in doc_chunks
++        assert chunk.start >= 0
++        assert chunk.end <= 3
+diff --git a/spacy/tests/lang/ht/test_prefix_suffix_infix.py b/spacy/tests/lang/ht/test_prefix_suffix_infix.py
+new file mode 100644
+index 00000000000..7dabec17aff
+--- /dev/null
++++ b/spacy/tests/lang/ht/test_prefix_suffix_infix.py
+@@ -0,0 +1,130 @@
++import pytest
++
++
++@pytest.mark.parametrize("text", ["(ka)"])
++def test_ht_tokenizer_splits_no_special(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++
++
++@pytest.mark.parametrize("text", ["m'ap"])
++def test_ht_tokenizer_splits_no_punct(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 2
++
++
++@pytest.mark.parametrize("text", ["(m'ap"])
++def test_ht_tokenizer_splits_prefix_punct(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++
++
++@pytest.mark.parametrize("text", ["m'ap)"])
++def test_ht_tokenizer_splits_suffix_punct(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++
++
++@pytest.mark.parametrize("text", ["(m'ap)"])
++def test_ht_tokenizer_splits_even_wrap(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 4
++
++
++@pytest.mark.parametrize("text", ["(m'ap?)"])
++def test_ht_tokenizer_splits_uneven_wrap(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 5
++
++
++@pytest.mark.parametrize("text,length", [("Ozetazini.", 2), ("Frans.", 2), ("(Ozetazini.", 3)])
++def test_ht_tokenizer_splits_prefix_interact(ht_tokenizer, text, length):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == length
++
++
++@pytest.mark.parametrize("text", ["Ozetazini.)"])
++def test_ht_tokenizer_splits_suffix_interact(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++
++
++@pytest.mark.parametrize("text", ["(Ozetazini.)"])
++def test_ht_tokenizer_splits_even_wrap_interact(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 4
++
++
++@pytest.mark.parametrize("text", ["(Ozetazini?)"])
++def test_ht_tokenizer_splits_uneven_wrap_interact(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 4
++
++
++@pytest.mark.parametrize("text", ["pi-bon"])
++def test_ht_tokenizer_splits_hyphens(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++
++
++@pytest.mark.parametrize("text", ["0.1-13.5", "0.0-0.1", "103.27-300"])
++def test_ht_tokenizer_splits_numeric_range(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++
++
++@pytest.mark.parametrize("text", ["pi.Bon", "Bon.Jour"])
++def test_ht_tokenizer_splits_period_infix(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++
++
++@pytest.mark.parametrize("text", ["Bonjou,moun", "youn,de"])
++def test_ht_tokenizer_splits_comma_infix(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++    assert tokens[0].text == text.split(",")[0]
++    assert tokens[1].text == ","
++    assert tokens[2].text == text.split(",")[1]
++
++
++@pytest.mark.parametrize("text", ["pi...Bon", "pi...bon"])
++def test_ht_tokenizer_splits_ellipsis_infix(ht_tokenizer, text):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 3
++
++
++def test_ht_tokenizer_splits_double_hyphen_infix(ht_tokenizer):
++    tokens = ht_tokenizer("Pa vrè--men ou konnen--mwen renmen w.")
++    assert tokens[0].text == "Pa"
++    assert tokens[1].text == "vrè"
++    assert tokens[2].text == "--"
++    assert tokens[3].text == "men"
++    assert tokens[4].text == "ou"
++    assert tokens[5].text == "konnen"
++    assert tokens[6].text == "--"
++    assert tokens[7].text == "mwen"
++    assert tokens[8].text == "renmen"
++    assert tokens[9].text == "w"
++    assert tokens[10].text == "."
++
++
++def test_ht_tokenizer_splits_period_abbr(ht_tokenizer):
++    text = "Jodi a se Madi.Mr."
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 7
++    assert tokens[0].text == "Jodi"
++    assert tokens[1].text == "a"
++    assert tokens[2].text == "se"
++    assert tokens[3].text == "Madi"
++    assert tokens[4].text == "."
++    assert tokens[5].text == "Mr"
++    assert tokens[6].text == "."
++
++
++def test_ht_tokenizer_splits_paren_period(ht_tokenizer):
++    tokens = ht_tokenizer("M ap teste sa (pou kounye a).")
++    words = [t.text for t in tokens]
++    assert "a" in words
++    assert ")" in words
++    assert "." in words
+diff --git a/spacy/tests/lang/ht/test_text.py b/spacy/tests/lang/ht/test_text.py
+new file mode 100644
+index 00000000000..f396e352af6
+--- /dev/null
++++ b/spacy/tests/lang/ht/test_text.py
+@@ -0,0 +1,79 @@
++import pytest
++
++from spacy.lang.ht.lex_attrs import like_num, norm_custom
++
++
++def test_ht_tokenizer_handles_long_text(ht_tokenizer):
++    text = """Onè ap fèt pou ansyen lidè Pati Travayè Britanik
++
++Moun atravè lemond ap voye onè pou ansyen lidè
++Pati Travayè a, John Smith, ki mouri pi bonè jodi a apre li te fè yon gwo kriz kadyak a laj 55 an.
++
++Nan Washington, Depatman Deta Etazini pibliye yon deklarasyon ki eksprime "regre lanmò twò bonè" avoka ak palmantè eskoze a.
++
++"Misye Smith, pandan tout karyè li ki te make ak distenksyon"""
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 84
++
++
++
++@pytest.mark.parametrize(
++    "text,length",
++    [
++        ("Map manje gato a pandan map gade televizyon lem lakay mwen.", 15),
++        ("M'ap vini, eske wap la avek lajan'm? Si oui, di'l non pou fre'w.", 22),
++        ("M ap teste sa (pou kounye a).", 10),
++    ],
++)
++def test_ht_tokenizer_handles_cnts(ht_tokenizer, text, length):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == length
++
++
++@pytest.mark.parametrize(
++    "text,match",
++    [
++        ("10", True),
++        ("1", True),
++        ("10,000", True),
++        ("10,00", True),
++        ("999.0", True),
++        ("en", True),
++        ("de", True),
++        ("milya", True),
++        ("dog", False),
++        (",", False),
++        ("1/2", True),
++    ],
++)
++def test_lex_attrs_like_number(ht_tokenizer, text, match):
++    tokens = ht_tokenizer(text)
++    assert len(tokens) == 1
++    assert tokens[0].like_num == match
++
++
++@pytest.mark.parametrize(
++    "word", ["ventyèm", "Milyonnyèm", "3yèm", "Santyèm", "25yèm", "52yèm"]
++)
++def test_ht_lex_attrs_like_number_for_ordinal(word):
++    assert like_num(word)
++
++
++@pytest.mark.parametrize("word", ["onz"])
++def test_ht_lex_attrs_capitals(word):
++    assert like_num(word)
++    assert like_num(word.upper())
++
++
++@pytest.mark.parametrize(
++    "word, expected", [
++        ("'m", "mwen"),
++        ("'n", "nou"),
++        ("'l", "li"),
++        ("'y", "yo"),
++        ("'w", "ou"),
++    ]
++)
++def test_ht_lex_attrs_norm_custom(word, expected):
++    assert norm_custom(word) == expected
++

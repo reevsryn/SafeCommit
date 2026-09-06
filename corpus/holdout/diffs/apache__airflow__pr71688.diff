@@ -1,0 +1,61 @@
+diff --git a/providers/common/ai/src/airflow/providers/common/ai/decorators/llm_schema_compare.py b/providers/common/ai/src/airflow/providers/common/ai/decorators/llm_schema_compare.py
+index 2e3a0e48ac94a..d159da63ca93d 100644
+--- a/providers/common/ai/src/airflow/providers/common/ai/decorators/llm_schema_compare.py
++++ b/providers/common/ai/src/airflow/providers/common/ai/decorators/llm_schema_compare.py
+@@ -28,7 +28,10 @@
+ from typing import TYPE_CHECKING, Any, ClassVar
+ 
+ from airflow.providers.common.ai.operators.llm_schema_compare import LLMSchemaCompareOperator
+-from airflow.providers.common.ai.utils.validation import validate_prompt
++from airflow.providers.common.ai.utils.validation import (
++    reject_sequence_with_unsupported_feature,
++    validate_prompt,
++)
+ from airflow.providers.common.compat.sdk import (
+     DecoratedOperator,
+     TaskDecorator,
+@@ -89,6 +92,12 @@ def execute(self, context: Context) -> Any:
+         self.prompt = self.python_callable(*self.op_args, **kwargs)
+ 
+         validate_prompt(self.prompt, decorator_name="@task.llm_schema_compare")
++        reject_sequence_with_unsupported_feature(
++            self.prompt,
++            decorator_name="@task.llm_schema_compare",
++            feature_name="require_approval",
++            feature_enabled=self.require_approval,
++        )
+ 
+         self.render_template_fields(context)
+         return LLMSchemaCompareOperator.execute(self, context)
+diff --git a/providers/common/ai/tests/unit/common/ai/decorators/test_llm_schema_compare.py b/providers/common/ai/tests/unit/common/ai/decorators/test_llm_schema_compare.py
+index 0664b6c52b18c..7074eb6ffdc27 100644
+--- a/providers/common/ai/tests/unit/common/ai/decorators/test_llm_schema_compare.py
++++ b/providers/common/ai/tests/unit/common/ai/decorators/test_llm_schema_compare.py
+@@ -122,6 +122,27 @@ def my_prompt_fn():
+         forwarded_prompt = mock_agent.run_sync.call_args[0][0]
+         assert forwarded_prompt == prompt
+ 
++    @patch("airflow.providers.common.ai.operators.llm.PydanticAIHook", autospec=True)
++    @patch.object(LLMSchemaCompareOperator, "_build_schema_context", return_value="mocked schema")
++    def test_sequence_prompt_with_require_approval_raises_before_run_sync(
++        self, mock_build_ctx, mock_hook_cls
++    ):
++        mock_agent = _make_mock_agent(_make_compare_result())
++        mock_hook_cls.get_hook.return_value.create_agent.return_value = mock_agent
++
++        op = _LLMSchemaCompareDecoratedOperator(
++            task_id="test",
++            python_callable=lambda: ["Compare these schemas:", ImageUrl(url="https://example.com/x.png")],
++            llm_conn_id="llm_conn",
++            db_conn_ids=["postgres_default", "snowflake_default"],
++            table_names=["test_table"],
++            require_approval=True,
++        )
++        with pytest.raises(TypeError, match=r"^@task\.llm_schema_compare: Sequence\[UserContent\]"):
++            op.execute(context={})
++
++        mock_agent.run_sync.assert_not_called()
++
+     @patch("airflow.providers.common.ai.operators.llm.PydanticAIHook", autospec=True)
+     @patch.object(LLMSchemaCompareOperator, "_build_schema_context", return_value="mocked schema")
+     def test_execute_merges_op_kwargs_into_callable(self, mock_build_ctx, mock_hook_cls):

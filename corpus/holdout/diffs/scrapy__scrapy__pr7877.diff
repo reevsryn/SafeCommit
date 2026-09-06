@@ -1,0 +1,382 @@
+diff --git a/docs/topics/security.rst b/docs/topics/security.rst
+index bb89aef319f..444800becd1 100644
+--- a/docs/topics/security.rst
++++ b/docs/topics/security.rst
+@@ -309,3 +309,31 @@ and a crawl that spans multiple domains can leak them to unintended hosts:
+   default :setting:`REFERRER_POLICY` already avoids sending the referrer from
+   HTTPS to HTTP, but you can tighten it further (for example, to
+   ``same-origin`` or ``no-referrer``) if needed.
++
++.. _security-job-state:
++
++Job state integrity
++===================
++
++When you use :setting:`JOBDIR` to :ref:`pause and resume crawls
++<topics-jobs>`, the default scheduler disk queues
++(:setting:`SCHEDULER_DISK_QUEUE`, :setting:`SCHEDULER_START_DISK_QUEUE`) write
++requests to a compact binary format that is only guaranteed to be complete
++after a clean shutdown. If the process is killed, runs out of disk space, or
++shares its job directory with a second process, those files can be left
++truncated, and resuming the crawl then either fails with an unrecoverable
++error or silently drops the pending requests.
++
++To store the scheduler queues in an SQLite database instead, where each
++request is written within its own transaction:
++
++.. code-block:: python
++
++    SCHEDULER_DISK_QUEUE = "scrapy.squeues.PickleLifoSQLiteQueue"
++    SCHEDULER_START_DISK_QUEUE = "scrapy.squeues.PickleFifoSQLiteQueue"
++
++* **Pro:** an interrupted write cannot corrupt the queues or discard pending
++  requests unnoticed.
++
++* **Con:** scheduling requests becomes slower, which can be noticeable in
++  crawls with a high request throughput.
+diff --git a/docs/topics/settings.rst b/docs/topics/settings.rst
+index 9a4a4f113a0..54371a38781 100644
+--- a/docs/topics/settings.rst
++++ b/docs/topics/settings.rst
+@@ -1945,10 +1945,21 @@ SCHEDULER_DISK_QUEUE
+ 
+ Default: ``'scrapy.squeues.PickleLifoDiskQueue'``
+ 
++.. versionadded:: VERSION
++   The ``SQLite`` queue types.
++
+ Type of disk queue that will be used by the scheduler. Other available types
+ are ``scrapy.squeues.PickleFifoDiskQueue``,
+ ``scrapy.squeues.MarshalFifoDiskQueue``,
+-``scrapy.squeues.MarshalLifoDiskQueue``.
++``scrapy.squeues.MarshalLifoDiskQueue``,
++``scrapy.squeues.PickleFifoSQLiteQueue``,
++``scrapy.squeues.PickleLifoSQLiteQueue``,
++``scrapy.squeues.MarshalFifoSQLiteQueue`` and
++``scrapy.squeues.MarshalLifoSQLiteQueue``.
++
++The ``SQLite`` types store requests in an SQLite database, which makes writes
++slower but keeps the queue usable after an unclean shutdown. See
++:ref:`security-job-state`.
+ 
+ 
+ .. setting:: SCHEDULER_MEMORY_QUEUE
+diff --git a/pyproject.toml b/pyproject.toml
+index 513f0f27c6a..0e9bc3a44ff 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -302,21 +302,30 @@ filterwarnings = [
+     # Twisted leaves the listening socket open after a failed bind
+     # (CannotListenError): https://github.com/twisted/twisted/issues/6108
+     # The asyncio reactor likewise leaves client sockets and transports open on
+-    # teardown. These surface as unraisable exceptions during finalization; the
+-    # message wording varies across Python implementations and versions
+-    # (PyPy leaves the prefix empty), so match on the object repr.
++    # teardown. These surface as unraisable exceptions during finalization when
++    # collected outside any warnings-catching block, or as a plain
++    # ResourceWarning, re-emitted by pytest.warns() with the outer filters
++    # applied, when GC instead runs while a pytest.warns() block for an
++    # unrelated warning is active, failing that unrelated test. The message
++    # wording varies across Python implementations and versions (PyPy leaves
++    # the prefix empty), so match on the object repr.
+     "ignore:.*<socket\\.socket fd=:pytest.PytestUnraisableExceptionWarning",
++    "ignore:unclosed <socket\\.socket fd=:ResourceWarning",
+     "ignore:.*<function (_SelectorTransport|_ProactorBasePipeTransport|_ProactorSocketTransport|BaseEventLoop)\\.__del__:pytest.PytestUnraisableExceptionWarning",
++    "ignore:unclosed transport <:ResourceWarning",
+     # PyDispatcher iterates its connection registry while a weakref callback
+     # may mutate it, which raises RuntimeError on PyPy, where several weakrefs
+     # can die within a single collection.
+     "ignore:.*<function connect\\.<locals>\\.remove:pytest.PytestUnraisableExceptionWarning",
+     # queuelib's test helpers (reused by tests/test_squeues.py) leave queue
+-    # files open; the resulting warning surfaces at an arbitrary GC point, as an
+-    # unraisable exception or as a plain ResourceWarning, which pytest.warns()
+-    # re-emits when it does not match, failing an unrelated test.
++    # files and SQLite connections open; see the comment above about the two
++    # forms this can surface as. sqlite3's warning message has no path to
++    # match on, so it cannot be scoped to queuelib's temporary directories the
++    # way the file one is.
+     "ignore:.*<_io\\.\\w+ name=.*queuelib-tests-:pytest.PytestUnraisableExceptionWarning",
+     "ignore:unclosed file <_io\\.\\w+ name=.*queuelib-tests-:ResourceWarning",
++    "ignore:.*<sqlite3\\.Connection object at:pytest.PytestUnraisableExceptionWarning",
++    "ignore:unclosed database in <sqlite3\\.Connection object at:ResourceWarning",
+     # itemadapter imports pydantic.v1, which warns on Python 3.14 and higher.
+     "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
+     # pyftpdlib imports asynchat, removed in Python 3.12, on lower versions.
+diff --git a/scrapy/squeues.py b/scrapy/squeues.py
+index e06e38e2319..ed3287d1fe9 100644
+--- a/scrapy/squeues.py
++++ b/scrapy/squeues.py
+@@ -166,11 +166,39 @@ def _pickle_serialize(obj: Any) -> bytes:
+     marshal.dumps,
+     marshal.loads,
+ )
++_PickleFifoSerializationSQLiteQueue = _serializable_queue(
++    _with_mkdir(queue.FifoSQLiteQueue),  # type: ignore[arg-type]
++    _pickle_serialize,
++    pickle.loads,
++)
++_PickleLifoSerializationSQLiteQueue = _serializable_queue(
++    _with_mkdir(queue.LifoSQLiteQueue),  # type: ignore[arg-type]
++    _pickle_serialize,
++    pickle.loads,
++)
++_MarshalFifoSerializationSQLiteQueue = _serializable_queue(
++    _with_mkdir(queue.FifoSQLiteQueue),  # type: ignore[arg-type]
++    marshal.dumps,
++    marshal.loads,
++)
++_MarshalLifoSerializationSQLiteQueue = _serializable_queue(
++    _with_mkdir(queue.LifoSQLiteQueue),  # type: ignore[arg-type]
++    marshal.dumps,
++    marshal.loads,
++)
+ 
+ # public queue classes
+ PickleFifoDiskQueue = _scrapy_serialization_queue(_PickleFifoSerializationDiskQueue)
+ PickleLifoDiskQueue = _scrapy_serialization_queue(_PickleLifoSerializationDiskQueue)
+ MarshalFifoDiskQueue = _scrapy_serialization_queue(_MarshalFifoSerializationDiskQueue)
+ MarshalLifoDiskQueue = _scrapy_serialization_queue(_MarshalLifoSerializationDiskQueue)
++PickleFifoSQLiteQueue = _scrapy_serialization_queue(_PickleFifoSerializationSQLiteQueue)
++PickleLifoSQLiteQueue = _scrapy_serialization_queue(_PickleLifoSerializationSQLiteQueue)
++MarshalFifoSQLiteQueue = _scrapy_serialization_queue(
++    _MarshalFifoSerializationSQLiteQueue
++)
++MarshalLifoSQLiteQueue = _scrapy_serialization_queue(
++    _MarshalLifoSerializationSQLiteQueue
++)
+ FifoMemoryQueue = _scrapy_non_serialization_queue(queue.FifoMemoryQueue)  # type: ignore[arg-type]
+ LifoMemoryQueue = _scrapy_non_serialization_queue(queue.LifoMemoryQueue)  # type: ignore[arg-type]
+diff --git a/tests/test_squeues.py b/tests/test_squeues.py
+index 067343b67fa..c25321ff326 100644
+--- a/tests/test_squeues.py
++++ b/tests/test_squeues.py
+@@ -11,18 +11,26 @@
+ from scrapy.selector import Selector
+ from scrapy.squeues import (
+     _MarshalFifoSerializationDiskQueue,
++    _MarshalFifoSerializationSQLiteQueue,
+     _MarshalLifoSerializationDiskQueue,
++    _MarshalLifoSerializationSQLiteQueue,
+     _PickleFifoSerializationDiskQueue,
++    _PickleFifoSerializationSQLiteQueue,
+     _PickleLifoSerializationDiskQueue,
++    _PickleLifoSerializationSQLiteQueue,
+     _scrapy_non_serialization_queue,
+     _serializable_queue,
+ )
+ 
+-# The disk queue classes are built at run time, so they are untyped.
++# The disk and SQLite queue classes are built at run time, so they are untyped.
+ _MarshalFifoQueue: Any = _MarshalFifoSerializationDiskQueue
+ _MarshalLifoQueue: Any = _MarshalLifoSerializationDiskQueue
+ _PickleFifoQueue: Any = _PickleFifoSerializationDiskQueue
+ _PickleLifoQueue: Any = _PickleLifoSerializationDiskQueue
++_MarshalFifoSQLiteQueue: Any = _MarshalFifoSerializationSQLiteQueue
++_MarshalLifoSQLiteQueue: Any = _MarshalLifoSerializationSQLiteQueue
++_PickleFifoSQLiteQueue: Any = _PickleFifoSerializationSQLiteQueue
++_PickleLifoSQLiteQueue: Any = _PickleLifoSerializationSQLiteQueue
+ 
+ 
+ class MyItem(Item):
+@@ -76,7 +84,7 @@ def nonserializable_object_test(self):
+     q.close()
+ 
+ 
+-class FifoDiskQueueTestMixin:
++class FifoQueueTestMixin:
+     def queue(self) -> Any:
+         raise NotImplementedError
+ 
+@@ -93,7 +101,7 @@ def test_serialize(self):
+     test_nonserializable_object = nonserializable_object_test
+ 
+ 
+-class MarshalFifoDiskQueueTest(t.FifoDiskQueueTest, FifoDiskQueueTestMixin):
++class MarshalFifoDiskQueueTest(t.FifoDiskQueueTest, FifoQueueTestMixin):
+     chunksize = 100000
+ 
+     def queue(self) -> Any:
+@@ -116,7 +124,7 @@ class ChunkSize4MarshalFifoDiskQueueTest(MarshalFifoDiskQueueTest):
+     chunksize = 4
+ 
+ 
+-class PickleFifoDiskQueueTest(t.FifoDiskQueueTest, FifoDiskQueueTestMixin):
++class PickleFifoDiskQueueTest(t.FifoDiskQueueTest, FifoQueueTestMixin):
+     chunksize = 100000
+ 
+     def queue(self) -> Any:
+@@ -188,7 +196,7 @@ class ChunkSize4PickleFifoDiskQueueTest(PickleFifoDiskQueueTest):
+     chunksize = 4
+ 
+ 
+-class LifoDiskQueueTestMixin:
++class LifoQueueTestMixin:
+     def queue(self) -> Any:
+         raise NotImplementedError
+ 
+@@ -205,12 +213,12 @@ def test_serialize(self):
+     test_nonserializable_object = nonserializable_object_test
+ 
+ 
+-class MarshalLifoDiskQueueTest(t.LifoDiskQueueTest, LifoDiskQueueTestMixin):
++class MarshalLifoDiskQueueTest(t.LifoDiskQueueTest, LifoQueueTestMixin):
+     def queue(self) -> Any:
+         return _MarshalLifoQueue(self.qpath)
+ 
+ 
+-class PickleLifoDiskQueueTest(t.LifoDiskQueueTest, LifoDiskQueueTestMixin):
++class PickleLifoDiskQueueTest(t.LifoDiskQueueTest, LifoQueueTestMixin):
+     def queue(self) -> Any:
+         return _PickleLifoQueue(self.qpath)
+ 
+@@ -243,3 +251,23 @@ def test_serialize_request_recursive(self):
+         assert r.url == r2.url
+         assert r2.meta["request"] is r2
+         q.close()
++
++
++class MarshalFifoSQLiteQueueTest(t.FifoSQLiteQueueTest, FifoQueueTestMixin):
++    def queue(self) -> Any:
++        return _MarshalFifoSQLiteQueue(self.qpath)
++
++
++class PickleFifoSQLiteQueueTest(t.FifoSQLiteQueueTest, FifoQueueTestMixin):
++    def queue(self) -> Any:
++        return _PickleFifoSQLiteQueue(self.qpath)
++
++
++class MarshalLifoSQLiteQueueTest(t.LifoSQLiteQueueTest, LifoQueueTestMixin):
++    def queue(self) -> Any:
++        return _MarshalLifoSQLiteQueue(self.qpath)
++
++
++class PickleLifoSQLiteQueueTest(t.LifoSQLiteQueueTest, LifoQueueTestMixin):
++    def queue(self) -> Any:
++        return _PickleLifoSQLiteQueue(self.qpath)
+diff --git a/tests/test_squeues_request.py b/tests/test_squeues_request.py
+index 105f3acef62..d944ef09769 100644
+--- a/tests/test_squeues_request.py
++++ b/tests/test_squeues_request.py
+@@ -5,7 +5,7 @@
+ from __future__ import annotations
+ 
+ from abc import ABC, abstractmethod
+-from typing import TYPE_CHECKING
++from typing import TYPE_CHECKING, Any
+ 
+ import pytest
+ 
+@@ -15,14 +15,20 @@
+     FifoMemoryQueue,
+     LifoMemoryQueue,
+     MarshalFifoDiskQueue,
++    MarshalFifoSQLiteQueue,
+     MarshalLifoDiskQueue,
++    MarshalLifoSQLiteQueue,
+     PickleFifoDiskQueue,
++    PickleFifoSQLiteQueue,
+     PickleLifoDiskQueue,
++    PickleLifoSQLiteQueue,
+ )
+ from scrapy.utils.misc import build_from_crawler
+ from scrapy.utils.test import get_crawler
+ 
+ if TYPE_CHECKING:
++    from pathlib import Path
++
+     import queuelib
+ 
+     from scrapy.crawler import Crawler
+@@ -136,6 +142,92 @@ def q(self, crawler, tmp_path):
+             queue.close()
+ 
+ 
++class TestPickleFifoSQLiteQueueRequest(TestRequestQueueBase):
++    is_fifo = True
++
++    @pytest.fixture
++    def q(self, crawler, tmp_path):
++        queue = build_from_crawler(
++            PickleFifoSQLiteQueue, crawler, key=str(tmp_path / "pickle" / "fifo")
++        )
++        try:
++            yield queue
++        finally:
++            queue.close()
++
++
++class TestPickleLifoSQLiteQueueRequest(TestRequestQueueBase):
++    is_fifo = False
++
++    @pytest.fixture
++    def q(self, crawler, tmp_path):
++        queue = build_from_crawler(
++            PickleLifoSQLiteQueue, crawler, key=str(tmp_path / "pickle" / "lifo")
++        )
++        try:
++            yield queue
++        finally:
++            queue.close()
++
++
++class TestMarshalFifoSQLiteQueueRequest(TestRequestQueueBase):
++    is_fifo = True
++
++    @pytest.fixture
++    def q(self, crawler, tmp_path):
++        queue = build_from_crawler(
++            MarshalFifoSQLiteQueue, crawler, key=str(tmp_path / "marshal" / "fifo")
++        )
++        try:
++            yield queue
++        finally:
++            queue.close()
++
++
++class TestMarshalLifoSQLiteQueueRequest(TestRequestQueueBase):
++    is_fifo = False
++
++    @pytest.fixture
++    def q(self, crawler, tmp_path):
++        queue = build_from_crawler(
++            MarshalLifoSQLiteQueue, crawler, key=str(tmp_path / "marshal" / "lifo")
++        )
++        try:
++            yield queue
++        finally:
++            queue.close()
++
++
++@pytest.mark.parametrize(
++    "queue_cls",
++    [
++        PickleFifoSQLiteQueue,
++        PickleLifoSQLiteQueue,
++        MarshalFifoSQLiteQueue,
++        MarshalLifoSQLiteQueue,
++    ],
++)
++def test_sqlite_queue_survives_unclean_shutdown(
++    crawler: Crawler, tmp_path: Path, queue_cls: Any
++) -> None:
++    key = str(tmp_path / "queue")
++    queue = queue_cls.from_crawler(crawler=crawler, key=key)
++    queue.push(Request("https://toscrape.com"))
++    # No close(), as if the process had been killed. The connection is closed
++    # directly instead, since on Windows the file cannot be removed later while
++    # it is still open.
++    queue._db.close()
++
++    queue = queue_cls.from_crawler(crawler=crawler, key=key)
++    try:
++        assert len(queue) == 1
++        request = queue.pop()
++        assert request is not None
++        assert request.url == "https://toscrape.com"
++    finally:
++        queue.close()
++
++
+ class TestFifoMemoryQueueRequest(TestRequestQueueBase):
+     is_fifo = True
+ 

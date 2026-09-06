@@ -1,0 +1,610 @@
+diff --git a/docs/releases.rst b/docs/releases.rst
+index da95c9917..198fa3d11 100644
+--- a/docs/releases.rst
++++ b/docs/releases.rst
+@@ -4,6 +4,7 @@ Release notes
+ .. toctree::
+    :maxdepth: 2
+ 
++   releases/v6.5.6
+    releases/v6.5.5
+    releases/v6.5.4
+    releases/v6.5.3
+diff --git a/docs/releases/v6.5.6.rst b/docs/releases/v6.5.6.rst
+new file mode 100644
+index 000000000..ac100d38f
+--- /dev/null
++++ b/docs/releases/v6.5.6.rst
+@@ -0,0 +1,30 @@
++What's new in Tornado 6.5.6
++===========================
++
++May 27, 2026
++------------
++
++Security fixes
++~~~~~~~~~~~~~~
++
++- ``SimpleAsyncHTTPClient`` now strips the ``Authorization`` and ``Cookie`` headers from the request
++  when following a redirect to a different origin. This matches the default behavior of
++  ``CurlAsyncHTTPClient``. Applications that need different behavior here can set
++  ``follow_redirects=False`` and handle redirects manually. Thanks to [Yannick
++  Wang](https://github.com/noobone123) for being first to report this issue, as well as additional
++  reporters [Kai Aizen](https://github.com/SnailSploit), [HunSec](https://github.com/0xHunSec), and
++  [Thai Son Dinh](https://github.com/sondt99).
++- ``SimpleAsyncHTTPClient`` now enforces ``max_body_size`` on the decompressed size of the response,
++  rather than the compressed size. This prevents a denial-of-service attack via a very large
++  compressed response. Thanks to [Yuichiro Kedashiro](https://github.com/yuui25) for reporting this
++  issue.
++- Fixed a bug in the C extension that could have read up to three bytes past the end of an input
++  array. Thanks to [Thai Son Dinh](https://github.com/sondt99) for reporting this issue.
++- ``OpenIDMixin`` has improved parsing for the ``check_authentication`` response. Thanks to
++  [Yannick Wang](https://github.com/noobone123) for reporting this issue.
++
++Bug fixes
++~~~~~~~~~
++
++- ``CurlAsyncHTTPClient`` has been updated to use non-deprecated APIs, avoiding deprecation
++  warnings with recent versions of ``pycurl``.
+diff --git a/tornado/__init__.py b/tornado/__init__.py
+index b5911fe9b..10bd27780 100644
+--- a/tornado/__init__.py
++++ b/tornado/__init__.py
+@@ -22,8 +22,8 @@
+ # is zero for an official release, positive for a development branch,
+ # or negative for a release candidate or beta (after the base version
+ # number has been incremented)
+-version = "6.5.5"
+-version_info = (6, 5, 5, 0)
++version = "6.5.6"
++version_info = (6, 5, 6, 0)
+ 
+ import importlib
+ import typing
+diff --git a/tornado/auth.py b/tornado/auth.py
+index 64428c59e..b1f35f757 100644
+--- a/tornado/auth.py
++++ b/tornado/auth.py
+@@ -73,6 +73,7 @@ async def get(self):
+ import binascii
+ import hashlib
+ import hmac
++import re
+ import time
+ import urllib.parse
+ import uuid
+@@ -217,7 +218,7 @@ def _on_authentication_verified(
+         self, response: httpclient.HTTPResponse
+     ) -> Dict[str, Any]:
+         handler = cast(RequestHandler, self)
+-        if b"is_valid:true" not in response.body:
++        if re.search(rb"(?m)^is_valid:true$", response.body) is None:
+             raise AuthError("Invalid OpenID response: %r" % response.body)
+ 
+         # Make sure we got back at least an email from attribute exchange
+diff --git a/tornado/curl_httpclient.py b/tornado/curl_httpclient.py
+index dde700326..7ed6ceeec 100644
+--- a/tornado/curl_httpclient.py
++++ b/tornado/curl_httpclient.py
+@@ -65,15 +65,6 @@ def initialize(  # type: ignore
+         self._fds = {}  # type: Dict[int, int]
+         self._timeout = None  # type: Optional[object]
+ 
+-        # libcurl has bugs that sometimes cause it to not report all
+-        # relevant file descriptors and timeouts to TIMERFUNCTION/
+-        # SOCKETFUNCTION.  Mitigate the effects of such bugs by
+-        # forcing a periodic scan of all active requests.
+-        self._force_timeout_callback = ioloop.PeriodicCallback(
+-            self._handle_force_timeout, 1000
+-        )
+-        self._force_timeout_callback.start()
+-
+         # Work around a bug in libcurl 7.29.0: Some fields in the curl
+         # multi object are initialized lazily, and its destructor will
+         # segfault if it is destroyed without having been used.  Add
+@@ -84,7 +75,6 @@ def initialize(  # type: ignore
+         self._multi.remove_handle(dummy_curl_handle)
+ 
+     def close(self) -> None:
+-        self._force_timeout_callback.stop()
+         if self._timeout is not None:
+             self.io_loop.remove_timeout(self._timeout)
+         for curl in self._curls:
+@@ -95,7 +85,6 @@ def close(self) -> None:
+         # Set below properties to None to reduce the reference count of current
+         # instance, because those properties hold some methods of current
+         # instance that will case circular reference.
+-        self._force_timeout_callback = None  # type: ignore
+         self._multi = None
+ 
+     def fetch_impl(
+@@ -189,19 +178,6 @@ def _handle_timeout(self) -> None:
+         if new_timeout >= 0:
+             self._set_timeout(new_timeout)
+ 
+-    def _handle_force_timeout(self) -> None:
+-        """Called by IOLoop periodically to ask libcurl to process any
+-        events it may have forgotten about.
+-        """
+-        while True:
+-            try:
+-                ret, num_handles = self._multi.socket_all()
+-            except pycurl.error as e:
+-                ret = e.args[0]
+-            if ret != pycurl.E_CALL_MULTI_PERFORM:
+-                break
+-        self._finish_pending_requests()
+-
+     def _finish_pending_requests(self) -> None:
+         """Process any requests that were completed by the last
+         call to multi.socket_action.
+@@ -484,12 +460,12 @@ def write_function(b: Union[bytes, bytearray]) -> int:
+                 raise ValueError("Body must be None for GET request")
+             request_buffer = BytesIO(utf8(request.body or ""))
+ 
+-            def ioctl(cmd: int) -> None:
+-                if cmd == curl.IOCMD_RESTARTREAD:  # type: ignore
+-                    request_buffer.seek(0)
++            def seek(offset: int, origin: int) -> int:
++                request_buffer.seek(offset, origin)
++                return pycurl.SEEKFUNC_OK
+ 
+             curl.setopt(pycurl.READFUNCTION, request_buffer.read)
+-            curl.setopt(pycurl.IOCTLFUNCTION, ioctl)
++            curl.setopt(pycurl.SEEKFUNCTION, seek)
+             if request.method == "POST":
+                 curl.setopt(pycurl.POSTFIELDSIZE, len(request.body or ""))
+             else:
+diff --git a/tornado/http1connection.py b/tornado/http1connection.py
+index 5b0dd1b8d..3eb1dfc20 100644
+--- a/tornado/http1connection.py
++++ b/tornado/http1connection.py
+@@ -182,7 +182,9 @@ def read_response(self, delegate: httputil.HTTPMessageDelegate) -> Awaitable[boo
+         been read. The result is true if the stream is still open.
+         """
+         if self.params.decompress:
+-            delegate = _GzipMessageDelegate(delegate, self.params.chunk_size)
++            delegate = _GzipMessageDelegate(
++                delegate, self.params.chunk_size, self._max_body_size
++            )
+         return self._read_message(delegate)
+ 
+     async def _read_message(self, delegate: httputil.HTTPMessageDelegate) -> bool:
+@@ -705,9 +707,16 @@ async def _read_body_until_close(
+ class _GzipMessageDelegate(httputil.HTTPMessageDelegate):
+     """Wraps an `HTTPMessageDelegate` to decode ``Content-Encoding: gzip``."""
+ 
+-    def __init__(self, delegate: httputil.HTTPMessageDelegate, chunk_size: int) -> None:
++    def __init__(
++        self,
++        delegate: httputil.HTTPMessageDelegate,
++        chunk_size: int,
++        max_body_size: int,
++    ) -> None:
+         self._delegate = delegate
+         self._chunk_size = chunk_size
++        self._max_body_size = max_body_size
++        self._decompressed_body_size = 0
+         self._decompressor = None  # type: Optional[GzipDecompressor]
+ 
+     def headers_received(
+@@ -732,6 +741,9 @@ async def data_received(self, chunk: bytes) -> None:
+                     compressed_data, self._chunk_size
+                 )
+                 if decompressed:
++                    self._decompressed_body_size += len(decompressed)
++                    if self._decompressed_body_size > self._max_body_size:
++                        raise httputil.HTTPInputError("decompressed body too large")
+                     ret = self._delegate.data_received(decompressed)
+                     if ret is not None:
+                         await ret
+diff --git a/tornado/simple_httpclient.py b/tornado/simple_httpclient.py
+index cc1637613..9d693a441 100644
+--- a/tornado/simple_httpclient.py
++++ b/tornado/simple_httpclient.py
+@@ -631,6 +631,42 @@ def finish(self) -> None:
+             new_request.url = urllib.parse.urljoin(
+                 self.request.url, self.headers["Location"]
+             )
++            new_request.headers = self.request.headers.copy()
++            parsed_orig_url = urllib.parse.urlsplit(original_request.url)
++            parsed_new_url = urllib.parse.urlsplit(new_request.url)
++            if (
++                parsed_orig_url.scheme != parsed_new_url.scheme
++                or parsed_orig_url.netloc != parsed_new_url.netloc
++            ):
++                # Cross-origin redirect: strip auth headers.
++                # Note that while there is no formal specification of headers that should be
++                # stripped here, libcurl strips the Authorization and Cookie headers, so we
++                # do the same.
++                # Reference:
++                # https://github.com/curl/curl/blob/01d8191b25a05e8fa91553a6c0d48acb99907d26/lib/http.c#L1827-L1828
++                #
++                # Note that checking for cross-origin redirects is a crude heuristic. It is both
++                # too weak (e.g. cookies that have a path attribute may need to be stripped even on
++                # same-origin redirects) and too strong (e.g. cookies may be kept on cross-host
++                # redirects within the same domain). However, we cannot know the full details of
++                # the cookie policy at this layer, so we use the same heuristic as libcurl.
++                # Applications that need more control over behavior on redirects can set
++                # follow_redirects=False and handle 3xx responses themselves.
++                new_request.auth_username = None
++                new_request.auth_password = None
++                if "@" in parsed_new_url.netloc:
++                    if parsed_new_url.port is not None:
++                        new_netloc = f"{parsed_new_url.hostname}:{parsed_new_url.port}"
++                    else:
++                        assert parsed_new_url.hostname is not None
++                        new_netloc = parsed_new_url.hostname
++                    parsed_new_url = parsed_new_url._replace(netloc=new_netloc)
++                new_request.url = urllib.parse.urlunsplit(parsed_new_url)
++                for h in ["Authorization", "Cookie"]:
++                    try:
++                        del new_request.headers[h]
++                    except KeyError:
++                        pass
+             assert self.request.max_redirects is not None
+             new_request.max_redirects = self.request.max_redirects - 1
+             del new_request.headers["Host"]
+@@ -655,7 +691,7 @@ def finish(self) -> None:
+                     "Transfer-Encoding",
+                 ]:
+                     try:
+-                        del self.request.headers[h]
++                        del new_request.headers[h]
+                     except KeyError:
+                         pass
+             new_request.original_request = original_request  # type: ignore
+diff --git a/tornado/speedups.c b/tornado/speedups.c
+index 992c29c15..2c791c646 100644
+--- a/tornado/speedups.c
++++ b/tornado/speedups.c
+@@ -2,63 +2,76 @@
+ #include <Python.h>
+ #include <stdint.h>
+ 
+-static PyObject* websocket_mask(PyObject* self, PyObject* args) {
+-    const char* mask;
++static PyObject *websocket_mask(PyObject *self, PyObject *args)
++{
++    const char *mask;
+     Py_ssize_t mask_len;
+     uint32_t uint32_mask;
+     uint64_t uint64_mask;
+-    const char* data;
++    const char *data;
+     Py_ssize_t data_len;
+     Py_ssize_t i;
+-    PyObject* result;
+-    char* buf;
++    PyObject *result;
++    char *buf;
+ 
+-    if (!PyArg_ParseTuple(args, "s#s#", &mask, &mask_len, &data, &data_len)) {
++    if (!PyArg_ParseTuple(args, "s#s#", &mask, &mask_len, &data, &data_len))
++    {
+         return NULL;
+     }
+ 
+-    uint32_mask = ((uint32_t*)mask)[0];
++    if (mask_len != 4)
++    {
++        PyErr_SetString(PyExc_ValueError, "mask must be 4 bytes");
++        return NULL;
++    }
++
++    uint32_mask = ((uint32_t *)mask)[0];
+ 
+     result = PyBytes_FromStringAndSize(NULL, data_len);
+-    if (!result) {
++    if (!result)
++    {
+         return NULL;
+     }
+     buf = PyBytes_AsString(result);
+ 
+-    if (sizeof(size_t) >= 8) {
++    if (sizeof(size_t) >= 8)
++    {
+         uint64_mask = uint32_mask;
+         uint64_mask = (uint64_mask << 32) | uint32_mask;
+ 
+-        while (data_len >= 8) {
+-            ((uint64_t*)buf)[0] = ((uint64_t*)data)[0] ^ uint64_mask;
++        while (data_len >= 8)
++        {
++            ((uint64_t *)buf)[0] = ((uint64_t *)data)[0] ^ uint64_mask;
+             data += 8;
+             buf += 8;
+             data_len -= 8;
+         }
+     }
+ 
+-    while (data_len >= 4) {
+-        ((uint32_t*)buf)[0] = ((uint32_t*)data)[0] ^ uint32_mask;
++    while (data_len >= 4)
++    {
++        ((uint32_t *)buf)[0] = ((uint32_t *)data)[0] ^ uint32_mask;
+         data += 4;
+         buf += 4;
+         data_len -= 4;
+     }
+ 
+-    for (i = 0; i < data_len; i++) {
++    for (i = 0; i < data_len; i++)
++    {
+         buf[i] = data[i] ^ mask[i];
+     }
+ 
+     return result;
+ }
+ 
+-static int speedups_exec(PyObject *module) {
++static int speedups_exec(PyObject *module)
++{
+     return 0;
+ }
+ 
+ static PyMethodDef methods[] = {
+-    {"websocket_mask",  websocket_mask, METH_VARARGS, ""},
+-    {NULL, NULL, 0, NULL}
+-};
++    {"websocket_mask", websocket_mask, METH_VARARGS, ""},
++    {NULL, NULL, 0, NULL}};
+ 
+ static PyModuleDef_Slot slots[] = {
+     {Py_mod_exec, speedups_exec},
+@@ -68,19 +81,19 @@ static PyModuleDef_Slot slots[] = {
+ #if (!defined(Py_LIMITED_API) && PY_VERSION_HEX >= 0x030d0000) || Py_LIMITED_API >= 0x030d0000
+     {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+ #endif
+-    {0, NULL}
+-};
++    {0, NULL}};
+ 
+ static struct PyModuleDef speedupsmodule = {
+-   PyModuleDef_HEAD_INIT,
+-   "speedups",
+-   NULL,
+-   0,
+-   methods,
+-   slots,
++    PyModuleDef_HEAD_INIT,
++    "speedups",
++    NULL,
++    0,
++    methods,
++    slots,
+ };
+ 
+ PyMODINIT_FUNC
+-PyInit_speedups(void) {
++PyInit_speedups(void)
++{
+     return PyModuleDef_Init(&speedupsmodule);
+ }
+diff --git a/tornado/test/auth_test.py b/tornado/test/auth_test.py
+index 834f04ea3..6dc597211 100644
+--- a/tornado/test/auth_test.py
++++ b/tornado/test/auth_test.py
+@@ -46,10 +46,20 @@ def get(self):
+ 
+ 
+ class OpenIdServerAuthenticateHandler(RequestHandler):
++    flip_flop = False
++
+     def post(self):
+         if self.get_argument("openid.mode") != "check_authentication":
+             raise Exception("incorrect openid.mode %r")
+-        self.write("is_valid:true")
++        # Cover both orderings of the response parameters if we call this handler twice.
++        # (the flip_flop side effect is simpler than plumbing parameters around).
++        # We check both orderings to catch mistaken uses of re.match instead of re.search
++        # or incorrect matching of the newline characters.
++        if type(self).flip_flop:
++            self.write("is_valid:true\nns:http://specs.openid.net/auth/2.0\n")
++        else:
++            self.write("ns:http://specs.openid.net/auth/2.0\nis_valid:true\n")
++        type(self).flip_flop = not type(self).flip_flop
+ 
+ 
+ class OAuth1ClientLoginHandler(RequestHandler, OAuthMixin):
+@@ -344,15 +354,17 @@ def test_openid_redirect(self):
+         self.assertIn("/openid/server/authenticate?", response.headers["Location"])
+ 
+     def test_openid_get_user(self):
+-        response = self.fetch(
+-            "/openid/client/login?openid.mode=blah"
+-            "&openid.ns.ax=http://openid.net/srv/ax/1.0"
+-            "&openid.ax.type.email=http://axschema.org/contact/email"
+-            "&openid.ax.value.email=foo@example.com"
+-        )
+-        response.rethrow()
+-        parsed = json_decode(response.body)
+-        self.assertEqual(parsed["email"], "foo@example.com")
++        for i in range(2):
++            with self.subTest(i=i):
++                response = self.fetch(
++                    "/openid/client/login?openid.mode=blah"
++                    "&openid.ns.ax=http://openid.net/srv/ax/1.0"
++                    "&openid.ax.type.email=http://axschema.org/contact/email"
++                    "&openid.ax.value.email=foo@example.com"
++                )
++                response.rethrow()
++                parsed = json_decode(response.body)
++                self.assertEqual(parsed["email"], "foo@example.com")
+ 
+     def test_oauth10_redirect(self):
+         response = self.fetch("/oauth10/client/login", follow_redirects=False)
+diff --git a/tornado/test/httpclient_test.py b/tornado/test/httpclient_test.py
+index 77c0d6eb9..f009f190e 100644
+--- a/tornado/test/httpclient_test.py
++++ b/tornado/test/httpclient_test.py
+@@ -13,7 +13,7 @@
+ import unicodedata
+ import unittest
+ 
+-from tornado.escape import utf8, native_str, to_unicode
++from tornado.escape import utf8, native_str, to_unicode, json_encode, json_decode
+ from tornado import gen
+ from tornado.httpclient import (
+     HTTPRequest,
+@@ -156,6 +156,11 @@ def get(self):
+         self.finish(self.request.headers["Foo"].encode("ISO8859-1"))
+ 
+ 
++class EchoHeadersHandler(RequestHandler):
++    def get(self):
++        self.write(json_encode(dict(self.request.headers.get_all())))
++
++
+ # These tests end up getting run redundantly: once here with the default
+ # HTTPClient implementation, and then again in each implementation's own
+ # test suite.
+@@ -181,10 +186,23 @@ def get_app(self):
+                 url("/set_header", SetHeaderHandler),
+                 url("/invalid_gzip", InvalidGzipHandler),
+                 url("/header-encoding", HeaderEncodingHandler),
++                url("/echo_headers", EchoHeadersHandler),
+             ],
+             gzip=True,
+         )
+ 
++    def setUp(self):
++        super().setUp()
++
++        # Add a second port (serving the same app) to the HTTP server, so we can test the effects
++        # of redirects that span different origins.
++        sock, port = bind_unused_port()
++        self.http_server.add_socket(sock)
++        self.__port2 = port
++
++    def get_url2(self, path: str) -> str:
++        return f"{self.get_protocol()}://127.0.0.1:{self.__port2}{path}"
++
+     def test_patch_receives_payload(self):
+         body = b"some patch data"
+         response = self.fetch("/patch", method="PATCH", body=body)
+@@ -622,7 +640,10 @@ def test_bind_source_ip(self):
+         with self.assertRaises((ValueError, HTTPError)) as context:  # type: ignore
+             request = HTTPRequest(url, network_interface="not-interface-or-ip")
+             yield self.http_client.fetch(request)
+-        self.assertIn("not-interface-or-ip", str(context.exception))
++        self.assertTrue(
++            "not-interface-or-ip" in str(context.exception)
++            or "Failed binding local connection end" in str(context.exception)
++        )
+ 
+     def test_all_methods(self):
+         for method in ["GET", "DELETE", "OPTIONS"]:
+@@ -759,6 +780,47 @@ def test_header_crlf(self):
+                 with self.assertRaises(ValueError):
+                     self.fetch("/hello", headers={header: "foo"})
+ 
++    def test_strip_headers_on_redirect(self):
++        # Ensure that headers that should be stripped on cross-origin redirects
++        # are stripped, even if the redirect is to a different port on localhost.
++        test_cases: list[tuple[str, dict, str]] = [
++            ("manual auth header", dict(headers={"Authorization": "secret"}), ""),
++            ("credentials in URL", dict(), "me:secret"),
++            ("auth parameters", dict(auth_username="me", auth_password="secret"), ""),
++            ("manual cookie header", dict(headers={"Cookie": "secret"}), ""),
++        ]
++        for name, kwargs, url_creds in test_cases:
++            with self.subTest(name=name, origin="different"):
++                url = self.get_url(
++                    "/redirect?url=%s&status=302" % self.get_url2("/echo_headers")
++                )
++                if url_creds:
++                    url = url.replace("http://", "http://%s@" % url_creds)
++                response = self.fetch(**dict(path=url) | kwargs)
++                response.rethrow()
++                echoed_headers = json_decode(response.body)
++                # Confirm that non-auth headers are getting through
++                self.assertIn("User-Agent", echoed_headers)
++                # Auth headers are stripped, however they were set.
++                self.assertNotIn("Authorization", echoed_headers)
++                self.assertNotIn("Cookie", echoed_headers)
++            with self.subTest(name=name, origin="same"):
++                url = self.get_url(
++                    "/redirect?url=%s&status=302" % self.get_url("/echo_headers")
++                )
++                if url_creds:
++                    url = url.replace("http://", "http://%s@" % url_creds)
++                response = self.fetch(**dict(path=url) | kwargs)
++                response.rethrow()
++                echoed_headers = json_decode(response.body)
++                # Confirm that non-auth headers are getting through
++                self.assertIn("User-Agent", echoed_headers)
++                # Auth headers are not stripped when the redirect is same-origin.
++                # Each of our tests uses one of these headers, but not both.
++                self.assertTrue(
++                    "Authorization" in echoed_headers or "Cookie" in echoed_headers
++                )
++
+ 
+ class RequestProxyTest(unittest.TestCase):
+     def test_request_set(self):
+diff --git a/tornado/test/httpserver_test.py b/tornado/test/httpserver_test.py
+index 008078ed9..b3f6ed18c 100644
+--- a/tornado/test/httpserver_test.py
++++ b/tornado/test/httpserver_test.py
+@@ -1133,7 +1133,7 @@ def test_uncompressed(self):
+ 
+ class GzipTest(GzipBaseTest, AsyncHTTPTestCase):
+     def get_httpserver_options(self):
+-        return dict(decompress_request=True)
++        return dict(decompress_request=True, max_body_size=100)
+ 
+     def test_gzip(self):
+         response = self.post_gzip("foo=bar")
+@@ -1154,6 +1154,10 @@ def test_gzip_case_insensitive(self):
+         )
+         self.assertEqual(json_decode(response.body), {"foo": ["bar"]})
+ 
++    def test_size_limit(self):
++        with ExpectLog(gen_log, ".*decompressed body too large", level=logging.INFO):
++            self.post_gzip("x" * 101)
++
+ 
+ class GzipUnsupportedTest(GzipBaseTest, AsyncHTTPTestCase):
+     def test_gzip_unsupported(self):
+diff --git a/tornado/test/websocket_test.py b/tornado/test/websocket_test.py
+index 494c4bf67..e9fbd5c24 100644
+--- a/tornado/test/websocket_test.py
++++ b/tornado/test/websocket_test.py
+@@ -794,6 +794,13 @@ def test_mask(self: typing.Any):
+             b"\xff\xfa\xff\xff\xfb\xfe",
+         )
+ 
++    def test_length_validation(self: typing.Any):
++        # Test all lengths of mask that are not 4 bytes.
++        for mask in (b"", b"a", b"ab", b"abc", b"abcde", b"abcdef"):
++            with self.subTest(mask=mask):
++                with self.assertRaises(ValueError):
++                    self.mask(mask, b"data asdf")
++
+ 
+ class PythonMaskFunctionTest(MaskFunctionMixin):
+     def mask(self, mask, data):
+diff --git a/tornado/util.py b/tornado/util.py
+index 2e5eee792..facf334a5 100644
+--- a/tornado/util.py
++++ b/tornado/util.py
+@@ -145,7 +145,7 @@ def exec_in(
+ 
+ 
+ def raise_exc_info(
+-    exc_info: Tuple[Optional[type], Optional[BaseException], Optional["TracebackType"]]
++    exc_info: Tuple[Optional[type], Optional[BaseException], Optional["TracebackType"]],
+ ) -> typing.NoReturn:
+     try:
+         if exc_info[1] is not None:
+@@ -418,6 +418,8 @@ def _websocket_mask_python(mask: bytes, data: bytes) -> bytes:
+ 
+     This pure-python implementation may be replaced by an optimized version when available.
+     """
++    if len(mask) != 4:
++        raise ValueError("mask must be 4 bytes")
+     mask_arr = array.array("B", mask)
+     unmasked_arr = array.array("B", data)
+     for i in range(len(data)):

@@ -1,0 +1,46 @@
+diff --git a/spacy/displacy/__init__.py b/spacy/displacy/__init__.py
+index 55474734aa8..d670eb6aa3e 100644
+--- a/spacy/displacy/__init__.py
++++ b/spacy/displacy/__init__.py
+@@ -67,8 +67,7 @@ def render(
+     if jupyter or (jupyter is None and is_in_jupyter()):
+         # return HTML rendered by IPython display()
+         # See #4840 for details on span wrapper to disable mathjax
+-        from IPython.core.display import HTML
+-        from IPython.display import display
++        from IPython.display import HTML, display
+ 
+         return display(HTML('<span class="tex2jax_ignore">{}</span>'.format(html)))
+     return html
+diff --git a/website/docs/api/top-level.mdx b/website/docs/api/top-level.mdx
+index 340f10f7768..cb4bd0a35c0 100644
+--- a/website/docs/api/top-level.mdx
++++ b/website/docs/api/top-level.mdx
+@@ -1452,7 +1452,7 @@ detecting the IPython kernel. Mainly used for the
+ > ```python
+ > html = "<h1>Hello world!</h1>"
+ > if util.is_in_jupyter():
+->     from IPython.core.display import display, HTML
++>     from IPython.display import display, HTML
+ >     display(HTML(html))
+ > ```
+ 
+diff --git a/website/docs/usage/visualizers.mdx b/website/docs/usage/visualizers.mdx
+index 2905ba2bdf5..66d9af91184 100644
+--- a/website/docs/usage/visualizers.mdx
++++ b/website/docs/usage/visualizers.mdx
+@@ -254,12 +254,12 @@ rendering if auto-detection fails.
+ 
+ ![displaCy visualizer in a Jupyter notebook](/images/displacy_jupyter.jpg)
+ 
+-Internally, displaCy imports `display` and `HTML` from `IPython.core.display`
++Internally, displaCy imports `display` and `HTML` from `IPython.display`
+ and returns a Jupyter HTML object. If you were doing it manually, it'd look like
+ this:
+ 
+ ```python
+-from IPython.core.display import display, HTML
++from IPython.display import display, HTML
+ 
+ html = displacy.render(doc, style="dep")
+ display(HTML(html))

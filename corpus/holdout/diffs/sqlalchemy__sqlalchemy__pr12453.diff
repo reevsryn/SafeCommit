@@ -1,0 +1,13 @@
+diff --git a/lib/sqlalchemy/sql/_selectable_constructors.py b/lib/sqlalchemy/sql/_selectable_constructors.py
+index f90512b1f7a..b97b7b3b19e 100644
+--- a/lib/sqlalchemy/sql/_selectable_constructors.py
++++ b/lib/sqlalchemy/sql/_selectable_constructors.py
+@@ -701,6 +701,8 @@ def values(
+ 
+         from sqlalchemy import column
+         from sqlalchemy import values
++        from sqlalchemy import Integer
++        from sqlalchemy import String
+ 
+         value_expr = values(
+             column("id", Integer),

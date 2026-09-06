@@ -1,0 +1,123 @@
+diff --git a/src/transformers/models/voxtral_realtime/modeling_voxtral_realtime.py b/src/transformers/models/voxtral_realtime/modeling_voxtral_realtime.py
+index e3abf0c60b9b..ef57aaaca516 100644
+--- a/src/transformers/models/voxtral_realtime/modeling_voxtral_realtime.py
++++ b/src/transformers/models/voxtral_realtime/modeling_voxtral_realtime.py
+@@ -1215,15 +1215,13 @@ def _prepare_cache_for_generation(
+ 
+         # NOTE: we use the encoder prefix here this is not a classical encoder-decoder model - no cross-attention
+         # the model is better seen as a VLM/ AudioLM, so with an encoder that can take psat_key_values for it's forward pass
+-        if generation_config.cache_implementation is not None:
+-            if generation_config.cache_implementation in ("static", "offloaded_static"):
+-                model_kwargs["encoder_past_key_values"] = self._get_encoder_cache(
+-                    cache_implementation=generation_config.cache_implementation,
+-                    batch_size=batch_size,
+-                    max_cache_len=self.config.audio_config.sliding_window,
+-                )
+-            else:
+-                raise ValueError(f"{generation_config.cache_implementation} is not supported for VoxtralRealtime")
++        # Only static caches need pre-allocation here: dynamic ones are lazily initialized by the encoder itself.
++        if generation_config.cache_implementation in ("static", "offloaded_static"):
++            model_kwargs["encoder_past_key_values"] = self._get_encoder_cache(
++                cache_implementation=generation_config.cache_implementation,
++                batch_size=batch_size,
++                max_cache_len=self.config.audio_config.sliding_window,
++            )
+ 
+     def _get_encoder_cache(self, cache_implementation: str, batch_size: int, max_cache_len: int) -> Cache:
+         offload_cache = "offloaded" in cache_implementation
+diff --git a/src/transformers/models/voxtral_realtime/modular_voxtral_realtime.py b/src/transformers/models/voxtral_realtime/modular_voxtral_realtime.py
+index 22db189aedef..f80dd13daccf 100644
+--- a/src/transformers/models/voxtral_realtime/modular_voxtral_realtime.py
++++ b/src/transformers/models/voxtral_realtime/modular_voxtral_realtime.py
+@@ -828,15 +828,13 @@ def _prepare_cache_for_generation(
+ 
+         # NOTE: we use the encoder prefix here this is not a classical encoder-decoder model - no cross-attention
+         # the model is better seen as a VLM/ AudioLM, so with an encoder that can take psat_key_values for it's forward pass
+-        if generation_config.cache_implementation is not None:
+-            if generation_config.cache_implementation in ("static", "offloaded_static"):
+-                model_kwargs["encoder_past_key_values"] = self._get_encoder_cache(
+-                    cache_implementation=generation_config.cache_implementation,
+-                    batch_size=batch_size,
+-                    max_cache_len=self.config.audio_config.sliding_window,
+-                )
+-            else:
+-                raise ValueError(f"{generation_config.cache_implementation} is not supported for VoxtralRealtime")
++        # Only static caches need pre-allocation here: dynamic ones are lazily initialized by the encoder itself.
++        if generation_config.cache_implementation in ("static", "offloaded_static"):
++            model_kwargs["encoder_past_key_values"] = self._get_encoder_cache(
++                cache_implementation=generation_config.cache_implementation,
++                batch_size=batch_size,
++                max_cache_len=self.config.audio_config.sliding_window,
++            )
+ 
+     def _get_encoder_cache(self, cache_implementation: str, batch_size: int, max_cache_len: int) -> Cache:
+         offload_cache = "offloaded" in cache_implementation
+diff --git a/tests/generation/test_utils.py b/tests/generation/test_utils.py
+index e90768603a40..3eaf3b4fb2f6 100644
+--- a/tests/generation/test_utils.py
++++ b/tests/generation/test_utils.py
+@@ -89,6 +89,7 @@
+         LinearAttentionLayer,
+         QuantoQuantizedLayer,
+         StaticCache,
++        get_layer_types_and_kwargs,
+     )
+     from transformers.generation import (
+         CompileConfig,
+@@ -1573,7 +1574,9 @@ def test_generate_with_quant_cache(self):
+             if config.is_encoder_decoder or not model_class._supports_default_dynamic_cache():
+                 self.skipTest(reason="This model does not support the quantized cache format")
+ 
+-            layer_types = getattr(config.get_text_config(), "layer_types", None) or []
++            # Same source of truth as `QuantizedCache`: models that don't set `layer_types` explicitly still
++            # infer non-full attention from e.g. `sliding_window`.
++            layer_types, _ = get_layer_types_and_kwargs(config.get_text_config(decoder=True))
+             if any(layer_type != "full_attention" for layer_type in layer_types):
+                 self.skipTest(reason="`QuantizedCache` is only supported for models with full attention layers")
+ 
+diff --git a/tests/models/voxtral_realtime/test_modeling_voxtral_realtime.py b/tests/models/voxtral_realtime/test_modeling_voxtral_realtime.py
+index ff2113a4556f..d6831515f197 100644
+--- a/tests/models/voxtral_realtime/test_modeling_voxtral_realtime.py
++++ b/tests/models/voxtral_realtime/test_modeling_voxtral_realtime.py
+@@ -19,6 +19,7 @@
+ from threading import Thread
+ 
+ import numpy as np
++import pytest
+ from parameterized import parameterized
+ 
+ from transformers import (
+@@ -260,17 +261,27 @@ def test_left_padding_compatibility(self):
+     def test_multi_gpu_data_parallel_forward(self):
+         pass
+ 
+-    @unittest.skip(
+-        reason="VoxtralRealtime only supports static and offloaded_static cache implementations, not quantized cache"
+-    )
+-    def test_generate_with_quant_cache(self):
+-        pass
+-
+     @parameterized.expand([("linear",), ("dynamic",), ("yarn",)])
+     @unittest.skip("Model needs special input preparation!")
+     def test_model_rope_scaling_from_config(self, scaling_type):
+         pass
+ 
++    @pytest.mark.generate
++    @parameterized.expand([("dynamic",), ("static",)])
++    def test_generate_with_cache_implementation(self, cache_implementation):
++        """Any `cache_implementation` should match the default one, which already uses a `DynamicCache`."""
++        config, inputs_dict = self.prepare_config_and_inputs_for_generate()
++        model = VoxtralRealtimeForConditionalGeneration(config).to(torch_device).eval()
++
++        generation_kwargs = {
++            "max_new_tokens": self.max_new_tokens,
++            "do_sample": False,
++            "use_cache": True,
++        }
++        expected = model.generate(**inputs_dict, **generation_kwargs)
++        output = model.generate(**inputs_dict, **generation_kwargs, cache_implementation=cache_implementation)
++        torch.testing.assert_close(output, expected)
++
+ 
+ @require_torch
+ class VoxtralRealtimeForConditionalGenerationIntegrationTest(unittest.TestCase):

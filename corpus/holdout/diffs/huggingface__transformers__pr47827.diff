@@ -1,0 +1,182 @@
+diff --git a/src/transformers/models/auto/modeling_auto.py b/src/transformers/models/auto/modeling_auto.py
+index c6d153074b28..e6b27a561fed 100644
+--- a/src/transformers/models/auto/modeling_auto.py
++++ b/src/transformers/models/auto/modeling_auto.py
+@@ -269,6 +269,7 @@ class _BaseModelWithGenerate(PreTrainedModel, GenerationMixin):
+         ("imagegpt", "ImageGPTModel"),
+         ("informer", "InformerModel"),
+         ("inkling_mm_model", "InklingModel"),
++        ("inkling_text", "InklingTextModel"),
+         ("instructblip", "InstructBlipModel"),
+         ("instructblipvideo", "InstructBlipVideoModel"),
+         ("internvl", "InternVLModel"),
+diff --git a/src/transformers/models/inkling/modeling_inkling.py b/src/transformers/models/inkling/modeling_inkling.py
+index 0bb061b3ea37..efcd8d6c205a 100644
+--- a/src/transformers/models/inkling/modeling_inkling.py
++++ b/src/transformers/models/inkling/modeling_inkling.py
+@@ -351,7 +351,7 @@ def __init__(self, config):
+ 
+         self.weight = nn.Parameter(torch.empty(self.n_total_experts, config.hidden_size))
+         self.global_scale = nn.Parameter(torch.ones(1))
+-        self.e_score_correction_bias = nn.Parameter(torch.empty(self.num_experts))
++        self.e_score_correction_bias = nn.Buffer(torch.zeros(self.num_experts))
+ 
+     def forward(self, hidden_states) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+         flat = hidden_states.reshape(-1, self.hidden_dim)
+@@ -382,10 +382,9 @@ def __init__(self, config):
+         super().__init__()
+         self.n_shared_experts = config.n_shared_experts
+         intermediate_dim = config.moe_intermediate_size
+-        # TP loader cuts shards on the raw tensor but validates shapes on the target, so a Transpose
+-        # conversion op breaks sharded loads. The runtime transpose(1, 2) is not a per-forward
+-        # cost: it is a stride-metadata view, so the same
+-        # matmul layout every nn.Linear runs
++        # TP loader cuts shards on the raw tensor but validates shapes on the target, so a Transpose conversion op breaks sharded
++        # loads. The runtime transpose(1, 2) is not a per-forward cost: it is a stride-metadata view, so the same matmul layout
++        # every nn.Linear runs
+         self.gate_proj = nn.Parameter(torch.empty(config.n_shared_experts, intermediate_dim, config.hidden_size))
+         self.up_proj = nn.Parameter(torch.empty(config.n_shared_experts, intermediate_dim, config.hidden_size))
+         self.down_proj = nn.Parameter(torch.empty(config.n_shared_experts, config.hidden_size, intermediate_dim))
+@@ -679,7 +678,9 @@ def forward(
+             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+ 
+         if inputs_embeds is None:
+-            inputs_embeds = self.embed_norm(self.embed_tokens(input_ids))
++            inputs_embeds = self.embed_tokens(input_ids)
++        # The norm needs to be outside the `if` in case `input_embeds` are given explicitly
++        inputs_embeds = self.embed_norm(inputs_embeds)
+ 
+         if use_cache and past_key_values is None:
+             past_key_values = DynamicCache(config=self.config)
+@@ -1057,8 +1058,8 @@ def get_placeholder_mask(
+         that the placeholder token count matches the length of `features`. If the lengths differ, an error is raised.
+         """
+         if input_ids is None:
+-            special_mask = inputs_embeds == self.get_input_embeddings()(
+-                torch.tensor(token_id, dtype=torch.long, device=inputs_embeds.device)
++            special_mask = inputs_embeds == self.language_model.embed_norm(
++                self.get_input_embeddings()(torch.tensor(token_id, dtype=torch.long, device=inputs_embeds.device))
+             )
+             special_mask = special_mask.all(-1)
+         else:
+@@ -1126,7 +1127,9 @@ def forward(
+             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+ 
+         if inputs_embeds is None:
+-            inputs_embeds = self.language_model.embed_norm(self.get_input_embeddings()(input_ids))
++            inputs_embeds = self.get_input_embeddings()(input_ids)
++        # The norm need to be outside the `if` in case `input_embeds` are given explicitly
++        inputs_embeds = self.language_model.embed_norm(inputs_embeds)
+ 
+         # Merge text and images
+         if pixel_values is not None:
+diff --git a/src/transformers/models/inkling/modular_inkling.py b/src/transformers/models/inkling/modular_inkling.py
+index 89276fa3128c..8e563ce92b61 100644
+--- a/src/transformers/models/inkling/modular_inkling.py
++++ b/src/transformers/models/inkling/modular_inkling.py
+@@ -530,7 +530,7 @@ def __init__(self, config):
+ 
+         self.weight = nn.Parameter(torch.empty(self.n_total_experts, config.hidden_size))
+         self.global_scale = nn.Parameter(torch.ones(1))
+-        self.e_score_correction_bias = nn.Parameter(torch.empty(self.num_experts))
++        self.e_score_correction_bias = nn.Buffer(torch.zeros(self.num_experts))
+ 
+     def forward(self, hidden_states) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+         flat = hidden_states.reshape(-1, self.hidden_dim)
+@@ -561,10 +561,9 @@ def __init__(self, config):
+         super().__init__()
+         self.n_shared_experts = config.n_shared_experts
+         intermediate_dim = config.moe_intermediate_size
+-        # TP loader cuts shards on the raw tensor but validates shapes on the target, so a Transpose
+-        # conversion op breaks sharded loads. The runtime transpose(1, 2) is not a per-forward
+-        # cost: it is a stride-metadata view, so the same
+-        # matmul layout every nn.Linear runs
++        # TP loader cuts shards on the raw tensor but validates shapes on the target, so a Transpose conversion op breaks sharded
++        # loads. The runtime transpose(1, 2) is not a per-forward cost: it is a stride-metadata view, so the same matmul layout
++        # every nn.Linear runs
+         self.gate_proj = nn.Parameter(torch.empty(config.n_shared_experts, intermediate_dim, config.hidden_size))
+         self.up_proj = nn.Parameter(torch.empty(config.n_shared_experts, intermediate_dim, config.hidden_size))
+         self.down_proj = nn.Parameter(torch.empty(config.n_shared_experts, config.hidden_size, intermediate_dim))
+@@ -803,7 +802,9 @@ def forward(
+             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+ 
+         if inputs_embeds is None:
+-            inputs_embeds = self.embed_norm(self.embed_tokens(input_ids))
++            inputs_embeds = self.embed_tokens(input_ids)
++        # The norm needs to be outside the `if` in case `input_embeds` are given explicitly
++        inputs_embeds = self.embed_norm(inputs_embeds)
+ 
+         if use_cache and past_key_values is None:
+             past_key_values = DynamicCache(config=self.config)
+@@ -1158,8 +1159,8 @@ def get_placeholder_mask(
+         that the placeholder token count matches the length of `features`. If the lengths differ, an error is raised.
+         """
+         if input_ids is None:
+-            special_mask = inputs_embeds == self.get_input_embeddings()(
+-                torch.tensor(token_id, dtype=torch.long, device=inputs_embeds.device)
++            special_mask = inputs_embeds == self.language_model.embed_norm(
++                self.get_input_embeddings()(torch.tensor(token_id, dtype=torch.long, device=inputs_embeds.device))
+             )
+             special_mask = special_mask.all(-1)
+         else:
+@@ -1227,7 +1228,9 @@ def forward(
+             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+ 
+         if inputs_embeds is None:
+-            inputs_embeds = self.language_model.embed_norm(self.get_input_embeddings()(input_ids))
++            inputs_embeds = self.get_input_embeddings()(input_ids)
++        # The norm need to be outside the `if` in case `input_embeds` are given explicitly
++        inputs_embeds = self.language_model.embed_norm(inputs_embeds)
+ 
+         # Merge text and images
+         if pixel_values is not None:
+diff --git a/tests/models/inkling/test_modeling_inkling.py b/tests/models/inkling/test_modeling_inkling.py
+index aa31e7bab673..43947d351023 100644
+--- a/tests/models/inkling/test_modeling_inkling.py
++++ b/tests/models/inkling/test_modeling_inkling.py
+@@ -35,7 +35,7 @@
+     torch_device,
+ )
+ 
+-from ...causal_lm_tester import CausalLMModelTester
++from ...causal_lm_tester import CausalLMModelTest, CausalLMModelTester
+ from ...generation.test_utils import GenerationTesterMixin
+ from ...test_configuration_common import ConfigTester
+ from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor
+@@ -45,6 +45,7 @@
+     import torch
+ 
+     from transformers import (
++        InklingForCausalLM,
+         InklingForConditionalGeneration,
+         InklingModel,
+         InklingTextModel,
+@@ -60,7 +61,7 @@ class InklingTextModelTester(CausalLMModelTester):
+     if is_torch_available():
+         config_class = InklingTextConfig
+         base_model_class = InklingTextModel
+-        causal_lm_class = InklingForConditionalGeneration
++        causal_lm_class = InklingForCausalLM
+ 
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+@@ -73,8 +74,18 @@ def __init__(self, *args, **kwargs):
+         self.swa_head_dim = self.head_dim
+ 
+         # To activate moe blocks
+-        self.enable_moe_block = True
+         self.moe_intermediate_size = 16
++        self.n_routed_experts = 16
++
++
++class InklingTextModelTests(CausalLMModelTest, unittest.TestCase):
++    model_tester_class = InklingTextModelTester
++    _torch_compile_train_cls = InklingForCausalLM if is_torch_available() else None
++    model_split_percents = [0.5, 0.8, 0.9]
++
++    @unittest.skip("MoE routing on a tiny randomly-initialized model makes the overfit target unstable.")
++    def test_training_overfit(self):
++        pass
+ 
+ 
+ class InklingAudio2TextModelTester:

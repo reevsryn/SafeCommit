@@ -1,0 +1,281 @@
+diff --git a/e2e_playwright/st_altair_chart_basic_select.py b/e2e_playwright/st_altair_chart_basic_select.py
+index b3fc8ac1128..8f187bc27b6 100644
+--- a/e2e_playwright/st_altair_chart_basic_select.py
++++ b/e2e_playwright/st_altair_chart_basic_select.py
+@@ -371,3 +371,64 @@ def increment_chart_data():
+     key="update_chart_data_btn",
+     on_click=increment_chart_data,
+ )
++
++# BINDING WIDGETS WITH ON_SELECT (#8765)
++st.header("Selection bindings:")
++
++region_options = ["USA", "Europe", "Japan"]
++radio_bind = alt.binding_radio(
++    options=region_options, labels=region_options, name="Region: "
++)
++select_bind = alt.binding_select(
++    options=region_options, labels=region_options, name="Region: "
++)
++
++bind_radio_click = alt.selection_point(name="bind_radio_click", toggle=False)
++bind_radio_origin = alt.selection_point(
++    name="bind_radio_origin",
++    fields=["Origin"],
++    bind=radio_bind,
++    value="USA",
++    toggle=False,
++)
++st.altair_chart(
++    alt.Chart(cars)
++    .mark_point()
++    .encode(
++        x="Miles_per_Gallon:Q",
++        y="Horsepower:Q",
++        color=alt.condition(bind_radio_click, "Origin:N", alt.value("lightgray")),
++        tooltip=alt.value(None),
++    )
++    .transform_filter(bind_radio_origin)
++    .add_params(bind_radio_click, bind_radio_origin),
++    on_select="rerun",
++    selection_mode="bind_radio_click",
++    key="bind_radio_rerun",
++    width="stretch",
++)
++
++bind_select_click = alt.selection_point(name="bind_select_click", toggle=False)
++bind_select_origin = alt.selection_point(
++    name="bind_select_origin",
++    fields=["Origin"],
++    bind=select_bind,
++    value="USA",
++    toggle=False,
++)
++st.altair_chart(
++    alt.Chart(cars)
++    .mark_point()
++    .encode(
++        x="Miles_per_Gallon:Q",
++        y="Horsepower:Q",
++        color=alt.condition(bind_select_click, "Origin:N", alt.value("lightgray")),
++        tooltip=alt.value(None),
++    )
++    .transform_filter(bind_select_origin)
++    .add_params(bind_select_click, bind_select_origin),
++    on_select="rerun",
++    selection_mode="bind_select_click",
++    key="bind_select_rerun",
++    width="stretch",
++)
+diff --git a/e2e_playwright/st_altair_chart_basic_select_test.py b/e2e_playwright/st_altair_chart_basic_select_test.py
+index 3acdf77ffde..b1055880b25 100644
+--- a/e2e_playwright/st_altair_chart_basic_select_test.py
++++ b/e2e_playwright/st_altair_chart_basic_select_test.py
+@@ -19,6 +19,7 @@
+ 
+ import re
+ from dataclasses import dataclass
++from typing import Literal
+ 
+ import pytest
+ from playwright.sync_api import Locator, Page, expect
+@@ -471,3 +472,31 @@ def test_selection_persists_after_data_update(app: Page):
+     # Verify selection persisted after data change
+     # The selection should still show the same category even though values changed
+     expect_prefixed_markdown(app, "Persistent selection:", expected_selection)
++
++
++def _assert_single_region_bind(
++    chart: Locator, *, role: Literal["radio", "combobox"], count: int
++) -> None:
++    """Region bind must appear once, not once per injected encoding."""
++    expect(chart.get_by_text("Region:")).to_have_count(1)
++    expect(chart.get_by_role(role)).to_have_count(count)
++
++
++def test_binding_widgets_not_duplicated_with_on_select(app: Page):
++    """Altair bind widgets must not be cloned when on_select is enabled (#8765)."""
++    radio_chart = get_element_by_key(app, "bind_radio_rerun")
++    select_chart = get_element_by_key(app, "bind_select_rerun")
++
++    expect(radio_chart).to_be_visible()
++    expect(get_vega_graphics_document(radio_chart)).to_be_visible()
++    _assert_single_region_bind(radio_chart, role="radio", count=3)
++
++    radio_chart.get_by_role("radio", name="Europe").click()
++    _assert_single_region_bind(radio_chart, role="radio", count=3)
++
++    expect(select_chart).to_be_visible()
++    expect(get_vega_graphics_document(select_chart)).to_be_visible()
++    _assert_single_region_bind(select_chart, role="combobox", count=1)
++
++    select_chart.get_by_role("combobox").select_option("Europe")
++    _assert_single_region_bind(select_chart, role="combobox", count=1)
+diff --git a/frontend/lib/src/components/elements/ArrowVegaLiteChart/useVegaElementPreprocessor.test.ts b/frontend/lib/src/components/elements/ArrowVegaLiteChart/useVegaElementPreprocessor.test.ts
+index 8479d54e099..582fc3359a2 100644
+--- a/frontend/lib/src/components/elements/ArrowVegaLiteChart/useVegaElementPreprocessor.test.ts
++++ b/frontend/lib/src/components/elements/ArrowVegaLiteChart/useVegaElementPreprocessor.test.ts
+@@ -14,6 +14,9 @@
+  * limitations under the License.
+  */
+ 
++import { compile } from "vega-lite"
++import type { TopLevelSpec } from "vega-lite"
++
+ import { renderHook } from "~lib/components/shared/ElementFullscreen/testUtils"
+ import { lightTheme } from "~lib/theme/themeConfigs"
+ 
+@@ -920,14 +923,20 @@ describe("useVegaElementPreprocessor", () => {
+       name: string
+       select?:
+         | string
+-        | { type?: string; encodings?: string[]; [key: string]: unknown }
++        | {
++            type?: string
++            encodings?: string[]
++            fields?: string[]
++            [key: string]: unknown
++          }
++      bind?: unknown
+       value?: unknown
+     }
+ 
+-    const renderWithParams = (
++    const renderSpecWithParams = (
+       params: SelectParam[],
+       selectionMode: string[] = ["point"]
+-    ): SelectParam[] => {
++    ): VegaLiteSpec => {
+       const { result } = renderHook(
+         (element: VegaLiteChartElement) =>
+           useVegaElementPreprocessor(
+@@ -948,10 +957,15 @@ describe("useVegaElementPreprocessor", () => {
+           }),
+         }
+       )
+-      return (result.current.spec as unknown as { params: SelectParam[] })
+-        .params
++      return result.current.spec as unknown as VegaLiteSpec
+     }
+ 
++    const renderWithParams = (
++      params: SelectParam[],
++      selectionMode: string[] = ["point"]
++    ): SelectParam[] =>
++      renderSpecWithParams(params, selectionMode).params as SelectParam[]
++
+     it("adds all chart encodings to shorthand point selections", () => {
+       const [param] = renderWithParams([{ name: "pt", select: "point" }])
+       expect(param.select).toEqual({ type: "point", encodings: ["x", "y"] })
+@@ -993,6 +1007,59 @@ describe("useVegaElementPreprocessor", () => {
+       // shorthand string is left as-is.
+       expect(param.select).toBe("point")
+     })
++
++    it("does not add encodings to point selections that already specify fields", () => {
++      const [param] = renderWithParams([
++        { name: "pt", select: { type: "point", fields: ["Origin"] } },
++      ])
++      expect(param.select).toEqual({ type: "point", fields: ["Origin"] })
++      expect(param.select).not.toHaveProperty("encodings")
++    })
++
++    it("does not add encodings to point selections with fields and a radio bind", () => {
++      // Issue #8765: Altair radio binds set fields, not encodings.
++      const bind = {
++        input: "radio",
++        options: ["USA", "Europe", "Japan"],
++        name: "Region: ",
++      }
++      const spec = renderSpecWithParams([
++        {
++          name: "og_select",
++          select: { type: "point", fields: ["Origin"], toggle: false },
++          bind,
++          value: "USA",
++        },
++      ])
++      const [param] = spec.params as SelectParam[]
++      expect(param.select).toEqual({
++        type: "point",
++        fields: ["Origin"],
++        toggle: false,
++      })
++      expect(param.select).not.toHaveProperty("encodings")
++      expect(param.bind).toEqual(bind)
++
++      const { spec: compiledSpec } = compile(spec as unknown as TopLevelSpec)
++      const radioBinds = (compiledSpec.signals ?? []).filter(signal => {
++        if (!("bind" in signal)) {
++          return false
++        }
++        const signalBind = signal.bind as { input?: string } | undefined
++        return signalBind?.input === "radio"
++      })
++      expect(radioBinds).toHaveLength(1)
++    })
++
++    it("does not add encodings when fields and a scalar value are set", () => {
++      // Issue #10308: fields plus a scalar value must stay fields-only.
++      const [param] = renderWithParams([
++        { name: "pt", select: { type: "point", fields: ["index"] }, value: 3 },
++      ])
++      expect(param.select).toEqual({ type: "point", fields: ["index"] })
++      expect(param.select).not.toHaveProperty("encodings")
++      expect(param.value).toBe(3)
++    })
+   })
+ 
+   describe("legacy and edge-case spec handling", () => {
+diff --git a/frontend/lib/src/components/elements/ArrowVegaLiteChart/useVegaElementPreprocessor.ts b/frontend/lib/src/components/elements/ArrowVegaLiteChart/useVegaElementPreprocessor.ts
+index bd45ea33cd3..2ff09c078f7 100644
+--- a/frontend/lib/src/components/elements/ArrowVegaLiteChart/useVegaElementPreprocessor.ts
++++ b/frontend/lib/src/components/elements/ArrowVegaLiteChart/useVegaElementPreprocessor.ts
+@@ -35,7 +35,12 @@ type VegaLiteSpec = Record<string, unknown>
+ interface VegaLiteParam {
+   select?:
+     | string
+-    | { type?: string; encodings?: string[]; [key: string]: unknown }
++    | {
++        type?: string
++        encodings?: string[]
++        fields?: string[]
++        [key: string]: unknown
++      }
+   [key: string]: unknown
+ }
+ 
+@@ -150,8 +155,8 @@ function sanitizeUsermetaEmbedOptions(spec: VegaLiteSpec): void {
+ 
+ /**
+  * Prepares the vega-lite spec for selections by transforming the select parameters
+- * to a full object specification and by automatically adding encodings (if missing)
+- * to point selections.
++ * to a full object specification and by adding encodings to point selections
++ * that specify neither encodings nor fields.
+  *
+  * The changes are applied in-place to the spec object.
+  *
+@@ -190,14 +195,18 @@ function prepareSpecForSelections(spec: VegaLiteSpec): void {
+         return
+       }
+ 
++      // Point selections that already declare encodings or fields are projected
++      // by the user. Injecting encodings on top of fields unions the projections,
++      // which duplicates bound widgets and breaks scalar selection values.
+       if (
+         param.select.type === "point" &&
+         !("encodings" in param.select) &&
+-        isNullOrUndefined(param.select.encodings)
++        isNullOrUndefined(param.select.encodings) &&
++        !("fields" in param.select) &&
++        isNullOrUndefined(param.select.fields)
+       ) {
+-        // If encodings are not specified by the user, we add all the encodings from
+-        // the chart to the selection parameter. This is required so that points
+-        // selections are correctly resolved to a PointSelection and not an IndexSelection:
++        // Without encodings or fields, Vega-Lite resolves a point selection as
++        // IndexSelection. Add the chart encodings so it becomes a PointSelection:
+         // https://github.com/altair-viz/altair/issues/3285#issuecomment-1858860696
+         param.select.encodings = Object.keys(
+           spec.encoding as Record<string, unknown>

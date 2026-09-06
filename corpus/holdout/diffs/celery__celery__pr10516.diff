@@ -1,0 +1,122 @@
+diff --git a/celery/utils/imports.py b/celery/utils/imports.py
+index 69db735a576..972bbdaf887 100644
+--- a/celery/utils/imports.py
++++ b/celery/utils/imports.py
+@@ -3,6 +3,7 @@
+ import sys
+ import warnings
+ from contextlib import contextmanager
++from functools import lru_cache
+ from importlib import import_module, reload
+ from importlib.metadata import entry_points
+ 
+@@ -141,7 +142,17 @@ def gen_task_name(app, name, module_name):
+     return '.'.join(p for p in (module_name, name) if p)
+ 
+ 
++@lru_cache(maxsize=None)
+ def load_extension_class_names(namespace):
++    """Return the ``(name, class_name)`` pairs registered for the namespace.
++
++    Scanning installed package metadata for entry points is expensive, and
++    the result cannot change for the lifetime of the process, so it's
++    cached rather than being recomputed on every call (e.g. on every
++    ``apply_async``).  An immutable tuple of pairs is returned so callers
++    can't mutate the cached value, and so the return type stays compatible
++    with the generator this used to be.
++    """
+     if sys.version_info >= (3, 10):
+         _entry_points = entry_points(group=namespace)
+     else:
+@@ -149,8 +160,7 @@ def load_extension_class_names(namespace):
+             _entry_points = entry_points().get(namespace, [])
+         except AttributeError:
+             _entry_points = entry_points().select(group=namespace)
+-    for ep in _entry_points:
+-        yield ep.name, ep.value
++    return tuple((ep.name, ep.value) for ep in _entry_points)
+ 
+ 
+ def load_extension_classes(namespace):
+diff --git a/docs/userguide/extending.rst b/docs/userguide/extending.rst
+index 32c28620376..1e5e0e34378 100644
+--- a/docs/userguide/extending.rst
++++ b/docs/userguide/extending.rst
+@@ -859,6 +859,16 @@ as the following:
+     def flower(port, debug):
+         print('Running our command')
+ 
++.. note::
++
++    Discovering entry-points requires scanning the metadata of every
++    installed package, which can be slow in environments with many
++    dependencies. Celery caches the result of this scan for the lifetime
++    of the process, so installing or removing a package that provides
++    entry-points (for the ``celery.commands``, ``celery.result_backends``,
++    or ``celery.beat_schedulers`` namespaces) only takes effect after the
++    process restarts.
++
+ 
+ Worker API
+ ==========
+diff --git a/t/unit/utils/test_imports.py b/t/unit/utils/test_imports.py
+index 38632847d6f..eda7bf071be 100644
+--- a/t/unit/utils/test_imports.py
++++ b/t/unit/utils/test_imports.py
+@@ -5,8 +5,8 @@
+ 
+ import pytest
+ 
+-from celery.utils.imports import (NotAPackage, cwd_in_path, find_module, gen_task_name, module_file, qualname,
+-                                  reload_from_cwd)
++from celery.utils.imports import (NotAPackage, cwd_in_path, find_module, gen_task_name, load_extension_class_names,
++                                  load_extension_classes, module_file, qualname, reload_from_cwd)
+ 
+ 
+ def test_find_module():
+@@ -121,3 +121,45 @@ def test_no_module(self):
+         app = Mock()
+         app.name == '__main__'
+         assert gen_task_name(app, 'foo', 'axsadaewe')
++
++
++class test_load_extension_class_names:
++
++    def setup_method(self):
++        load_extension_class_names.cache_clear()
++
++    def teardown_method(self):
++        load_extension_class_names.cache_clear()
++
++    def test_result_is_a_tuple_of_pairs(self):
++        with patch('celery.utils.imports.sys.version_info', (3, 10)):
++            with patch('celery.utils.imports.entry_points') as ep:
++                ep.return_value = []
++                result = load_extension_class_names('celery.fake_namespace')
++        assert result == ()
++
++    def test_entry_points_scanned_only_once_per_namespace(self):
++        with patch('celery.utils.imports.sys.version_info', (3, 10)):
++            with patch('celery.utils.imports.entry_points') as ep:
++                ep.return_value = []
++                load_extension_class_names('celery.fake_namespace')
++                load_extension_class_names('celery.fake_namespace')
++                load_extension_class_names('celery.fake_namespace')
++                assert ep.call_count == 1
++
++    def test_different_namespaces_scanned_separately(self):
++        with patch('celery.utils.imports.sys.version_info', (3, 10)):
++            with patch('celery.utils.imports.entry_points') as ep:
++                ep.return_value = []
++                load_extension_class_names('celery.fake_namespace_a')
++                load_extension_class_names('celery.fake_namespace_b')
++                assert ep.call_count == 2
++
++    def test_load_extension_classes_uses_cached_names(self):
++        ep = Mock(name='foo', value='celery.utils.imports:qualname')
++        ep.name = 'foo'
++        with patch('celery.utils.imports.sys.version_info', (3, 10)):
++            with patch('celery.utils.imports.entry_points') as entry_points:
++                entry_points.return_value = [ep]
++                result = dict(load_extension_classes('celery.fake_namespace'))
++        assert result == {'foo': qualname}

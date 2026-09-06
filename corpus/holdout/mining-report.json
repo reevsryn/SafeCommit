@@ -1,0 +1,113 @@
+{
+  "criteria": {
+    "recency_days": 730,
+    "max_files": 30,
+    "max_changed_lines": 1500,
+    "per_repo_cap": 15,
+    "gates": [
+      "merged",
+      "merged within 730 days",
+      "human-authored (no bots)",
+      "touches >=1 .py file",
+      "adds import line or dependency requirement",
+      "size <= 1500 changed lines / 30 files",
+      "per-repo cap 15"
+    ]
+  },
+  "repos": {
+    "fastapi/fastapi": {
+      "skipped_not_merged": 133,
+      "examined_merged": 109,
+      "rejected_too_old": 1,
+      "rejected_bot": 33,
+      "kept_new": 15,
+      "rejected_no_python_file": 30,
+      "rejected_no_import_or_dep": 28,
+      "rejected_too_large": 2
+    },
+    "scrapy/scrapy": {
+      "examined_merged": 39,
+      "kept_new": 15,
+      "rejected_no_python_file": 9,
+      "skipped_not_merged": 18,
+      "rejected_no_import_or_dep": 13,
+      "rejected_bot": 1,
+      "rejected_too_large": 1
+    },
+    "celery/celery": {
+      "examined_merged": 43,
+      "kept_new": 15,
+      "rejected_no_python_file": 8,
+      "skipped_not_merged": 11,
+      "rejected_bot": 12,
+      "rejected_no_import_or_dep": 8
+    },
+    "sqlalchemy/sqlalchemy": {
+      "skipped_not_merged": 425,
+      "examined_merged": 175,
+      "rejected_no_python_file": 40,
+      "rejected_bot": 14,
+      "rejected_no_import_or_dep": 24,
+      "kept_new": 2,
+      "rejected_too_large": 2,
+      "rejected_too_old": 93
+    },
+    "pydantic/pydantic": {
+      "skipped_not_merged": 41,
+      "examined_merged": 51,
+      "rejected_bot": 6,
+      "rejected_no_import_or_dep": 17,
+      "kept_new": 15,
+      "rejected_no_python_file": 11,
+      "rejected_too_large": 1,
+      "rejected_too_old": 1
+    },
+    "explosion/spaCy": {
+      "skipped_not_merged": 96,
+      "examined_merged": 504,
+      "rejected_bot": 1,
+      "rejected_no_python_file": 27,
+      "kept_new": 10,
+      "rejected_too_large": 4,
+      "rejected_no_import_or_dep": 7,
+      "rejected_too_old": 455
+    },
+    "huggingface/transformers": {
+      "skipped_not_merged": 16,
+      "examined_merged": 44,
+      "rejected_too_large": 8,
+      "kept_new": 15,
+      "rejected_no_import_or_dep": 15,
+      "rejected_no_python_file": 4,
+      "rejected_bot": 2
+    },
+    "tornadoweb/tornado": {
+      "skipped_not_merged": 29,
+      "examined_merged": 77,
+      "rejected_too_old": 1,
+      "rejected_no_import_or_dep": 28,
+      "kept_new": 15,
+      "rejected_no_python_file": 19,
+      "rejected_bot": 10,
+      "rejected_too_large": 4
+    },
+    "apache/airflow": {
+      "skipped_not_merged": 23,
+      "examined_merged": 46,
+      "rejected_bot": 12,
+      "kept_new": 15,
+      "rejected_no_import_or_dep": 9,
+      "rejected_no_python_file": 10
+    },
+    "streamlit/streamlit": {
+      "examined_merged": 75,
+      "kept_new": 15,
+      "skipped_not_merged": 10,
+      "rejected_no_import_or_dep": 9,
+      "rejected_too_large": 3,
+      "rejected_no_python_file": 12,
+      "rejected_bot": 36
+    }
+  },
+  "updated": "2026-09-06T21:50:12+00:00"
+}

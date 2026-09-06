@@ -1,0 +1,582 @@
+diff --git a/lib/streamlit/config.py b/lib/streamlit/config.py
+index 67b556958c0..27084863567 100644
+--- a/lib/streamlit/config.py
++++ b/lib/streamlit/config.py
+@@ -1406,28 +1406,6 @@ def _browser_server_port() -> int:
+ )
+ 
+ 
+-# Config Section: Mapbox #
+-
+-_create_section("mapbox", "Mapbox configuration that is being used by DeckGL.")
+-
+-_create_option(
+-    "mapbox.token",
+-    description="""
+-        If you'd like to show maps using Mapbox rather than Carto, use this
+-        to pass the Mapbox API token.
+-    """,
+-    default_val="",
+-    type_=str,
+-    sensitive=True,
+-    deprecated=True,
+-    deprecation_text="""
+-        Instead of this, you should use either the MAPBOX_API_KEY environment
+-        variable or PyDeck's `api_keys` argument.
+-    """,
+-    expiration_date="2026-05-01",
+-)
+-
+-
+ # Config Section: Magic #
+ 
+ _create_section("magic", "Settings for how Streamlit pre-processes your script")
+diff --git a/lib/streamlit/config_option.py b/lib/streamlit/config_option.py
+index ec9ccac9a9c..d80264552c3 100644
+--- a/lib/streamlit/config_option.py
++++ b/lib/streamlit/config_option.py
+@@ -27,6 +27,32 @@
+ if TYPE_CHECKING:
+     from collections.abc import Callable
+ 
++# Dedent at definition time so interpolating a multi-line deprecation_text
++# (already flush-left from __init__) cannot make textwrap.dedent() a no-op.
++_UNSUPPORTED_OPTION_BANNER = textwrap.dedent(
++    """
++    ════════════════════════════════════════════════
++    {key} IS NO LONGER SUPPORTED.
++
++    {deprecation_text}
++
++    Please update {where_defined}.
++    ════════════════════════════════════════════════
++    """
++)
++_DEPRECATED_OPTION_BANNER = textwrap.dedent(
++    """
++    ════════════════════════════════════════════════
++    {key} IS DEPRECATED.
++    {deprecation_text}
++
++    This option will be removed on or after {expiration_date}.
++
++    Please update {where_defined}.
++    ════════════════════════════════════════════════
++    """
++)
++
+ 
+ class ConfigOption:
+     '''Stores a Streamlit configuration option.
+@@ -260,39 +286,25 @@ def set_value(self, value: Any, where_defined: str | None = None) -> None:
+         self.is_default = value == self.default_val
+ 
+         if self.deprecated and self.where_defined != ConfigOption.DEFAULT_DEFINITION:
+-            if self.is_expired():
+-                # Import here to avoid circular imports
+-                from streamlit.logger import get_logger
++            # Import here to avoid circular imports
++            from streamlit.logger import get_logger
+ 
+-                get_logger(__name__).error(
+-                    textwrap.dedent(
+-                        f"""
+-                    ════════════════════════════════════════════════
+-                    {self.key} IS NO LONGER SUPPORTED.
+-
+-                    {self.deprecation_text}
+-
+-                    Please update {self.where_defined}.
+-                    ════════════════════════════════════════════════
+-                    """
++            logger = get_logger(__name__)
++            if self.is_expired():
++                logger.error(
++                    _UNSUPPORTED_OPTION_BANNER.format(
++                        key=self.key,
++                        deprecation_text=self.deprecation_text,
++                        where_defined=self.where_defined,
+                     )
+                 )
+             else:
+-                # Import here to avoid circular imports
+-                from streamlit.logger import get_logger
+-
+-                get_logger(__name__).warning(
+-                    textwrap.dedent(
+-                        f"""s
+-                    ════════════════════════════════════════════════
+-                    {self.key} IS DEPRECATED.
+-                    {self.deprecation_text}
+-
+-                    This option will be removed on or after {self.expiration_date}.
+-
+-                    Please update {self.where_defined}.
+-                    ════════════════════════════════════════════════
+-                    """
++                logger.warning(
++                    _DEPRECATED_OPTION_BANNER.format(
++                        key=self.key,
++                        deprecation_text=self.deprecation_text,
++                        expiration_date=self.expiration_date,
++                        where_defined=self.where_defined,
+                     )
+                 )
+ 
+diff --git a/lib/streamlit/elements/deck_gl_json_chart.py b/lib/streamlit/elements/deck_gl_json_chart.py
+index a91f84f00c1..66139f56f24 100644
+--- a/lib/streamlit/elements/deck_gl_json_chart.py
++++ b/lib/streamlit/elements/deck_gl_json_chart.py
+@@ -29,7 +29,6 @@
+     overload,
+ )
+ 
+-from streamlit import config
+ from streamlit.deprecation_util import (
+     make_deprecated_name_warning,
+     show_deprecation_warning,
+@@ -578,13 +577,7 @@ def pydeck_chart(
+         if tooltip:
+             pydeck_proto.tooltip = json.dumps(tooltip)
+ 
+-        # Get the Mapbox key from the PyDeck object first, and then fallback to the
+-        # old mapbox.token config option.
+-
+         mapbox_token = getattr(pydeck_obj, "mapbox_key", None)
+-        if mapbox_token is None or mapbox_token == "":
+-            mapbox_token = config.get_option("mapbox.token")
+-
+         if mapbox_token:
+             pydeck_proto.mapbox_token = mapbox_token
+ 
+diff --git a/lib/streamlit/elements/map.py b/lib/streamlit/elements/map.py
+index 39110eacfae..18d00fb414d 100644
+--- a/lib/streamlit/elements/map.py
++++ b/lib/streamlit/elements/map.py
+@@ -18,9 +18,10 @@
+ 
+ import copy
+ import json
++import os
+ from typing import TYPE_CHECKING, Any, Final, cast
+ 
+-from streamlit import config, dataframe_util
++from streamlit import dataframe_util
+ from streamlit.deprecation_util import (
+     make_deprecated_name_warning,
+     show_deprecation_warning,
+@@ -520,6 +521,9 @@ def marshall(
+     pydeck_proto.json = pydeck_json
+     pydeck_proto.id = ""
+ 
+-    mapbox_token = config.get_option("mapbox.token")
++    # st.map builds Deck JSON itself and never constructs a PyDeck Deck, so
++    # copy MAPBOX_API_KEY onto the proto. Default styles are Carto; the
++    # frontend uses this token only if the spec selects a Mapbox style.
++    mapbox_token = os.environ.get("MAPBOX_API_KEY")
+     if mapbox_token:
+         pydeck_proto.mapbox_token = mapbox_token
+diff --git a/lib/streamlit/web/bootstrap.py b/lib/streamlit/web/bootstrap.py
+index 25c0c70e58f..2570ae1cd2d 100644
+--- a/lib/streamlit/web/bootstrap.py
++++ b/lib/streamlit/web/bootstrap.py
+@@ -197,12 +197,12 @@ def maybe_open_browser() -> None:
+ 
+ 
+ def _fix_pydeck_mapbox_api_warning() -> None:
+-    """Sets MAPBOX_API_KEY environment variable needed for PyDeck otherwise it
+-    will throw an exception.
+-    """
++    """Prevent PyDeck from throwing when MAPBOX_API_KEY is unset.
+ 
+-    if "MAPBOX_API_KEY" not in os.environ:
+-        os.environ["MAPBOX_API_KEY"] = config.get_option("mapbox.token")
++    PyDeck requires the environment variable to exist; an empty default is
++    enough when the user has not provided a token.
++    """
++    os.environ.setdefault("MAPBOX_API_KEY", "")
+ 
+ 
+ def _initialize_mimetypes() -> None:
+diff --git a/lib/tests/streamlit/config_option_test.py b/lib/tests/streamlit/config_option_test.py
+index b6c1c5ff271..9b2049e6a75 100644
+--- a/lib/tests/streamlit/config_option_test.py
++++ b/lib/tests/streamlit/config_option_test.py
+@@ -111,7 +111,34 @@ def test_set_value(self):
+         assert my_value == c.value
+         assert where_defined == c.where_defined
+ 
+-    def test_deprecated_expired(self):
++    def _assert_deprecation_banner_is_flush_left(self, message: str) -> None:
++        """Logged deprecation banners must be flush left.
++
++        A zero-indent line anywhere in the template (e.g. a stray character on
++        the first line) makes textwrap.dedent() a no-op, so the rest of the
++        banner keeps its source indentation.
++        """
++        non_empty = [line for line in message.splitlines() if line]
++        assert non_empty[0].startswith("═"), (
++            f"banner should start at column 0, got {non_empty[0][:40]!r}"
++        )
++        for line in non_empty:
++            assert not line.startswith(" "), f"line still indented: {line!r}"
++
++    @parameterized.expand(
++        [
++            ("single_line", "dep text"),
++            (
++                "multi_line",
++                """
++                Instead of this, you should use either the MAPBOX_API_KEY environment
++                variable or PyDeck's `api_keys` argument.
++                """,
++            ),
++        ]
++    )
++    def test_deprecated_expired(self, _case: str, deprecation_text: str) -> None:
++        """Expired options log a flush-left error that the option is unsupported."""
+         my_value = "myValue"
+         where_defined = "im defined here"
+ 
+@@ -120,17 +147,36 @@ def test_deprecated_expired(self):
+         c = ConfigOption(
+             key,
+             deprecated=True,
+-            deprecation_text="dep text",
++            deprecation_text=deprecation_text,
+             expiration_date="2000-01-01",
+         )
+ 
+-        # Expired options behave like deprecated options
+-        # just a slightly different text.
+-        c.set_value(my_value, where_defined)
++        with self.assertLogs("streamlit.config_option", level="ERROR") as logs:
++            c.set_value(my_value, where_defined)
+ 
++        message = logs.records[0].getMessage()
++        self._assert_deprecation_banner_is_flush_left(message)
++        assert "mysection.myName IS NO LONGER SUPPORTED." in message
++        assert "Please update im defined here." in message
++        for snippet in c.deprecation_text.splitlines():
++            if snippet:
++                assert snippet in message
+         assert c.is_expired()
+ 
+-    def test_deprecated_unexpired(self):
++    @parameterized.expand(
++        [
++            ("single_line", "dep text"),
++            (
++                "multi_line",
++                """
++                Instead of this, you should use either the MAPBOX_API_KEY environment
++                variable or PyDeck's `api_keys` argument.
++                """,
++            ),
++        ]
++    )
++    def test_deprecated_unexpired(self, _case: str, deprecation_text: str) -> None:
++        """Unexpired options log a flush-left warning that the option is deprecated."""
+         my_value = "myValue"
+         where_defined = "im defined here"
+ 
+@@ -139,12 +185,21 @@ def test_deprecated_unexpired(self):
+         c = ConfigOption(
+             key,
+             deprecated=True,
+-            deprecation_text="dep text",
++            deprecation_text=deprecation_text,
+             expiration_date="2100-01-01",
+         )
+ 
+-        c.set_value(my_value, where_defined)
+-
++        with self.assertLogs("streamlit.config_option", level="WARNING") as logs:
++            c.set_value(my_value, where_defined)
++
++        message = logs.records[0].getMessage()
++        self._assert_deprecation_banner_is_flush_left(message)
++        assert "mysection.myName IS DEPRECATED." in message
++        assert "This option will be removed on or after 2100-01-01." in message
++        assert "Please update im defined here." in message
++        for snippet in c.deprecation_text.splitlines():
++            if snippet:
++                assert snippet in message
+         assert not c.is_expired()
+ 
+     def test_replaced_by_unexpired(self):
+diff --git a/lib/tests/streamlit/config_test.py b/lib/tests/streamlit/config_test.py
+index bb11a3dc4a3..d7fce077c8f 100644
+--- a/lib/tests/streamlit/config_test.py
++++ b/lib/tests/streamlit/config_test.py
+@@ -723,7 +723,6 @@ def test_sections_order(self):
+                 "global",
+                 "logger",
+                 "magic",
+-                "mapbox",
+                 "runner",
+                 "secrets",
+                 "server",
+@@ -795,7 +794,6 @@ def test_config_option_keys(self):
+                 "runner.enumCoercion",
+                 "magic.displayRootDocString",
+                 "magic.displayLastExprIfNoSemicolon",
+-                "mapbox.token",
+                 "secrets.files",
+                 "server.address",
+                 "server.allowedHosts",
+@@ -833,6 +831,18 @@ def test_config_option_keys(self):
+         keys = sorted(config._config_options.keys())
+         assert config_options == keys
+ 
++    def test_no_expired_deprecated_config_options(self) -> None:
++        """Deprecated config options must be removed once expiration_date has passed."""
++        expired = [
++            opt.key
++            for opt in config._config_options_template.values()
++            if opt.deprecated and opt.is_expired()
++        ]
++        assert expired == [], (
++            "Deprecated config options whose expiration_date has passed "
++            f"must be removed: {expired}"
++        )
++
+     def test_check_conflicts_server_port(self):
+         config._set_option("global.developmentMode", True, "test")
+         config._set_option("server.port", 1234, "test")
+diff --git a/lib/tests/streamlit/config_util_test.py b/lib/tests/streamlit/config_util_test.py
+index 2fcc1c40dd3..29021affe2f 100644
+--- a/lib/tests/streamlit/config_util_test.py
++++ b/lib/tests/streamlit/config_util_test.py
+@@ -161,11 +161,11 @@ def test_ui_section_hidden(self, patched_echo):
+             # Nothing changed.
+             (
+                 {
+-                    "mapbox.token": "shhhhhhh",
++                    "browser.gatherUsageStats": True,
+                     "server.address": "localhost",
+                 },
+                 {
+-                    "mapbox.token": "shhhhhhh",
++                    "browser.gatherUsageStats": True,
+                     "server.address": "localhost",
+                 },
+                 False,
+@@ -173,11 +173,11 @@ def test_ui_section_hidden(self, patched_echo):
+             # A non-server config option changed.
+             (
+                 {
+-                    "mapbox.token": "shhhhhhh",
++                    "browser.gatherUsageStats": True,
+                     "server.address": "localhost",
+                 },
+                 {
+-                    "mapbox.token": "SHHHHHHH!!!!!! >:(",
++                    "browser.gatherUsageStats": False,
+                     "server.address": "localhost",
+                 },
+                 False,
+@@ -185,11 +185,11 @@ def test_ui_section_hidden(self, patched_echo):
+             # A server config option changed.
+             (
+                 {
+-                    "mapbox.token": "shhhhhhh",
++                    "browser.gatherUsageStats": True,
+                     "server.address": "localhost",
+                 },
+                 {
+-                    "mapbox.token": "shhhhhhh",
++                    "browser.gatherUsageStats": True,
+                     "server.address": "streamlit.io",
+                 },
+                 True,
+diff --git a/lib/tests/streamlit/elements/map_test.py b/lib/tests/streamlit/elements/map_test.py
+index b856ca6d6ca..b66c75f5e83 100644
+--- a/lib/tests/streamlit/elements/map_test.py
++++ b/lib/tests/streamlit/elements/map_test.py
+@@ -18,6 +18,7 @@
+ 
+ import itertools
+ import json
++import os
+ import re
+ import warnings
+ from unittest import mock
+@@ -30,7 +31,6 @@
+ import streamlit as st
+ from streamlit.elements.map import _DEFAULT_MAP, _DEFAULT_ZOOM_LEVEL
+ from streamlit.errors import StreamlitAPIException
+-from streamlit.testing.v1.util import patch_config_options
+ from tests.delta_generator_test_case import DeltaGeneratorTestCase
+ 
+ mock_df = pd.DataFrame({"lat": [1, 2, 3, 4], "lon": [10, 20, 30, 40]})
+@@ -365,14 +365,21 @@ def test_nan_exception(self):
+         ):
+             st.map(df)
+ 
+-    def test_mapbox_token_is_set_in_proto(self):
+-        """Test that mapbox token is set in proto if configured."""
+-
+-        with patch_config_options({"mapbox.token": "test_mapbox_token"}):
++    def test_mapbox_token_is_set_in_proto(self) -> None:
++        """Test that mapbox token is set in proto from MAPBOX_API_KEY."""
++        with mock.patch.dict(os.environ, {"MAPBOX_API_KEY": "test_mapbox_token"}):
+             st.map(mock_df)
+             c = self.get_delta_from_queue().new_element.deck_gl_json_chart
+             assert c.mapbox_token == "test_mapbox_token"
+ 
++    def test_mapbox_token_not_set_without_env_var(self) -> None:
++        """Test that mapbox token is empty when MAPBOX_API_KEY is unset."""
++        with mock.patch.dict(os.environ):
++            os.environ.pop("MAPBOX_API_KEY", None)
++            st.map(mock_df)
++            c = self.get_delta_from_queue().new_element.deck_gl_json_chart
++            assert c.mapbox_token == ""
++
+ 
+ class StMapWidthHeightTest(DeltaGeneratorTestCase):
+     """Test st.map width and height parameter functionality."""
+diff --git a/lib/tests/streamlit/elements/pydeck_test.py b/lib/tests/streamlit/elements/pydeck_test.py
+index 5c3af884ec1..b5b9a742bf1 100644
+--- a/lib/tests/streamlit/elements/pydeck_test.py
++++ b/lib/tests/streamlit/elements/pydeck_test.py
+@@ -41,7 +41,6 @@
+     StreamlitValueError,
+ )
+ from streamlit.proto.DeckGlJsonChart_pb2 import DeckGlJsonChart as PydeckProto
+-from streamlit.testing.v1.util import patch_config_options
+ from tests.delta_generator_test_case import DeltaGeneratorTestCase
+ 
+ df1 = pd.DataFrame({"lat": [1, 2, 3, 4], "lon": [10, 20, 30, 40]})
+@@ -242,28 +241,6 @@ def test_selection_mode_set(self):
+ 
+         assert "Invalid `selection_mode` type" in str(e.value)
+ 
+-    @patch_config_options({"mapbox.token": "MOCK_CONFIG_KEY"})
+-    def test_mapbox_token_config(self):
+-        """Test a Mapbox token is passed in proto when provided in config."""
+-
+-        old_value = getattr(os.environ, "MAPBOX_API_KEY", None)
+-        if old_value:
+-            del os.environ["MAPBOX_API_KEY"]
+-
+-        st.pydeck_chart(
+-            pdk.Deck(
+-                layers=[
+-                    pdk.Layer("ScatterplotLayer", data=df1),
+-                ]
+-            )
+-        )
+-
+-        el = self.get_delta_from_queue().new_element
+-        assert el.deck_gl_json_chart.mapbox_token == "MOCK_CONFIG_KEY"
+-
+-        if old_value:
+-            os.environ["MAPBOX_API_KEY"] = old_value
+-
+ 
+ class PyDeckChartWidthTest(DeltaGeneratorTestCase):
+     """Test pydeck_chart width parameter functionality."""
+@@ -426,30 +403,6 @@ def test_mapbox_token_direct(self):
+         if old_value:
+             os.environ["MAPBOX_API_KEY"] = old_value
+ 
+-    @patch_config_options({"mapbox.token": "MOCK_CONFIG_KEY"})
+-    def test_native_mapbox_token_wins(self):
+-        """Test that PyDecks' native Mapbox token wins against out config."""
+-
+-        old_value = getattr(os.environ, "MAPBOX_API_KEY", None)
+-        if old_value:
+-            del os.environ["MAPBOX_API_KEY"]
+-
+-        st.pydeck_chart(
+-            pdk.Deck(
+-                api_keys={"mapbox": "MOCK_API_KEY"},
+-                map_provider="mapbox",
+-                layers=[
+-                    pdk.Layer("ScatterplotLayer", data=df1),
+-                ],
+-            )
+-        )
+-
+-        el = self.get_delta_from_queue().new_element
+-        assert el.deck_gl_json_chart.mapbox_token == "MOCK_API_KEY"
+-
+-        if old_value:
+-            os.environ["MAPBOX_API_KEY"] = old_value
+-
+ 
+ class PyDeckChartHeightTest(DeltaGeneratorTestCase):
+     """Test pydeck_chart height parameter functionality."""
+diff --git a/lib/tests/streamlit/web/bootstrap_test.py b/lib/tests/streamlit/web/bootstrap_test.py
+index cab81bebf61..512dad60d61 100644
+--- a/lib/tests/streamlit/web/bootstrap_test.py
++++ b/lib/tests/streamlit/web/bootstrap_test.py
+@@ -861,30 +861,18 @@ class BootstrapPydeckMapboxTest(TestCase):
+     """Tests for _fix_pydeck_mapbox_api_warning."""
+ 
+     def test_sets_mapbox_env_var_when_missing(self):
+-        """Sets MAPBOX_API_KEY from config when env var is absent."""
+-        env_without_key = {k: v for k, v in os.environ.items() if k != "MAPBOX_API_KEY"}
+-        with (
+-            patch.dict(os.environ, env_without_key, clear=True),
+-            patch.object(
+-                bootstrap.config, "get_option", return_value="cfg-token"
+-            ) as mock_get_option,
+-        ):
++        """Sets MAPBOX_API_KEY to empty when it is unset."""
++        with patch.dict(os.environ):
++            os.environ.pop("MAPBOX_API_KEY", None)
+             bootstrap._fix_pydeck_mapbox_api_warning()
+-            assert os.environ["MAPBOX_API_KEY"] == "cfg-token"
+-
+-        mock_get_option.assert_called_once_with("mapbox.token")
++            assert os.environ["MAPBOX_API_KEY"] == ""
+ 
+     def test_does_not_overwrite_existing_mapbox_env_var(self):
+         """Preserves an externally-set MAPBOX_API_KEY value."""
+-        with (
+-            patch.dict(os.environ, {"MAPBOX_API_KEY": "external"}, clear=False),
+-            patch.object(bootstrap.config, "get_option") as mock_get_option,
+-        ):
++        with patch.dict(os.environ, {"MAPBOX_API_KEY": "external"}):
+             bootstrap._fix_pydeck_mapbox_api_warning()
+             assert os.environ["MAPBOX_API_KEY"] == "external"
+ 
+-        mock_get_option.assert_not_called()
+-
+ 
+ @patch("streamlit.web.bootstrap.prepare_streamlit_environment", Mock())
+ @patch("streamlit.web.bootstrap._print_url", Mock())
+diff --git a/lib/tests/streamlit/web/cli_test.py b/lib/tests/streamlit/web/cli_test.py
+index 7b931b44f74..ecf14537edb 100644
+--- a/lib/tests/streamlit/web/cli_test.py
++++ b/lib/tests/streamlit/web/cli_test.py
+@@ -42,6 +42,10 @@
+ from streamlit.web.cli import _convert_config_option_to_click_option
+ from tests import testutil
+ 
++_SENSITIVE_CONFIG_OPTIONS = [
++    key for key, opt in config._config_options_template.items() if opt.sensitive
++]
++
+ 
+ class CliTest(unittest.TestCase):
+     """Unit tests for the cli."""
+@@ -263,8 +267,14 @@ def test_run_command_with_multiple_secrets_path_multiple_value(self):
+         )
+         assert result.exit_code == 0
+ 
+-    @parameterized.expand(["mapbox.token", "server.cookieSecret"])
+-    def test_run_command_with_sensitive_options_as_flag(self, sensitive_option):
++    def test_sensitive_config_options_are_registered(self) -> None:
++        """Fail if parameterization of sensitive CLI flags would expand to no cases."""
++        assert _SENSITIVE_CONFIG_OPTIONS
++
++    @parameterized.expand([(key,) for key in _SENSITIVE_CONFIG_OPTIONS])
++    def test_run_command_with_sensitive_option_as_flag(
++        self, sensitive_option: str
++    ) -> None:
+         with (
+             patch("streamlit.url_util.is_url", return_value=False),
+             patch("streamlit.web.cli._main_run"),

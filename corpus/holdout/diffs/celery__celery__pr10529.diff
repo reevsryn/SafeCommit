@@ -1,0 +1,100 @@
+diff --git a/celery/app/base.py b/celery/app/base.py
+index 38ca37893a6..e56ff0ddc91 100644
+--- a/celery/app/base.py
++++ b/celery/app/base.py
+@@ -360,8 +360,8 @@ def __init__(self, main=None, loader=None, backend=None,
+         self._custom_task_cls_used = (
+             # Custom task class provided as argument
+             bool(task_cls)
+-            # subclass of Celery with a task_cls attribute
+-            or self.__class__ is not Celery and hasattr(self.__class__, 'task_cls')
++            # Custom task class set as a class attribute
++            or bool(app_has_custom(self, 'task_cls'))
+         )
+         self.task_cls = task_cls or self.task_cls
+         self.set_as_current = set_as_current
+diff --git a/t/integration/test_worker.py b/t/integration/test_worker.py
+index 75088920deb..c2158ec2b95 100644
+--- a/t/integration/test_worker.py
++++ b/t/integration/test_worker.py
+@@ -71,6 +71,25 @@ def test_django_fixup_direct_worker(caplog, monkeypatch):
+         f"AttributeError found in logs:\n{log_output}"
+ 
+ 
++def test_django_fixup_installs_django_task_for_celery_subclass(monkeypatch):
++    """A Celery subclass that leaves task_cls alone still gets DjangoTask."""
++    import django
++
++    from celery.contrib.django.task import DjangoTask
++
++    monkeypatch.setenv('DJANGO_SETTINGS_MODULE', 't.integration.django_settings')
++    django.setup()
++
++    class MyCustomCelery(Celery):
++        pass
++
++    app = MyCustomCelery('test_django_subclass')
++
++    assert issubclass(app.Task, DjangoTask)
++    assert hasattr(app.Task, 'delay_on_commit')
++    assert hasattr(app.Task, 'apply_async_on_commit')
++
++
+ @flaky
+ def test_pidbox_reset_after_repeated_control_errors(manager):
+     def assert_ping():
+diff --git a/t/unit/fixups/test_django.py b/t/unit/fixups/test_django.py
+index b85133eef5c..b17237a2650 100644
+--- a/t/unit/fixups/test_django.py
++++ b/t/unit/fixups/test_django.py
+@@ -144,6 +144,50 @@ class MyCeleryApp(Celery):
+             # The one from the user's class is
+             assert app.task_cls == 'myapp.celery.tasks:Task'
+ 
++    @pytest.mark.patched_module(
++        'django',
++        'django.db',
++        'django.db.transaction',
++    )
++    def test_install_subclassed_app_without_custom_task_cls(self, patching, module):
++        patching('celery.fixups.django.signals')
++
++        from celery.app import Celery
++
++        class MyCeleryApp(Celery):
++            pass
++
++        app = MyCeleryApp('mytestapp')
++
++        with self.fixup_context(app) as (f, _, _):
++            f.install()
++            # Subclassing alone is not a custom task class,
++            # so the specialized DjangoTask is still used
++            assert app.task_cls == 'celery.contrib.django.task:DjangoTask'
++            from celery.contrib.django.task import DjangoTask
++            assert issubclass(app.Task, DjangoTask)
++            assert hasattr(app.Task, 'delay_on_commit')
++            assert hasattr(app.Task, 'apply_async_on_commit')
++
++    def test_install_custom_user_task_inherited_from_base_app(self, patching):
++        patching('celery.fixups.django.signals')
++
++        from celery.app import Celery
++
++        class BaseCeleryApp(Celery):
++            task_cls = 'myapp.celery.tasks:Task'
++
++        class MyCeleryApp(BaseCeleryApp):
++            pass
++
++        app = MyCeleryApp('mytestapp')
++
++        with self.fixup_context(app) as (f, _, _):
++            f.install()
++            # Specialized DjangoTask class is NOT used,
++            # The one inherited from the user's base class is
++            assert app.task_cls == 'myapp.celery.tasks:Task'
++
+     def test_now(self):
+         with self.fixup_context(self.app) as (f, _, _):
+             assert f.now(utc=True)

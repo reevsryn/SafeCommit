@@ -1,0 +1,1069 @@
+diff --git a/pydantic-core/.mypy-stubtest-allowlist b/pydantic-core/.mypy-stubtest-allowlist
+index 8c7d6666a13..d2d3242eccd 100644
+--- a/pydantic-core/.mypy-stubtest-allowlist
++++ b/pydantic-core/.mypy-stubtest-allowlist
+@@ -8,3 +8,5 @@ pydantic_core._pydantic_core.SchemaValidator.validate_strings
+ # the `warnings` kwarg for SchemaSerializer functions has custom logic
+ pydantic_core._pydantic_core.SchemaSerializer.to_python
+ pydantic_core._pydantic_core.SchemaSerializer.to_json
++# pyo3 submodules are only reachable as attributes, not through a dotted import (see https://github.com/PyO3/pyo3/issues/759)
++pydantic_core._pydantic_core._schema_gather
+diff --git a/pydantic-core/README.md b/pydantic-core/README.md
+index 8c765fe791e..9cc4224bab2 100644
+--- a/pydantic-core/README.md
++++ b/pydantic-core/README.md
+@@ -112,7 +112,7 @@ make all          # to run to run build-dev + format + lint + test
+ 
+ ### Useful Resources
+ 
+-* [`python/pydantic_core/_pydantic_core.pyi`](./python/pydantic_core/_pydantic_core.pyi) - Python API types
++* [`python/pydantic_core/_pydantic_core/`](./python/pydantic_core/_pydantic_core/) - Python API types (stubs)
+ * [`python/pydantic_core/core_schema.py`](./python/pydantic_core/core_schema.py) - Core schema definitions
+ * [`tests/`](./tests) - Comprehensive usage examples
+ 
+diff --git a/pydantic-core/python/pydantic_core/_pydantic_core.pyi b/pydantic-core/python/pydantic_core/_pydantic_core/__init__.pyi
+similarity index 99%
+rename from pydantic-core/python/pydantic_core/_pydantic_core.pyi
+rename to pydantic-core/python/pydantic_core/_pydantic_core/__init__.pyi
+index 12b8e4d4952..e5f4a696f37 100644
+--- a/pydantic-core/python/pydantic_core/_pydantic_core.pyi
++++ b/pydantic-core/python/pydantic_core/_pydantic_core/__init__.pyi
+@@ -8,6 +8,8 @@ from typing_extensions import LiteralString, Self
+ from pydantic_core import ErrorDetails, ErrorTypeInfo, InitErrorDetails, MultiHostHost
+ from pydantic_core.core_schema import CoreConfig, CoreSchema, ErrorType, ExtraBehavior
+ 
++from . import _schema_gather as _schema_gather
++
+ __all__ = [
+     '__version__',
+     'build_profile',
+@@ -34,6 +36,7 @@ __all__ = [
+     'to_jsonable_python',
+     'list_all_errors',
+     'TzInfo',
++    '_schema_gather',
+ ]
+ __version__: str
+ build_profile: str
+diff --git a/pydantic-core/python/pydantic_core/_pydantic_core/_schema_gather.pyi b/pydantic-core/python/pydantic_core/_pydantic_core/_schema_gather.pyi
+new file mode 100644
+index 00000000000..adc44d42371
+--- /dev/null
++++ b/pydantic-core/python/pydantic_core/_pydantic_core/_schema_gather.pyi
+@@ -0,0 +1,34 @@
++from typing import final
++
++from pydantic_core.core_schema import CoreSchema, DefinitionReferenceSchema
++
++__all__ = ['MissingDefinitionError', 'gather_schemas_for_cleaning']
++
++@final
++class MissingDefinitionError(LookupError):
++    """A reference was pointing to a non-existing core schema."""
++
++    def __init__(self, schema_reference: str, /) -> None: ...
++    @property
++    def schema_reference(self) -> str: ...
++
++def gather_schemas_for_cleaning(
++    schema: CoreSchema, definitions: dict[str, CoreSchema]
++) -> tuple[dict[str, DefinitionReferenceSchema | None], list[CoreSchema]]:
++    """Traverse the core schema and definitions and return the necessary information for schema cleaning.
++
++    During the core schema traversing, any `'definition-ref'` schema is:
++
++    - Validated: the reference must point to an existing definition. If this is not the case, a
++      `MissingDefinitionError` exception is raised.
++    - Stored in the context: the actual reference is stored in the context. Depending on whether
++      the `'definition-ref'` schema is encountered more than once, the schema itself is also
++      saved in the context to be inlined (i.e. replaced by the definition it points to).
++
++    Returns a `(collected_references, deferred_discriminator_schemas)` tuple:
++
++    - `collected_references`: the collected definition references. If a definition reference schema
++      can be inlined, it means that there is only one in the whole core schema. As such, it is stored
++      as the value. Otherwise, the value is set to `None`.
++    - `deferred_discriminator_schemas`: the list of core schemas having the discriminator application deferred.
++    """
+diff --git a/pydantic-core/python/pydantic_core/core_schema.py b/pydantic-core/python/pydantic_core/core_schema.py
+index 5beaf3f0cda..8dbda380f18 100644
+--- a/pydantic-core/python/pydantic_core/core_schema.py
++++ b/pydantic-core/python/pydantic_core/core_schema.py
+@@ -4506,7 +4506,7 @@ def definition_reference_schema(
+ ]
+ 
+ 
+-# used in _pydantic_core.pyi::PydanticKnownError
++# used in _pydantic_core/__init__.pyi::PydanticKnownError
+ # to update this, call `pytest -k test_all_errors` and copy the output
+ ErrorType: TypeAlias = Literal[
+     'no_such_attribute',
+diff --git a/pydantic-core/src/lib.rs b/pydantic-core/src/lib.rs
+index 9465ec62856..7a32085b8bb 100644
+--- a/pydantic-core/src/lib.rs
++++ b/pydantic-core/src/lib.rs
+@@ -22,6 +22,7 @@ mod errors;
+ mod input;
+ mod lookup_key;
+ mod recursion_guard;
++mod schema_gather;
+ mod serializers;
+ mod tools;
+ mod url;
+@@ -119,6 +120,12 @@ pub mod _pydantic_core {
+         to_jsonable_python,
+     };
+ 
++    #[pymodule]
++    mod _schema_gather {
++        #[pymodule_export]
++        use crate::schema_gather::{MissingDefinitionError, gather_schemas_for_cleaning};
++    }
++
+     #[pymodule_init]
+     fn module_init(m: &Bound<'_, PyModule>) -> PyResult<()> {
+         m.add("__version__", get_pydantic_core_version())?;
+diff --git a/pydantic-core/src/schema_gather.rs b/pydantic-core/src/schema_gather.rs
+new file mode 100644
+index 00000000000..204e59b52bd
+--- /dev/null
++++ b/pydantic-core/src/schema_gather.rs
+@@ -0,0 +1,423 @@
++//! Core schema traversal used for schema cleaning.
++//!
++//! The traversal is depth-first, using an explicit work stack (so that deeply nested schemas
++//! can't overflow the native stack), and never mutates the schema.
++use std::collections::hash_map::Entry;
++
++use ahash::AHashMap;
++use pyo3::exceptions::{PyKeyError, PyLookupError};
++use pyo3::intern;
++use pyo3::prelude::*;
++use pyo3::types::{PyDict, PyList, PyString, PyTuple};
++use smallvec::SmallVec;
++
++/// A reference was pointing to a non-existing core schema.
++#[pyclass(extends=PyLookupError, module="pydantic_core._pydantic_core._schema_gather", frozen, skip_from_py_object)]
++#[derive(Debug)]
++pub struct MissingDefinitionError {
++    #[pyo3(get)]
++    schema_reference: Py<PyAny>,
++}
++
++#[pymethods]
++impl MissingDefinitionError {
++    #[new]
++    #[pyo3(signature = (schema_reference, /))]
++    fn py_new(schema_reference: Py<PyAny>) -> Self {
++        Self { schema_reference }
++    }
++}
++
++/// The child schemas of a schema, in traversal order.
++type Children<'py> = SmallVec<[Bound<'py, PyAny>; 8]>;
++
++fn extend_from_iterable<'py>(children: &mut Children<'py>, iterable: &Bound<'py, PyAny>) -> PyResult<()> {
++    if let Ok(list) = iterable.cast_exact::<PyList>() {
++        children.extend(list.iter());
++    } else if let Ok(tuple) = iterable.cast_exact::<PyTuple>() {
++        children.extend(tuple.iter());
++    } else {
++        for item in iterable.try_iter()? {
++            children.push(item?);
++        }
++    }
++    Ok(())
++}
++
++/// `schema[key]`
++fn required<'py>(schema: &Bound<'py, PyDict>, key: &Bound<'py, PyString>) -> PyResult<Bound<'py, PyAny>> {
++    schema
++        .get_item(key)?
++        .ok_or_else(|| PyKeyError::new_err(key.clone().unbind()))
++}
++
++/// `if key in schema: children.append(schema[key])`
++fn child_optional<'py>(
++    children: &mut Children<'py>,
++    schema: &Bound<'py, PyDict>,
++    key: &Bound<'py, PyString>,
++) -> PyResult<()> {
++    if let Some(s) = schema.get_item(key)? {
++        children.push(s);
++    }
++    Ok(())
++}
++
++/// `children.append(schema[key])`
++fn child_required<'py>(
++    children: &mut Children<'py>,
++    schema: &Bound<'py, PyDict>,
++    key: &Bound<'py, PyString>,
++) -> PyResult<()> {
++    children.push(required(schema, key)?);
++    Ok(())
++}
++
++/// `if key in schema: children.extend(schema[key])`
++fn children_optional<'py>(
++    children: &mut Children<'py>,
++    schema: &Bound<'py, PyDict>,
++    key: &Bound<'py, PyString>,
++) -> PyResult<()> {
++    match schema.get_item(key)? {
++        Some(items) => extend_from_iterable(children, &items),
++        None => Ok(()),
++    }
++}
++
++/// `children.extend(schema[key])`
++fn children_required<'py>(
++    children: &mut Children<'py>,
++    schema: &Bound<'py, PyDict>,
++    key: &Bound<'py, PyString>,
++) -> PyResult<()> {
++    extend_from_iterable(children, &required(schema, key)?)
++}
++
++/// `children.extend(schema[key].values())`
++fn children_values_required<'py>(
++    children: &mut Children<'py>,
++    schema: &Bound<'py, PyDict>,
++    key: &Bound<'py, PyString>,
++) -> PyResult<()> {
++    let items = required(schema, key)?;
++    if let Ok(items) = items.cast_exact::<PyDict>() {
++        // (iterating the dict directly, in order, rather than materializing `.values()`)
++        children.reserve(items.len());
++        for (_, value) in items.iter() {
++            children.push(value);
++        }
++        Ok(())
++    } else {
++        extend_from_iterable(children, &items.call_method0(intern!(schema.py(), "values"))?)
++    }
++}
++
++/// `children.extend(s['schema'] for s in schema['arguments_schema'])`
++fn children_arguments<'py>(children: &mut Children<'py>, schema: &Bound<'py, PyDict>) -> PyResult<()> {
++    let py = schema.py();
++    let mut parameters = Children::new();
++    extend_from_iterable(&mut parameters, &required(schema, intern!(py, "arguments_schema"))?)?;
++    for parameter in &parameters {
++        child_required(children, parameter.cast::<PyDict>()?, intern!(py, "schema"))?;
++    }
++    Ok(())
++}
++
++/// Collect the child schemas of `schema` (of type `schema_type`, anything but `'definition-ref'`),
++/// in traversal order (not including the `'serialization'` schema).
++fn collect_child_schemas<'py>(
++    children: &mut Children<'py>,
++    schema: &Bound<'py, PyDict>,
++    schema_type: &str,
++) -> PyResult<()> {
++    let py = schema.py();
++    match schema_type {
++        "definitions" => {
++            child_required(children, schema, intern!(py, "schema"))?;
++            children_required(children, schema, intern!(py, "definitions"))?;
++        }
++        "list" | "set" | "frozenset" | "generator" => {
++            child_optional(children, schema, intern!(py, "items_schema"))?;
++        }
++        "tuple" => {
++            children_optional(children, schema, intern!(py, "items_schema"))?;
++        }
++        "dict" | "frozendict" => {
++            child_optional(children, schema, intern!(py, "keys_schema"))?;
++            child_optional(children, schema, intern!(py, "values_schema"))?;
++        }
++        "union" => {
++            let mut choices = Children::new();
++            extend_from_iterable(&mut choices, &required(schema, intern!(py, "choices"))?)?;
++            // `iter_union_choices()`: `choice[0] if isinstance(choice, tuple) else choice`
++            for choice in choices {
++                if choice.is_instance_of::<PyTuple>() {
++                    children.push(choice.get_item(0)?);
++                } else {
++                    children.push(choice);
++                }
++            }
++        }
++        "tagged-union" => {
++            children_values_required(children, schema, intern!(py, "choices"))?;
++        }
++        "chain" => {
++            children_required(children, schema, intern!(py, "steps"))?;
++        }
++        "lax-or-strict" => {
++            child_required(children, schema, intern!(py, "lax_schema"))?;
++            child_required(children, schema, intern!(py, "strict_schema"))?;
++        }
++        "json-or-python" => {
++            child_required(children, schema, intern!(py, "json_schema"))?;
++            child_required(children, schema, intern!(py, "python_schema"))?;
++        }
++        "model-fields" | "typed-dict" => {
++            child_optional(children, schema, intern!(py, "extras_schema"))?;
++            children_optional(children, schema, intern!(py, "computed_fields"))?;
++            children_values_required(children, schema, intern!(py, "fields"))?;
++        }
++        "dataclass-args" => {
++            children_optional(children, schema, intern!(py, "computed_fields"))?;
++            children_required(children, schema, intern!(py, "fields"))?;
++        }
++        "named-tuple" => {
++            children_required(children, schema, intern!(py, "fields"))?;
++        }
++        "arguments" => {
++            children_arguments(children, schema)?;
++            child_optional(children, schema, intern!(py, "var_args_schema"))?;
++            child_optional(children, schema, intern!(py, "var_kwargs_schema"))?;
++        }
++        "arguments-v3" => {
++            children_arguments(children, schema)?;
++        }
++        "call" => {
++            child_required(children, schema, intern!(py, "arguments_schema"))?;
++            child_optional(children, schema, intern!(py, "return_schema"))?;
++        }
++        "computed-field" => {
++            child_required(children, schema, intern!(py, "return_schema"))?;
++        }
++        "function-before" => {
++            child_optional(children, schema, intern!(py, "schema"))?;
++            child_optional(children, schema, intern!(py, "json_schema_input_schema"))?;
++        }
++        "function-plain" => {
++            // TODO duplicate schema types for serializers and validators, needs to be deduplicated.
++            child_optional(children, schema, intern!(py, "return_schema"))?;
++            child_optional(children, schema, intern!(py, "json_schema_input_schema"))?;
++        }
++        "function-wrap" => {
++            // TODO duplicate schema types for serializers and validators, needs to be deduplicated.
++            child_optional(children, schema, intern!(py, "return_schema"))?;
++            child_optional(children, schema, intern!(py, "schema"))?;
++            child_optional(children, schema, intern!(py, "json_schema_input_schema"))?;
++        }
++        _ => {
++            child_optional(children, schema, intern!(py, "schema"))?;
++        }
++    }
++    Ok(())
++}
++
++/// A step of the depth-first traversal: a schema is entered (pre-order: its child schemas are
++/// scheduled) and, once they are traversed, left (post-order: metadata handling, span closing).
++enum TraversalStep<'py> {
++    /// Enter a schema.
++    Enter(Bound<'py, PyAny>),
++    /// Leave a schema, once its child schemas (and the `'serialization'` schema) are traversed:
++    /// handle the metadata, and close the span of encountered references of this schema.
++    Leave {
++        schema: Bound<'py, PyDict>,
++        span_index: usize,
++        traverse_metadata: bool,
++    },
++}
++
++/// The current context used during core schema traversing.
++///
++/// Context instances should only be used during schema traversing.
++struct GatherCtx<'a, 'py> {
++    py: Python<'py>,
++    /// The available definitions.
++    definitions: &'a Bound<'py, PyDict>,
++    /// The list of core schemas having the discriminator application deferred.
++    ///
++    /// Internally, these core schemas have a specific key set in the core metadata dict.
++    deferred_discriminator_schemas: Bound<'py, PyList>,
++    /// The collected definition references.
++    ///
++    /// If a definition reference schema can be inlined, it means that there is
++    /// only one in the whole core schema. As such, it is stored as the value.
++    /// Otherwise, the value is set to `None`.
++    ///
++    /// During schema traversing, definition reference schemas can be added as candidates, or removed
++    /// (by setting the value to `None`).
++    collected_references: Bound<'py, PyDict>,
++    /// A mapping between the traversed core schema IDs and (the index in `spans` of) their span in the `encountered_refs`.
++    ///
++    /// Core schemas are stored (and thus shared) on successfully completed Pydantic models (and other
++    /// referenceable types), meaning the same core schema object can appear multiple times in the
++    /// traversed schema. Every schema object only needs to be traversed once: traversing per path
++    /// can result in exponential blowup with highly interconnected models (e.g. `Model3` references
++    /// `Model2` and `Model1`, while `Model2` also references `Model1`).
++    ///
++    /// However, the `collected_references` bookkeeping is per encounter: seeing a reference a second
++    /// time (even through a shared schema object) means it can't be inlined. To preserve this without
++    /// re-traversing, the references encountered while traversing each schema (i.e. the schema's span
++    /// of the `encountered_refs`) are marked as non-inlinable when the schema is visited again.
++    /// A `usize::MAX` end index means the schema is currently being traversed (in which case every reference
++    /// encountered since the start index is marked as non-inlinable. This happens when a
++    /// `'definition-ref'` schema object is reachable from the definition it points to, and inlining
++    /// would then create a cycle).
++    visited: AHashMap<usize, usize>,
++    /// The `(start, end)` spans (see `visited`) of every visited schema.
++    spans: Vec<(usize, usize)>,
++    /// A list of the definition references encountered during the traversal, used with `visited`.
++    encountered_refs: Vec<Bound<'py, PyAny>>,
++    steps: Vec<TraversalStep<'py>>,
++}
++
++impl<'py> GatherCtx<'_, 'py> {
++    fn run(&mut self, schema: &Bound<'py, PyAny>) -> PyResult<()> {
++        self.steps.push(TraversalStep::Enter(schema.clone()));
++        while let Some(step) = self.steps.pop() {
++            match step {
++                TraversalStep::Enter(schema) => self.enter(schema)?,
++                TraversalStep::Leave {
++                    schema,
++                    span_index,
++                    traverse_metadata,
++                } => {
++                    if traverse_metadata {
++                        self.traverse_metadata(&schema)?;
++                    }
++                    self.spans[span_index].1 = self.encountered_refs.len();
++                }
++            }
++        }
++        Ok(())
++    }
++
++    fn traverse_metadata(&mut self, schema: &Bound<'py, PyDict>) -> PyResult<()> {
++        if let Some(meta) = schema.get_item(intern!(self.py, "metadata"))? {
++            if meta.is_none() {
++                return Ok(());
++            }
++            let key = intern!(self.py, "pydantic_internal_union_discriminator");
++            let contains = match meta.cast_exact::<PyDict>() {
++                Ok(meta_dict) => meta_dict.contains(key)?,
++                Err(_) => meta.contains(key)?,
++            };
++            if contains {
++                self.deferred_discriminator_schemas.append(schema)?;
++            }
++        }
++        Ok(())
++    }
++
++    /// The "pre-order" part of the traversal of a schema: bookkeeping, and scheduling the traversal
++    /// of the child schemas (in order), the `'serialization'` schema and the `Leave` step.
++    fn enter(&mut self, schema: Bound<'py, PyAny>) -> PyResult<()> {
++        let py = self.py;
++        let schema_id = schema.as_ptr() as usize;
++        let span_index = match self.visited.entry(schema_id) {
++            Entry::Occupied(entry) => {
++                // The schema object was already traversed (or is currently being traversed, in which case
++                // the end index is not set yet). Mark every definition reference encountered during its
++                // traversal as non-inlinable, as if they were encountered again:
++                let (start, end) = self.spans[*entry.get()];
++                let end = if end == usize::MAX {
++                    self.encountered_refs.len()
++                } else {
++                    end
++                };
++                for schema_ref in &self.encountered_refs[start..end] {
++                    self.collected_references.set_item(schema_ref, py.None())?;
++                }
++                return Ok(());
++            }
++            Entry::Vacant(entry) => {
++                let span_index = self.spans.len();
++                entry.insert(span_index);
++                self.spans.push((self.encountered_refs.len(), usize::MAX));
++                span_index
++            }
++        };
++
++        let schema = schema.cast_into::<PyDict>()?;
++        let schema_type = required(&schema, intern!(py, "type"))?;
++        let schema_type = schema_type.cast::<PyString>()?.to_str()?;
++
++        // Steps are popped from the stack, so pushed in reverse order:
++        // child schemas (in order), then the `'serialization'` schema, then `Leave`.
++        let mut children = Children::new();
++        let mut traverse_metadata = true;
++        if schema_type == "definition-ref" {
++            let schema_ref = required(&schema, intern!(py, "schema_ref"))?;
++            self.encountered_refs.push(schema_ref.clone());
++
++            if !self.collected_references.contains(&schema_ref)? {
++                let definition = match self.definitions.get_item(&schema_ref)? {
++                    Some(definition) if !definition.is_none() => definition,
++                    _ => return Err(PyErr::new::<MissingDefinitionError, _>((schema_ref.unbind(),))),
++                };
++                // The `'definition-ref'` schema was only encountered once, make it
++                // a candidate to be inlined:
++                self.collected_references.set_item(&schema_ref, &schema)?;
++                children.push(definition);
++                child_optional(&mut children, &schema, intern!(py, "serialization"))?;
++            } else {
++                // The `'definition-ref'` schema was already encountered, meaning
++                // the previously encountered schema (and this one) can't be inlined
++                // (and its serialization schema / metadata aren't considered):
++                self.collected_references.set_item(&schema_ref, py.None())?;
++                traverse_metadata = false;
++            }
++        } else {
++            collect_child_schemas(&mut children, &schema, schema_type)?;
++            child_optional(&mut children, &schema, intern!(py, "serialization"))?;
++        }
++
++        self.steps.push(TraversalStep::Leave {
++            schema,
++            span_index,
++            traverse_metadata,
++        });
++        self.steps.extend(children.into_iter().rev().map(TraversalStep::Enter));
++        Ok(())
++    }
++}
++
++/// Traverse the core schema and definitions and return the necessary information for schema cleaning,
++/// as a `(collected_references, deferred_discriminator_schemas)` tuple.
++///
++/// During the core schema traversing, any `'definition-ref'` schema is:
++///
++/// - Validated: the reference must point to an existing definition. If this is not the case, a
++///   `MissingDefinitionError` exception is raised.
++/// - Stored in the context: the actual reference is stored in the context. Depending on whether
++///   the `'definition-ref'` schema is encountered more than once, the schema itself is also
++///   saved in the context to be inlined (i.e. replaced by the definition it points to).
++#[pyfunction]
++pub fn gather_schemas_for_cleaning<'py>(
++    py: Python<'py>,
++    schema: &Bound<'py, PyAny>,
++    definitions: &Bound<'py, PyDict>,
++) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyList>)> {
++    let mut ctx = GatherCtx {
++        py,
++        definitions,
++        deferred_discriminator_schemas: PyList::empty(py),
++        collected_references: PyDict::new(py),
++        // typical model schemas have tens to hundreds of nodes; start big enough to avoid the first few rehashes
++        visited: AHashMap::with_capacity(256),
++        spans: Vec::with_capacity(256),
++        encountered_refs: Vec::new(),
++        steps: Vec::with_capacity(64),
++    };
++    ctx.run(schema)?;
++    Ok((ctx.collected_references, ctx.deferred_discriminator_schemas))
++}
+diff --git a/pydantic/_internal/_schema_gather.py b/pydantic/_internal/_schema_gather.py
+index a7502f84813..3adcfbea136 100644
+--- a/pydantic/_internal/_schema_gather.py
++++ b/pydantic/_internal/_schema_gather.py
+@@ -1,18 +1,17 @@
+-# pyright: reportTypedDictNotRequiredAccess=false, reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
+ from __future__ import annotations
+ 
+-from dataclasses import dataclass, field
+-from typing import TypeAlias, TypedDict
++from typing import TypedDict
+ 
+-from pydantic_core.core_schema import (
+-    ComputedField,
+-    CoreSchema,
+-    DefinitionReferenceSchema,
+-    SerSchema,
+-    iter_union_choices,
+-)
++from pydantic_core._pydantic_core import _schema_gather
++from pydantic_core.core_schema import CoreSchema, DefinitionReferenceSchema
+ 
+-AllSchemas: TypeAlias = 'CoreSchema | SerSchema | ComputedField'
++__all__ = [
++    'GatherResult',
++    'MissingDefinitionError',
++    'gather_schemas_for_cleaning',
++]
++
++MissingDefinitionError = _schema_gather.MissingDefinitionError
+ 
+ 
+ class GatherResult(TypedDict):
+@@ -30,210 +29,6 @@ class GatherResult(TypedDict):
+     """The list of core schemas having the discriminator application deferred."""
+ 
+ 
+-class MissingDefinitionError(LookupError):
+-    """A reference was pointing to a non-existing core schema."""
+-
+-    def __init__(self, schema_reference: str, /) -> None:
+-        self.schema_reference = schema_reference
+-
+-
+-@dataclass
+-class GatherContext:
+-    """The current context used during core schema traversing.
+-
+-    Context instances should only be used during schema traversing.
+-    """
+-
+-    definitions: dict[str, CoreSchema]
+-    """The available definitions."""
+-
+-    deferred_discriminator_schemas: list[CoreSchema] = field(init=False, default_factory=list)
+-    """The list of core schemas having the discriminator application deferred.
+-
+-    Internally, these core schemas have a specific key set in the core metadata dict.
+-    """
+-
+-    collected_references: dict[str, DefinitionReferenceSchema | None] = field(init=False, default_factory=dict)
+-    """The collected definition references.
+-
+-    If a definition reference schema can be inlined, it means that there is
+-    only one in the whole core schema. As such, it is stored as the value.
+-    Otherwise, the value is set to `None`.
+-
+-    During schema traversing, definition reference schemas can be added as candidates, or removed
+-    (by setting the value to `None`).
+-    """
+-
+-    visited: dict[int, tuple[int, int | None]] = field(init=False, default_factory=dict)
+-    """A mapping between the traversed core schema IDs and their span in the `encountered_refs`.
+-
+-    Core schemas are stored (and thus shared) on successfully completed Pydantic models (and other
+-    referenceable types), meaning the same core schema object can appear multiple times in the
+-    traversed schema. Every schema object only needs to be traversed once: traversing per path
+-    can result in exponential blowup with highly interconnected models (e.g. `Model3` references
+-    `Model2` and `Model1`, while `Model2` also references `Model1`).
+-
+-    However, the `collected_references` bookkeeping is per encounter: seeing a reference a second
+-    time (even through a shared schema object) means it can't be inlined. To preserve this without
+-    re-traversing, the references encountered while traversing each schema (i.e. the schema's span
+-    of the `encountered_refs`) are marked as non-inlinable when the schema is visited again.
+-    A `None` end index means the schema is currently being traversed (in which case every reference
+-    encountered since the start index is marked as non-inlinable. This happens when a
+-    `'definition-ref'` schema object is reachable from the definition it points to, and inlining
+-    would then create a cycle).
+-    """
+-
+-    encountered_refs: list[str] = field(init=False, default_factory=list)
+-    """A list of the definition references encountered during the traversal, used with `visited`."""
+-
+-
+-def traverse_metadata(schema: AllSchemas, ctx: GatherContext) -> None:
+-    meta = schema.get('metadata')
+-    if meta is not None and 'pydantic_internal_union_discriminator' in meta:
+-        ctx.deferred_discriminator_schemas.append(schema)  # pyright: ignore[reportArgumentType]
+-
+-
+-def traverse_definition_ref(def_ref_schema: DefinitionReferenceSchema, ctx: GatherContext) -> None:
+-    schema_ref = def_ref_schema['schema_ref']
+-    ctx.encountered_refs.append(schema_ref)
+-
+-    if schema_ref not in ctx.collected_references:
+-        definition = ctx.definitions.get(schema_ref)
+-        if definition is None:
+-            raise MissingDefinitionError(schema_ref)
+-
+-        # The `'definition-ref'` schema was only encountered once, make it
+-        # a candidate to be inlined:
+-        ctx.collected_references[schema_ref] = def_ref_schema
+-        traverse_schema(definition, ctx)
+-        if 'serialization' in def_ref_schema:
+-            traverse_schema(def_ref_schema['serialization'], ctx)
+-        traverse_metadata(def_ref_schema, ctx)
+-    else:
+-        # The `'definition-ref'` schema was already encountered, meaning
+-        # the previously encountered schema (and this one) can't be inlined:
+-        ctx.collected_references[schema_ref] = None
+-
+-
+-def traverse_schema(schema: AllSchemas, context: GatherContext) -> None:
+-    schema_id = id(schema)
+-    span = context.visited.get(schema_id)
+-    if span is not None:
+-        # The schema object was already traversed (or is currently being traversed, in which case
+-        # the end index is not set yet). Re-traversing per path can result in exponential blowup
+-        # with highly interconnected models, so instead mark every definition reference encountered
+-        # during its traversal as non-inlinable, as if they were encountered again:
+-        start, end = span
+-        for schema_ref in context.encountered_refs[start:end]:
+-            context.collected_references[schema_ref] = None
+-        return
+-    start = len(context.encountered_refs)
+-    context.visited[schema_id] = (start, None)
+-
+-    # TODO When we drop 3.9, use a match statement to get better type checking and remove
+-    # file-level type ignore.
+-    # (the `'type'` could also be fetched in every `if/elif` statement, but this alters performance).
+-    schema_type = schema['type']
+-
+-    if schema_type == 'definition-ref':
+-        traverse_definition_ref(schema, context)
+-        context.visited[schema_id] = (start, len(context.encountered_refs))
+-        # `traverse_definition_ref` handles the possible serialization and metadata schemas:
+-        return
+-    elif schema_type == 'definitions':
+-        traverse_schema(schema['schema'], context)
+-        for definition in schema['definitions']:
+-            traverse_schema(definition, context)
+-    elif schema_type in {'list', 'set', 'frozenset', 'generator'}:
+-        if 'items_schema' in schema:
+-            traverse_schema(schema['items_schema'], context)
+-    elif schema_type == 'tuple':
+-        if 'items_schema' in schema:
+-            for s in schema['items_schema']:
+-                traverse_schema(s, context)
+-    elif schema_type in {'dict', 'frozendict'}:
+-        if 'keys_schema' in schema:
+-            traverse_schema(schema['keys_schema'], context)
+-        if 'values_schema' in schema:
+-            traverse_schema(schema['values_schema'], context)
+-    elif schema_type == 'union':
+-        for choice in iter_union_choices(schema):
+-            traverse_schema(choice, context)
+-    elif schema_type == 'tagged-union':
+-        for v in schema['choices'].values():
+-            traverse_schema(v, context)
+-    elif schema_type == 'chain':
+-        for step in schema['steps']:
+-            traverse_schema(step, context)
+-    elif schema_type == 'lax-or-strict':
+-        traverse_schema(schema['lax_schema'], context)
+-        traverse_schema(schema['strict_schema'], context)
+-    elif schema_type == 'json-or-python':
+-        traverse_schema(schema['json_schema'], context)
+-        traverse_schema(schema['python_schema'], context)
+-    elif schema_type in {'model-fields', 'typed-dict'}:
+-        if 'extras_schema' in schema:
+-            traverse_schema(schema['extras_schema'], context)
+-        if 'computed_fields' in schema:
+-            for s in schema['computed_fields']:
+-                traverse_schema(s, context)
+-        for s in schema['fields'].values():
+-            traverse_schema(s, context)
+-    elif schema_type == 'dataclass-args':
+-        if 'computed_fields' in schema:
+-            for s in schema['computed_fields']:
+-                traverse_schema(s, context)
+-        for s in schema['fields']:
+-            traverse_schema(s, context)
+-    elif schema_type == 'named-tuple':
+-        for s in schema['fields']:
+-            traverse_schema(s, context)
+-    elif schema_type == 'arguments':
+-        for s in schema['arguments_schema']:
+-            traverse_schema(s['schema'], context)
+-        if 'var_args_schema' in schema:
+-            traverse_schema(schema['var_args_schema'], context)
+-        if 'var_kwargs_schema' in schema:
+-            traverse_schema(schema['var_kwargs_schema'], context)
+-    elif schema_type == 'arguments-v3':
+-        for s in schema['arguments_schema']:
+-            traverse_schema(s['schema'], context)
+-    elif schema_type == 'call':
+-        traverse_schema(schema['arguments_schema'], context)
+-        if 'return_schema' in schema:
+-            traverse_schema(schema['return_schema'], context)
+-    elif schema_type == 'computed-field':
+-        traverse_schema(schema['return_schema'], context)
+-    elif schema_type == 'function-before':
+-        if 'schema' in schema:
+-            traverse_schema(schema['schema'], context)
+-        if 'json_schema_input_schema' in schema:
+-            traverse_schema(schema['json_schema_input_schema'], context)
+-    elif schema_type == 'function-plain':
+-        # TODO duplicate schema types for serializers and validators, needs to be deduplicated.
+-        if 'return_schema' in schema:
+-            traverse_schema(schema['return_schema'], context)
+-        if 'json_schema_input_schema' in schema:
+-            traverse_schema(schema['json_schema_input_schema'], context)
+-    elif schema_type == 'function-wrap':
+-        # TODO duplicate schema types for serializers and validators, needs to be deduplicated.
+-        if 'return_schema' in schema:
+-            traverse_schema(schema['return_schema'], context)
+-        if 'schema' in schema:
+-            traverse_schema(schema['schema'], context)
+-        if 'json_schema_input_schema' in schema:
+-            traverse_schema(schema['json_schema_input_schema'], context)
+-    else:
+-        if 'schema' in schema:
+-            traverse_schema(schema['schema'], context)
+-
+-    if 'serialization' in schema:
+-        traverse_schema(schema['serialization'], context)
+-    traverse_metadata(schema, context)
+-
+-    context.visited[schema_id] = (start, len(context.encountered_refs))
+-
+-
+ def gather_schemas_for_cleaning(schema: CoreSchema, definitions: dict[str, CoreSchema]) -> GatherResult:
+     """Traverse the core schema and definitions and return the necessary information for schema cleaning.
+ 
+@@ -245,10 +40,10 @@ def gather_schemas_for_cleaning(schema: CoreSchema, definitions: dict[str, CoreS
+       the `'definition-ref'` schema is encountered more that once, the schema itself is also
+       saved in the context to be inlined (i.e. replaced by the definition it points to).
+     """
+-    context = GatherContext(definitions)
+-    traverse_schema(schema, context)
+-
++    collected_references, deferred_discriminator_schemas = _schema_gather.gather_schemas_for_cleaning(
++        schema, definitions
++    )
+     return {
+-        'collected_references': context.collected_references,
+-        'deferred_discriminator_schemas': context.deferred_discriminator_schemas,
++        'collected_references': collected_references,
++        'deferred_discriminator_schemas': deferred_discriminator_schemas,
+     }
+diff --git a/tests/test_schema_gather.py b/tests/test_schema_gather.py
+new file mode 100644
+index 00000000000..7ff397a7806
+--- /dev/null
++++ b/tests/test_schema_gather.py
+@@ -0,0 +1,249 @@
++"""Tests for the core schema traversal used for schema cleaning (`pydantic._internal._schema_gather`)."""
++
++from __future__ import annotations
++
++import sys
++from typing import Any
++
++import pytest
++from pydantic_core import core_schema as cs
++
++from pydantic._internal._schema_gather import MissingDefinitionError, gather_schemas_for_cleaning
++
++
++def disc(schema: Any) -> Any:
++    schema['metadata'] = {'pydantic_internal_union_discriminator': 'kind'}
++    return schema
++
++
++def find_def_ref(schema: Any, ref: str) -> Any:
++    """Find the (single) `'definition-ref'` schema object pointing to `ref`."""
++    found: list[Any] = []
++
++    def walk(obj: Any) -> None:
++        if isinstance(obj, dict):
++            if obj.get('type') == 'definition-ref' and obj['schema_ref'] == ref:
++                found.append(obj)
++            for v in obj.values():
++                walk(v)
++        elif isinstance(obj, (list, tuple)):
++            for v in obj:
++                walk(v)
++
++    walk(schema)
++    assert len(found) == 1
++    return found[0]
++
++
++def test_all_schema_kinds() -> None:
++    int_schema = cs.int_schema()
++    shared = cs.list_schema(cs.definition_reference_schema('shared'))
++    definitions = {
++        'a': cs.int_schema(ref='a'),
++        'b': cs.str_schema(ref='b'),
++        'shared': cs.float_schema(ref='shared'),
++        'recursive': cs.list_schema(cs.definition_reference_schema('recursive'), ref='recursive'),
++        'with_ser': cs.int_schema(ref='with_ser'),
++        'fd': cs.int_schema(ref='fd'),
++    }
++    deferred_union_choice = disc(cs.str_schema())
++    deferred_computed_field = disc(cs.str_schema())
++    deferred_named_tuple_field = disc(cs.str_schema())
++    schema = cs.definitions_schema(
++        cs.typed_dict_schema(
++            {
++                'l': cs.typed_dict_field(cs.list_schema(cs.definition_reference_schema('a'))),
++                't': cs.typed_dict_field(cs.tuple_schema([int_schema, cs.definition_reference_schema('b')])),
++                'd': cs.typed_dict_field(cs.dict_schema(int_schema, cs.definition_reference_schema('b'))),
++                'fd': cs.typed_dict_field(
++                    {
++                        'type': 'frozendict',
++                        'keys_schema': int_schema,
++                        'values_schema': cs.definition_reference_schema('fd'),
++                    }
++                ),
++                'u': cs.typed_dict_field(cs.union_schema([(int_schema, 'x'), deferred_union_choice])),
++                'tu': cs.typed_dict_field(cs.tagged_union_schema({'x': shared, 'y': shared}, 'kind')),
++                'ch': cs.typed_dict_field(cs.chain_schema([int_schema, cs.str_schema()])),
++                'ls': cs.typed_dict_field(cs.lax_or_strict_schema(cs.int_schema(), cs.str_schema())),
++                'jp': cs.typed_dict_field(cs.json_or_python_schema(cs.int_schema(), cs.str_schema())),
++                'rec': cs.typed_dict_field(cs.definition_reference_schema('recursive')),
++                'mf': cs.typed_dict_field(
++                    cs.model_fields_schema(
++                        {'x': cs.model_field(cs.int_schema())},
++                        computed_fields=[cs.computed_field('c', cs.int_schema())],
++                        extras_schema=cs.str_schema(),
++                    )
++                ),
++                'dc': cs.typed_dict_field(
++                    cs.dataclass_args_schema(
++                        'DC',
++                        [cs.dataclass_field('x', cs.int_schema())],
++                        computed_fields=[cs.computed_field('c', deferred_computed_field)],
++                    )
++                ),
++                'nt': cs.typed_dict_field(
++                    cs.named_tuple_schema(
++                        tuple,
++                        [
++                            cs.named_tuple_field('x', cs.int_schema()),
++                            cs.named_tuple_field('y', deferred_named_tuple_field),
++                        ],
++                    )
++                ),
++                'args': cs.typed_dict_field(
++                    cs.arguments_schema(
++                        [cs.arguments_parameter('x', cs.int_schema())],
++                        var_args_schema=cs.int_schema(),
++                        var_kwargs_schema=cs.str_schema(),
++                    )
++                ),
++                'args3': cs.typed_dict_field(cs.arguments_v3_schema([cs.arguments_v3_parameter('x', cs.int_schema())])),
++                'call': cs.typed_dict_field(
++                    cs.call_schema(cs.arguments_schema([]), lambda: None, return_schema=cs.int_schema())
++                ),
++                'fb': cs.typed_dict_field(
++                    cs.no_info_before_validator_function(
++                        lambda v: v, cs.int_schema(), json_schema_input_schema=cs.str_schema()
++                    )
++                ),
++                'fp': cs.typed_dict_field(
++                    cs.no_info_plain_validator_function(lambda v: v, json_schema_input_schema=cs.str_schema())
++                ),
++                'fw': cs.typed_dict_field(
++                    cs.no_info_wrap_validator_function(
++                        lambda v, h: v, cs.int_schema(), json_schema_input_schema=cs.str_schema()
++                    )
++                ),
++                'ser': cs.typed_dict_field(
++                    cs.any_schema(
++                        serialization=cs.plain_serializer_function_ser_schema(
++                            lambda v: v, return_schema=cs.definition_reference_schema('with_ser')
++                        )
++                    )
++                ),
++                'nullable': cs.typed_dict_field(cs.nullable_schema(cs.definition_reference_schema('shared'))),
++                'def_ref_ser': cs.typed_dict_field(
++                    cs.definition_reference_schema(
++                        'a', serialization=cs.plain_serializer_function_ser_schema(lambda v: v)
++                    )
++                ),
++            }
++        ),
++        [cs.int_schema(ref='unused')],
++    )
++
++    result = gather_schemas_for_cleaning(schema, definitions)
++    # in encounter order:
++    assert list(result['collected_references']) == ['a', 'b', 'fd', 'shared', 'recursive', 'with_ser']
++    assert result['collected_references'] == {
++        'a': None,
++        'b': None,
++        'fd': find_def_ref(schema, 'fd'),
++        'shared': None,
++        'recursive': None,
++        'with_ser': find_def_ref(schema, 'with_ser'),
++    }
++    assert result['collected_references']['with_ser'] is find_def_ref(schema, 'with_ser')
++    assert [id(s) for s in result['deferred_discriminator_schemas']] == [
++        id(deferred_union_choice),
++        id(deferred_computed_field),
++        id(deferred_named_tuple_field),
++    ]
++
++
++def test_inlinable_reference_identity() -> None:
++    def_ref = cs.definition_reference_schema('a')
++    result = gather_schemas_for_cleaning(cs.list_schema(def_ref), {'a': cs.int_schema(ref='a')})
++    assert result['collected_references'] == {'a': def_ref}
++    assert result['collected_references']['a'] is def_ref
++    assert result['deferred_discriminator_schemas'] == []
++
++
++def test_shared_schema_objects_are_not_inlined() -> None:
++    # the same schema object reachable twice: references inside can't be inlined
++    inner = cs.list_schema(cs.definition_reference_schema('a'))
++    result = gather_schemas_for_cleaning(cs.tuple_schema([inner, inner]), {'a': cs.int_schema(ref='a')})
++    assert result['collected_references'] == {'a': None}
++
++
++def test_definition_ref_reachable_from_its_definition() -> None:
++    # the 'definition-ref' schema object is reachable from the definition it points to
++    # (it is encountered again while being traversed), so it can't be inlined:
++    def_ref = cs.definition_reference_schema('a')
++    definitions: dict[str, Any] = {'a': cs.list_schema(def_ref, ref='a')}
++    result = gather_schemas_for_cleaning(cs.tuple_schema([def_ref]), definitions)
++    assert result['collected_references'] == {'a': None}
++
++
++def test_definition_ref_serialization_and_metadata() -> None:
++    # the serialization schema and metadata of a 'definition-ref' schema are only considered
++    # the first time it is encountered:
++    def_ref = disc(
++        cs.definition_reference_schema(
++            'a', serialization=cs.plain_serializer_function_ser_schema(lambda v: v, return_schema=disc(cs.int_schema()))
++        )
++    )
++    definitions: dict[str, Any] = {'a': cs.int_schema(ref='a')}
++    result = gather_schemas_for_cleaning(cs.tuple_schema([def_ref]), definitions)
++    assert result['collected_references'] == {'a': def_ref}
++    assert [id(s) for s in result['deferred_discriminator_schemas']] == [
++        id(def_ref['serialization']['return_schema']),
++        id(def_ref),
++    ]
++
++    result = gather_schemas_for_cleaning(cs.tuple_schema([def_ref, def_ref]), definitions)
++    assert result['collected_references'] == {'a': None}
++    assert len(result['deferred_discriminator_schemas']) == 2
++
++
++@pytest.mark.parametrize(
++    ['schema', 'definitions'],
++    [
++        (cs.definition_reference_schema('missing'), {}),
++        (cs.list_schema(cs.definition_reference_schema('missing')), {'other': cs.int_schema()}),
++    ],
++)
++def test_missing_definition(schema: Any, definitions: dict[str, Any]) -> None:
++    with pytest.raises(MissingDefinitionError) as exc_info:
++        gather_schemas_for_cleaning(schema, definitions)
++    assert isinstance(exc_info.value, LookupError)
++    assert exc_info.value.schema_reference == 'missing'
++
++
++@pytest.mark.parametrize(
++    ['schema', 'exc_type'],
++    [
++        ([], TypeError),
++        ({'no_type': True}, KeyError),
++        ({'type': 123}, TypeError),
++        ({'type': 'model-fields'}, KeyError),
++        ({'type': 'model-fields', 'fields': 1}, AttributeError),
++        ({'type': 'lax-or-strict', 'lax_schema': cs.int_schema()}, KeyError),
++        ({'type': 'definition-ref'}, KeyError),
++    ],
++)
++def test_unexpected_structures(schema: Any, exc_type: type[Exception]) -> None:
++    with pytest.raises(exc_type):
++        gather_schemas_for_cleaning(schema, {})
++
++
++def test_iterables() -> None:
++    # any iterable is accepted where the schema types are defined with lists:
++    def_ref = cs.definition_reference_schema('a')
++    schema: Any = {
++        'type': 'definitions',
++        'schema': {'type': 'tuple', 'items_schema': (def_ref,)},
++        'definitions': iter([cs.int_schema(ref='unused')]),
++    }
++    result = gather_schemas_for_cleaning(schema, {'a': cs.int_schema(ref='a')})
++    assert result['collected_references'] == {'a': def_ref}
++
++
++@pytest.mark.skipif(sys.platform == 'emscripten', reason='Deallocating the deeply nested schema overflows the JS stack')
++def test_deeply_nested_schema() -> None:
++    schema: Any = cs.definition_reference_schema('a')
++    for _ in range(10_000):
++        schema = cs.list_schema(schema)
++    result = gather_schemas_for_cleaning(schema, {'a': cs.int_schema(ref='a')})
++    assert list(result['collected_references']) == ['a']

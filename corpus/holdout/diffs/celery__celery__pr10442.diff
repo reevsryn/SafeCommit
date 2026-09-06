@@ -1,0 +1,299 @@
+diff --git a/CONTRIBUTORS.txt b/CONTRIBUTORS.txt
+index 0926f63151..1883283637 100644
+--- a/CONTRIBUTORS.txt
++++ b/CONTRIBUTORS.txt
+@@ -311,4 +311,5 @@ Brian Helba, 2026/01/12
+ Hmn Falahi, 2026/07/08
+ Oliver Haas, 2026/07/26
+ Benjamin Chrobot, 2026/08/18
++Phan Kỳ, 2026/08/28
+ Arockia Rajamanickam, 2026/08/29
+diff --git a/celery/app/builtins.py b/celery/app/builtins.py
+index 2f00ba9c51..1c836c6bc5 100644
+--- a/celery/app/builtins.py
++++ b/celery/app/builtins.py
+@@ -61,15 +61,24 @@ def unlock_chord(self, group_id, callback, interval=None,
+         )
+         j = deps.join_native if deps.supports_native_join else deps.join
+ 
++        # Preserve exchange_type for retries; it is not included in delivery_info.
++        exchange_type = kwargs.pop('_chord_unlock_exchange_type', None)
++        retry_options = {}
++        if exchange_type is not None:
++            retry_options['exchange_type'] = exchange_type
+         try:
+             ready = deps.ready()
+         except Exception as exc:
+             raise self.retry(
+                 exc=exc, countdown=interval, max_retries=max_retries,
++                **retry_options,
+             )
+         else:
+             if not ready:
+-                raise self.retry(countdown=interval, max_retries=max_retries)
++                raise self.retry(
++                    countdown=interval, max_retries=max_retries,
++                    **retry_options,
++                )
+ 
+         callback = maybe_signature(callback, app=app)
+         try:
+diff --git a/celery/backends/base.py b/celery/backends/base.py
+index 104ba6a08a..8220e90db0 100644
+--- a/celery/backends/base.py
++++ b/celery/backends/base.py
+@@ -956,11 +956,32 @@ def fallback_chord_unlock(self, header_result, body, countdown=1,
+             queue = self.app.amqp.router.route(kwargs, body.name)['queue'].name
+ 
+         priority = body.options.get('priority', getattr(body_type, 'priority', 0))
++
++        stamps = body.options.get('stamped_headers', ())
++        routing_options = {}
++        for option in ('exchange', 'exchange_type', 'routing_key', 'headers'):
++            if option in stamps:
++                continue
++            value = body.options.get(option)
++            if value is not None:
++                routing_options[option] = value
++
++        if 'exchange_type' not in routing_options:
++            try:
++                queue_obj = self.app.amqp.queues[queue] if isinstance(queue, str) else queue
++                routing_options['exchange_type'] = queue_obj.exchange.type
++            except (AttributeError, KeyError):
++                pass
++        if 'exchange_type' in routing_options:
++            # unlock_chord needs this for retries.
++            kwargs['_chord_unlock_exchange_type'] = routing_options['exchange_type']
++
+         self.app.tasks['celery.chord_unlock'].apply_async(
+             (header_result.id, body,), kwargs,
+             countdown=countdown,
+             queue=queue,
+             priority=priority,
++            **routing_options,
+         )
+ 
+     def ensure_chords_allowed(self):
+diff --git a/t/smoke/tests/test_chord_headers_exchange.py b/t/smoke/tests/test_chord_headers_exchange.py
+new file mode 100644
+index 0000000000..71afecb5d2
+--- /dev/null
++++ b/t/smoke/tests/test_chord_headers_exchange.py
+@@ -0,0 +1,113 @@
++from __future__ import annotations
++
++import uuid
++
++import pytest
++from kombu import Exchange, Queue
++from pytest_celery import RESULT_TIMEOUT, CeleryBrokerCluster, CeleryTestSetup, RabbitMQTestBroker
++from tenacity import retry, stop_after_attempt, wait_fixed
++
++from celery import Celery, chord
++from t.integration.conftest import get_redis_connection
++from t.integration.tasks import add, redis_echo
++from t.smoke.workers.dev import SmokeWorkerContainer
++
++DEFAULT_QUEUE = "default_queue"
++CHORD_HEADERS = {"my_header": "my_value"}
++CHORD_HEADERS_QUEUE = Queue(
++    "chord_headers_queue",
++    exchange=Exchange("chord_headers_exchange", type="headers"),
++    routing_key="",
++    binding_arguments=CHORD_HEADERS,
++)
++TASK_QUEUES = {
++    DEFAULT_QUEUE: {},
++    CHORD_HEADERS_QUEUE.name: {
++        "exchange": CHORD_HEADERS_QUEUE.exchange.name,
++        "exchange_type": CHORD_HEADERS_QUEUE.exchange.type,
++        "routing_key": CHORD_HEADERS_QUEUE.routing_key,
++        "binding_arguments": CHORD_HEADERS,
++    },
++}
++
++
++@pytest.fixture
++def celery_broker_cluster(celery_rabbitmq_broker: RabbitMQTestBroker) -> CeleryBrokerCluster:
++    cluster = CeleryBrokerCluster(celery_rabbitmq_broker)
++    yield cluster
++    cluster.teardown()
++
++
++@pytest.fixture
++def celery_backend_cluster() -> None:
++    return None
++
++
++@pytest.fixture
++def celery_setup_config(celery_setup_config: dict, tmp_path) -> dict:
++    celery_setup_config.update(
++        {
++            "result_backend": f"file://{tmp_path}",
++            "task_create_missing_queues": False,
++            "task_default_queue": DEFAULT_QUEUE,
++            "task_default_routing_key": "",
++            "task_queues": TASK_QUEUES,
++        }
++    )
++    return celery_setup_config
++
++
++@pytest.fixture
++def default_worker_container_cls() -> type[SmokeWorkerContainer]:
++    class ChordHeadersWorkerContainer(SmokeWorkerContainer):
++        @classmethod
++        def worker_queue(cls) -> str:
++            return CHORD_HEADERS_QUEUE.name
++
++    return ChordHeadersWorkerContainer
++
++
++@pytest.fixture
++def default_worker_app(default_worker_app: Celery) -> Celery:
++    app = default_worker_app
++    app.conf.result_backend = "file:///tmp"
++    app.conf.task_create_missing_queues = False
++    app.conf.task_default_queue = DEFAULT_QUEUE
++    app.conf.task_default_routing_key = ""
++    app.conf.task_queues = TASK_QUEUES
++    return app
++
++
++class test_chord_headers_exchange:
++    def test_chord_body_runs_when_routed_through_a_headers_exchange(
++        self, celery_setup: CeleryTestSetup,
++    ):
++        redis_key = str(uuid.uuid4())
++        header = [
++            add.s(1, 1).set(
++                headers=CHORD_HEADERS,
++                queue=CHORD_HEADERS_QUEUE.name,
++            ),
++            add.s(2, 2).set(
++                headers=CHORD_HEADERS,
++                queue=CHORD_HEADERS_QUEUE.name,
++                countdown=5,
++            ),
++        ]
++        body = redis_echo.si("chord_body_ran", redis_key).set(
++            headers=CHORD_HEADERS,
++            queue=CHORD_HEADERS_QUEUE.name,
++        )
++
++        chord(header)(body)
++        celery_setup.worker.assert_log_exists("retry: Retry in")
++
++        @retry(
++            stop=stop_after_attempt(int(RESULT_TIMEOUT)),
++            wait=wait_fixed(1),
++            reraise=True,
++        )
++        def assert_body_ran():
++            assert get_redis_connection().lrange(redis_key, 0, -1) == [b"chord_body_ran"]
++
++        assert_body_ran()
+diff --git a/t/unit/backends/test_base.py b/t/unit/backends/test_base.py
+index 1e4aa0c75e..0f82090a80 100644
+--- a/t/unit/backends/test_base.py
++++ b/t/unit/backends/test_base.py
+@@ -285,6 +285,72 @@ def callback_different_app(result):
+             called_kwargs = self.app.tasks[unlock].apply_async.call_args[1]
+             assert called_kwargs['queue'] == 'test_queue_three'
+ 
++    def test_chord_unlock_routing_options(self, unlock='celery.chord_unlock'):
++        self.app.tasks[unlock] = Mock()
++        header_result_args = (
++            uuid(),
++            [self.app.AsyncResult(x) for x in range(3)],
++        )
++        body = self.callback.s().set(
++            queue='my_queue',
++            exchange='my_exchange',
++            exchange_type='headers',
++            routing_key='my_routing_key',
++            headers={'my_header': 'my_value'},
++        )
++
++        self.b.apply_chord(header_result_args, body)
++        called_args, called_kwargs = self.app.tasks[unlock].apply_async.call_args
++        assert called_args[1]['_chord_unlock_exchange_type'] == 'headers'
++        assert called_kwargs['queue'] == 'my_queue'
++        assert called_kwargs['exchange'] == 'my_exchange'
++        assert called_kwargs['exchange_type'] == 'headers'
++        assert called_kwargs['routing_key'] == 'my_routing_key'
++        assert called_kwargs['headers'] == {'my_header': 'my_value'}
++
++    def test_chord_unlock_with_unknown_queue(self, unlock='celery.chord_unlock'):
++        self.app.tasks[unlock] = Mock()
++        self.app.amqp.queues.create_missing = False
++        header_result_args = (
++            uuid(),
++            [self.app.AsyncResult(x) for x in range(3)],
++        )
++        body = self.callback.s().set(queue='missing_queue')
++
++        self.b.apply_chord(header_result_args, body)
++        called_args, called_kwargs = self.app.tasks[unlock].apply_async.call_args
++        assert '_chord_unlock_exchange_type' not in called_args[1]
++        assert 'exchange_type' not in called_kwargs
++
++    def test_chord_unlock_with_queue_without_exchange(self, unlock='celery.chord_unlock'):
++        self.app.tasks[unlock] = Mock()
++        header_result_args = (
++            uuid(),
++            [self.app.AsyncResult(x) for x in range(3)],
++        )
++        queue = Mock(spec=[])
++        body = self.callback.s().set(queue=queue)
++
++        self.b.apply_chord(header_result_args, body)
++        called_args, called_kwargs = self.app.tasks[unlock].apply_async.call_args
++        assert called_kwargs['queue'] is queue
++        assert '_chord_unlock_exchange_type' not in called_args[1]
++        assert 'exchange_type' not in called_kwargs
++
++    def test_chord_unlock_stamped_routing_options(self, unlock='celery.chord_unlock'):
++        self.app.tasks[unlock] = Mock()
++        header_result_args = (
++            uuid(),
++            [self.app.AsyncResult(x) for x in range(3)],
++        )
++        body = self.callback.s().set(queue='my_queue')
++        body.stamp(headers='my_stamp')
++
++        self.b.apply_chord(header_result_args, body)
++        called_kwargs = self.app.tasks[unlock].apply_async.call_args[1]
++        assert called_kwargs['queue'] == 'my_queue'
++        assert 'headers' not in called_kwargs
++
+ 
+ class test_exception_pickle:
+     def test_BaseException(self):
+diff --git a/t/unit/tasks/test_chord.py b/t/unit/tasks/test_chord.py
+index a557077743..6a1a64451c 100644
+--- a/t/unit/tasks/test_chord.py
++++ b/t/unit/tasks/test_chord.py
+@@ -203,6 +203,21 @@ class NeverReady(TSR):
+             # did retry
+             retry.assert_called_with(countdown=10, max_retries=30)
+ 
++    def test_when_not_ready_preserves_exchange_type(self):
++        class NeverReady(TSR):
++            is_ready = False
++
++        with self._chord_context(
++            NeverReady, interval=10,
++            max_retries=30, _chord_unlock_exchange_type='headers',
++        ) as (cb, retry, _):
++            cb.type.apply_async.assert_not_called()
++            retry.assert_called_with(
++                countdown=10,
++                max_retries=30,
++                exchange_type='headers',
++            )
++
+     def test_when_not_ready_with_configured_chord_retry_interval(self):
+         class NeverReady(TSR):
+             is_ready = False

@@ -1,0 +1,77 @@
+diff --git a/pydantic/main.py b/pydantic/main.py
+index c1eb9e05e9..be444fa7bc 100644
+--- a/pydantic/main.py
++++ b/pydantic/main.py
+@@ -31,7 +31,7 @@
+ import pydantic_core
+ import typing_extensions
+ from pydantic_core import PydanticUndefined, ValidationError
+-from typing_extensions import Self, TypeAlias, Unpack
++from typing_extensions import Self, Sentinel, TypeAlias, Unpack
+ 
+ from . import PydanticDeprecatedSince20, PydanticDeprecatedSince211
+ from ._internal import (
+@@ -121,6 +121,9 @@ def _private_setattr_handler(model: BaseModel, name: str, val: Any) -> None:
+     model.__pydantic_private__[name] = val  # pyright: ignore[reportOptionalSubscript]
+ 
+ 
++_ATTRIBUTE_MISSING = Sentinel('_ATTRIBUTE_MISSING')
++
++
+ _SIMPLE_SETATTR_HANDLERS: Mapping[str, Callable[[BaseModel, str, Any], None]] = {
+     'model_field': _model_field_setattr_handler,
+     'validate_assignment': lambda model, name, val: model.__pydantic_validator__.validate_assignment(model, name, val),  # pyright: ignore[reportAssignmentType]
+@@ -1137,7 +1140,7 @@ def _setattr_handler(self, name: str, value: Any) -> Callable[[BaseModel, str, A
+                     _object_setattr(self, name, value)
+                     return None  # Can not return memoized handler with possibly freeform attr names
+ 
+-            attr = getattr(cls, name, None)
++            attr = getattr(cls, name, _ATTRIBUTE_MISSING)
+             # NOTE: We currently special case properties and `cached_property`, but we might need
+             # to generalize this to all data/non-data descriptors at some point. For non-data descriptors
+             # (such as `cached_property`), it isn't obvious though. `cached_property` caches the value
+@@ -1157,7 +1160,7 @@ def _setattr_handler(self, name: str, value: Any) -> Callable[[BaseModel, str, A
+                 if cls.model_config.get('extra') != 'allow':
+                     # TODO - matching error
+                     raise ValueError(f'"{cls.__name__}" object has no field "{name}"')
+-                elif attr is None:
++                elif attr is _ATTRIBUTE_MISSING:
+                     # attribute does not exist, so put it in extra
+                     self.__pydantic_extra__[name] = value
+                     self.__pydantic_fields_set__.add(name)
+diff --git a/tests/test_main.py b/tests/test_main.py
+index db2b853988..c505b2042e 100644
+--- a/tests/test_main.py
++++ b/tests/test_main.py
+@@ -401,6 +401,31 @@ def not_extra_func_replacement(self_sub: Model) -> str:
+     assert 'not_extra_func' in m.__dict__
+ 
+ 
++def test_set_class_attribute_set_to_none_with_extra_allow():
++    class Mixin:
++        # Plain class attributes, not Pydantic fields. `None` is a legitimate value here.
++        a = None
++        b = 'b'
++
++    class Model(Mixin, BaseModel):
++        model_config = ConfigDict(extra='allow')
++
++    m = Model()
++
++    # `b` exists on the class, so the assignment shadows it on the instance:
++    m.b = 'set'
++    assert m.b == 'set'
++    assert m.__dict__ == {'b': 'set'}
++    assert m.model_extra == {}
++
++    # `a` exists on the class as well and must behave the same, even though it is `None`
++    # (otherwise the class attribute keeps shadowing the assigned value on reads):
++    m.a = 'set'
++    assert m.a == 'set'
++    assert m.__dict__ == {'a': 'set', 'b': 'set'}
++    assert m.model_extra == {}
++
++
+ def test_extra_ignored():
+     class Model(BaseModel):
+         model_config = ConfigDict(extra='ignore')

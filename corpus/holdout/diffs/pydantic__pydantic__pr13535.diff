@@ -1,0 +1,206 @@
+diff --git a/pydantic-core/src/validators/prebuilt.rs b/pydantic-core/src/validators/prebuilt.rs
+index 77e6ba758f8..ece551475d9 100644
+--- a/pydantic-core/src/validators/prebuilt.rs
++++ b/pydantic-core/src/validators/prebuilt.rs
+@@ -1,3 +1,4 @@
++use pyo3::intern;
+ use pyo3::prelude::*;
+ use pyo3::types::PyDict;
+ 
+@@ -16,7 +17,18 @@ pub struct PrebuiltValidator {
+ impl PrebuiltValidator {
+     pub fn try_get_from_schema(type_: &str, schema: &Bound<'_, PyDict>) -> PyResult<Option<CombinedValidator>> {
+         get_prebuilt(type_, schema, "__pydantic_validator__", |py_any| {
+-            let schema_validator = py_any.extract::<Py<SchemaValidator>>()?;
++            let schema_validator: Py<SchemaValidator> = match py_any.extract() {
++                Ok(schema_validator) => schema_validator,
++                // `__pydantic_validator__` may be a `PluggableSchemaValidator` instance (from `pydantic.plugin`),
++                // which exposes the underlying `SchemaValidator` through this property:
++                Err(_) => match py_any.getattr(intern!(py_any.py(), "__pydantic_schema_validator__")) {
++                    Ok(inner) => match inner.extract() {
++                        Ok(schema_validator) => schema_validator,
++                        Err(_) => return Ok(None),
++                    },
++                    Err(_) => return Ok(None),
++                },
++            };
+             if matches!(
+                 schema_validator.get().validator.as_ref(),
+                 CombinedValidator::FunctionWrap(_) | CombinedValidator::FunctionAfter(_)
+diff --git a/pydantic-core/tests/test_prebuilt.py b/pydantic-core/tests/test_prebuilt.py
+index 4f097c104c2..92b7786d04a 100644
+--- a/pydantic-core/tests/test_prebuilt.py
++++ b/pydantic-core/tests/test_prebuilt.py
+@@ -48,6 +48,99 @@ class OuterModel:
+     assert outer_serializer.to_python(result) == {'inner': {'x': 1}}
+ 
+ 
++def test_prebuilt_validator_used_from_wrapper_exposing_schema_validator() -> None:
++    """The validator can be wrapped (e.g. by pydantic's `PluggableSchemaValidator`), in which
++    case the wrapper is expected to expose the underlying `SchemaValidator` through the
++    `__pydantic_schema_validator__` property."""
++
++    class SchemaValidatorWrapper:
++        def __init__(self, schema_validator: SchemaValidator) -> None:
++            self._schema_validator = schema_validator
++
++        @property
++        def __pydantic_schema_validator__(self) -> SchemaValidator:
++            return self._schema_validator
++
++    class InnerModel:
++        x: int
++
++    inner_schema = core_schema.model_schema(
++        InnerModel,
++        schema=core_schema.model_fields_schema(
++            {'x': core_schema.model_field(schema=core_schema.int_schema())},
++        ),
++    )
++
++    InnerModel.__pydantic_complete__ = True  # pyright: ignore[reportAttributeAccessIssue]
++    InnerModel.__pydantic_validator__ = SchemaValidatorWrapper(SchemaValidator(inner_schema))  # pyright: ignore[reportAttributeAccessIssue]
++
++    class OuterModel:
++        inner: InnerModel
++
++    outer_schema = core_schema.model_schema(
++        OuterModel,
++        schema=core_schema.model_fields_schema(
++            {
++                'inner': core_schema.model_field(
++                    schema=core_schema.model_schema(
++                        InnerModel,
++                        schema=core_schema.model_fields_schema(
++                            # note, we use str schema here even though that's incorrect
++                            # in order to verify that the prebuilt validator is used
++                            # off of InnerModel with the correct int schema, not this str schema
++                            {'x': core_schema.model_field(schema=core_schema.str_schema())},
++                        ),
++                    )
++                )
++            }
++        ),
++    )
++
++    outer_validator = SchemaValidator(outer_schema)
++    assert 'PrebuiltValidator' in repr(outer_validator)
++
++    result = outer_validator.validate_python({'inner': {'x': 1}})
++    assert result.inner.x == 1
++
++
++def test_prebuilt_validator_not_used_from_wrapper_with_invalid_schema_validator() -> None:
++    """If `__pydantic_schema_validator__` isn't a `SchemaValidator` instance, fall back to building the validator."""
++
++    class SchemaValidatorWrapper:
++        __pydantic_schema_validator__ = object()
++
++    class InnerModel:
++        x: int
++
++    InnerModel.__pydantic_complete__ = True  # pyright: ignore[reportAttributeAccessIssue]
++    InnerModel.__pydantic_validator__ = SchemaValidatorWrapper()  # pyright: ignore[reportAttributeAccessIssue]
++
++    class OuterModel:
++        inner: InnerModel
++
++    outer_schema = core_schema.model_schema(
++        OuterModel,
++        schema=core_schema.model_fields_schema(
++            {
++                'inner': core_schema.model_field(
++                    schema=core_schema.model_schema(
++                        InnerModel,
++                        schema=core_schema.model_fields_schema(
++                            {'x': core_schema.model_field(schema=core_schema.int_schema())},
++                        ),
++                    )
++                )
++            }
++        ),
++    )
++
++    outer_validator = SchemaValidator(outer_schema)
++    assert 'PrebuiltValidator' not in repr(outer_validator)
++
++    result = outer_validator.validate_python({'inner': {'x': 1}})
++    assert result.inner.x == 1
++
++
+ def test_prebuilt_not_used_for_wrap_serializer_functions() -> None:
+     class InnerModel:
+         x: str
+diff --git a/pydantic/plugin/_schema_validator.py b/pydantic/plugin/_schema_validator.py
+index 2fe27c0e325..d87f5b772b8 100644
+--- a/pydantic/plugin/_schema_validator.py
++++ b/pydantic/plugin/_schema_validator.py
+@@ -92,6 +92,15 @@ def __init__(
+         self.validate_json = build_wrapper(self._schema_validator.validate_json, json_event_handlers)
+         self.validate_strings = build_wrapper(self._schema_validator.validate_strings, strings_event_handlers)
+ 
++    # Used to allow reuse of validators in pydantic-core (see pydantic-core/src/validators/prebuilt.rs):
++    @property
++    def __pydantic_schema_validator__(self) -> SchemaValidator:
++        """The underlying pydantic-core `SchemaValidator`.
++
++        This is a private attribute, not meant to be used outside Pydantic.
++        """
++        return self._schema_validator
++
+     def __getattr__(self, name: str) -> Any:
+         return getattr(self._schema_validator, name)
+ 
+diff --git a/tests/test_plugins.py b/tests/test_plugins.py
+index e5444c789b8..e2f2d703498 100644
+--- a/tests/test_plugins.py
++++ b/tests/test_plugins.py
+@@ -18,6 +18,7 @@
+     ValidateStringsHandlerProtocol,
+ )
+ from pydantic.plugin._loader import _plugins
++from pydantic.plugin._schema_validator import PluggableSchemaValidator
+ 
+ pytestmark = pytest.mark.thread_unsafe(reason='`install_plugin()` is thread unsafe')
+ 
+@@ -500,3 +501,40 @@ class Model2(BaseModel):
+             'BaseModel',
+         ),
+     ]
++
++
++def test_prebuilt_validator_used_for_nested_models() -> None:
++    """With plugins installed, `__pydantic_validator__` is a `PluggableSchemaValidator`. pydantic-core
++    should still be able to reuse the underlying prebuilt `SchemaValidator` for nested models,
++    through the `__pydantic_schema_validator__` property.
++    """
++    stack: list[Any] = []
++
++    class CustomOnValidatePython(ValidatePythonHandlerProtocol):
++        def on_enter(self, input, **kwargs) -> None:
++            stack.append(input)
++
++    class Plugin(PydanticPluginProtocol):
++        def new_schema_validator(self, schema, schema_type, schema_type_path, schema_kind, config, plugin_settings):
++            return CustomOnValidatePython(), None, None
++
++    plugin = Plugin()
++    with install_plugin(plugin):
++
++        class Model(BaseModel):
++            a: int
++
++        class Main(BaseModel):
++            m: Model
++
++    assert isinstance(Main.__pydantic_validator__, PluggableSchemaValidator)
++    assert 'PrebuiltValidator' in repr(Main.__pydantic_validator__.__pydantic_schema_validator__)
++
++    main = Main.model_validate({'m': {'a': 1}})
++    assert main.m.a == 1
++    # Plugin handlers only fire for the top-level validator, not for the nested (reused) one:
++    assert stack == [{'m': {'a': 1}}]
++
++    stack.clear()
++    Model.model_validate({'a': 1})
++    assert stack == [{'a': 1}]

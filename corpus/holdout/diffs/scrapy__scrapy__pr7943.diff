@@ -1,0 +1,220 @@
+diff --git a/scrapy/dupefilters.py b/scrapy/dupefilters.py
+index 09f0be63b92..94ed3b11fd2 100644
+--- a/scrapy/dupefilters.py
++++ b/scrapy/dupefilters.py
+@@ -6,6 +6,7 @@
+ from warnings import warn
+ 
+ from scrapy.exceptions import ScrapyDeprecationWarning
++from scrapy.utils.deprecate import method_is_overridden
+ from scrapy.utils.job import job_dir
+ from scrapy.utils.request import (
+     RequestFingerprinter,
+@@ -14,6 +15,8 @@
+ )
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Iterator
++
+     from twisted.internet.defer import Deferred
+ 
+     # typing.Self requires Python 3.11
+@@ -24,6 +27,22 @@
+     from scrapy.spiders import Spider
+ 
+ 
++_SIZE_BYTES = 2
++
++
++def _read_fingerprints(data: bytes) -> Iterator[bytes]:
++    pos = 0
++    while pos + _SIZE_BYTES <= len(data):
++        size = int.from_bytes(data[pos : pos + _SIZE_BYTES], "big")
++        pos += _SIZE_BYTES
++        fingerprint = data[pos : pos + size]
++        if len(fingerprint) < size:
++            # Truncated by an unclean shutdown.
++            return
++        yield fingerprint
++        pos += size
++
++
+ class BaseDupeFilter:
+     """Dummy duplicate request filtering class (:setting:`DUPEFILTER_CLASS`)
+     that does not filter out any request."""
+@@ -64,9 +83,10 @@ class RFPDupeFilter(BaseDupeFilter):
+         warning in a future version of Scrapy. Do not rely on the following
+         information for anything other than debugging purposes.
+ 
+-    When using :setting:`JOBDIR`, seen fingerprints are tracked in a file named
+-    ``requests.seen`` in the :ref:`job directory <job-dir>`, which contains 1
+-    request fingerprint per line.
++    When using :setting:`JOBDIR`, seen fingerprints are tracked in a binary
++    file named :file:`requests.seen` in the :ref:`job directory <job-dir>`,
++    where each fingerprint is stored as its big-endian, 2-byte length followed
++    by the fingerprint itself.
+     """
+ 
+     def __init__(
+@@ -80,18 +100,33 @@ def __init__(
+         self.fingerprinter: RequestFingerprinterProtocol = (
+             fingerprinter or RequestFingerprinter()
+         )
+-        self.fingerprints: set[str] = set()
++        self._fingerprints: set[bytes] = set()
+         self.logdupes = True
+         self.debug = debug
+         self.logger = logging.getLogger(__name__)
+-        if path:
+-            # line-by-line writing, see: https://github.com/scrapy/scrapy/issues/6019
+-            self.file = Path(path, "requests.seen").open(
+-                "a+", buffering=1, encoding="utf-8"
++        self._legacy_fingerprint = method_is_overridden(
++            type(self), RFPDupeFilter, "request_fingerprint"
++        )
++        if self._legacy_fingerprint:
++            warn(
++                "Overriding RFPDupeFilter.request_fingerprint() is deprecated,"
++                " set the REQUEST_FINGERPRINTER_CLASS setting instead.",
++                ScrapyDeprecationWarning,
++                stacklevel=2,
+             )
+-            self.file.reconfigure(write_through=True)
++        if path:
++            self.file = Path(path, "requests.seen").open("a+b")
+             self.file.seek(0)
+-            self.fingerprints.update(x.rstrip() for x in self.file)
++            self._fingerprints.update(_read_fingerprints(self.file.read()))
++
++    @property
++    def fingerprints(self) -> frozenset[str]:
++        warn(
++            "RFPDupeFilter.fingerprints is deprecated.",
++            ScrapyDeprecationWarning,
++            stacklevel=2,
++        )
++        return frozenset(fp.hex() for fp in self._fingerprints)
+ 
+     @classmethod
+     def from_crawler(cls, crawler: Crawler) -> Self:
+@@ -103,14 +138,19 @@ def from_crawler(cls, crawler: Crawler) -> Self:
+         )
+ 
+     def request_seen(self, request: Request) -> bool:
+-        fp = self.request_fingerprint(request)
+-        if fp in self.fingerprints:
++        fp = self._fingerprint(request)
++        if fp in self._fingerprints:
+             return True
+-        self.fingerprints.add(fp)
++        self._fingerprints.add(fp)
+         if self.file:
+-            self.file.write(fp + "\n")
++            self.file.write(len(fp).to_bytes(_SIZE_BYTES, "big") + fp)
+         return False
+ 
++    def _fingerprint(self, request: Request) -> bytes:
++        if self._legacy_fingerprint:
++            return bytes.fromhex(self.request_fingerprint(request))
++        return self.fingerprinter.fingerprint(request)
++
+     def request_fingerprint(self, request: Request) -> str:
+         """Returns a string that uniquely identifies the specified request."""
+         return self.fingerprinter.fingerprint(request).hex()
+diff --git a/tests/test_dupefilters.py b/tests/test_dupefilters.py
+index 348e778cd35..800e83a0ca6 100644
+--- a/tests/test_dupefilters.py
++++ b/tests/test_dupefilters.py
+@@ -3,7 +3,6 @@
+ import hashlib
+ import logging
+ import shutil
+-import sys
+ import tempfile
+ from pathlib import Path
+ from typing import TYPE_CHECKING, Any
+@@ -137,29 +136,30 @@ def fingerprint(self, request):
+ 
+         case_insensitive_dupefilter.close("finished")
+ 
+-    def test_seenreq_newlines(self):
+-        r"""Checks against adding duplicate \r to
+-        line endings on Windows platforms."""
+-
++    def test_seenreq_truncated(self):
+         r1 = Request("http://scrapytest.org/1")
++        r2 = Request("http://scrapytest.org/2")
+ 
+         path = tempfile.mkdtemp()
+-        crawler = get_crawler(settings_dict={"JOBDIR": path})
+         try:
+-            scheduler = build_from_crawler(Scheduler, crawler)
+-            df = scheduler.df
+-            df.open()
+-            df.request_seen(r1)
+-            df.close("finished")
+-
+-            with Path(path, "requests.seen").open("rb") as seen_file:
+-                line = next(seen_file).decode()
+-                assert not line.endswith("\r\r\n")
+-                if sys.platform == "win32":
+-                    assert line.endswith("\r\n")
+-                else:
+-                    assert line.endswith("\n")
++            df = _get_dupefilter(settings={"JOBDIR": path}, open_=False)
++            try:
++                df.open()
++                df.request_seen(r1)
++                df.request_seen(r2)
++            finally:
++                df.close("finished")
+ 
++            seen_file = Path(path, "requests.seen")
++            seen_file.write_bytes(seen_file.read_bytes()[:-1])
++
++            df2 = _get_dupefilter(settings={"JOBDIR": path}, open_=False)
++            try:
++                df2.open()
++                assert df2.request_seen(r1)
++                assert not df2.request_seen(r2)
++            finally:
++                df2.close("finished")
+         finally:
+             shutil.rmtree(path)
+ 
+@@ -229,6 +229,35 @@ def test_log_debug(
+ 
+         dupefilter.close("finished")
+ 
++    def test_fingerprints_deprecation(self):
++        dupefilter = _get_dupefilter()
++        request = Request("http://scrapytest.org/index.html")
++        dupefilter.request_seen(request)
++        with pytest.warns(
++            ScrapyDeprecationWarning,
++            match=r"RFPDupeFilter\.fingerprints is deprecated\.",
++        ):
++            fingerprints = dupefilter.fingerprints
++        assert fingerprints == {dupefilter.request_fingerprint(request)}
++        dupefilter.close("finished")
++
++    def test_request_fingerprint_override_deprecation(self):
++        class LegacyDupeFilter(RFPDupeFilter):
++            def request_fingerprint(self, request):
++                return hashlib.sha1(to_bytes(request.url.lower())).hexdigest()
++
++        with pytest.warns(
++            ScrapyDeprecationWarning,
++            match=r"Overriding RFPDupeFilter\.request_fingerprint\(\) is deprecated",
++        ):
++            dupefilter = _get_dupefilter(
++                settings={"DUPEFILTER_CLASS": LegacyDupeFilter}
++            )
++
++        assert not dupefilter.request_seen(Request("http://scrapytest.org/index.html"))
++        assert dupefilter.request_seen(Request("http://scrapytest.org/INDEX.html"))
++        dupefilter.close("finished")
++
+ 
+ class TestBaseDupeFilter:
+     def test_log_deprecation(self):

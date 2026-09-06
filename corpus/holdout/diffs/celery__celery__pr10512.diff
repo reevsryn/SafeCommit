@@ -1,0 +1,132 @@
+diff --git a/celery/contrib/testing/app.py b/celery/contrib/testing/app.py
+index 95ed700b8ec..8dffe8dacc2 100644
+--- a/celery/contrib/testing/app.py
++++ b/celery/contrib/testing/app.py
+@@ -1,4 +1,5 @@
+ """Create Celery app instances used for testing."""
++import gc
+ import weakref
+ from contextlib import contextmanager
+ from copy import deepcopy
+@@ -110,3 +111,13 @@ def setup_default_app(app, use_trap=False):
+             app.close()
+         _state._on_app_finalizers = prev_finalizers
+         _state._apps = prev_apps
++        # The function-scoped fixtures (celery_app/celery_worker) build a new
++        # app for every test and never close its backend connections; only the
++        # garbage collector releases them, and it runs too rarely to keep up;
++        # a long test run exhausts the open-file limit
++        # (https://github.com/celery/celery/issues/6382).
++        if app._backend is not None:
++            # Dereference the backend so it is available for gc.
++            app._backend_cache = None
++            app._local.backend = None
++            gc.collect()
+diff --git a/t/integration/test_backend_leak_in_fixture_teardown.py b/t/integration/test_backend_leak_in_fixture_teardown.py
+new file mode 100644
+index 00000000000..16912bddca6
+--- /dev/null
++++ b/t/integration/test_backend_leak_in_fixture_teardown.py
+@@ -0,0 +1,53 @@
++import gc
++import os
++
++from celery.contrib.testing.app import TestApp, setup_default_app
++from celery.contrib.testing.worker import start_worker
++
++from .conftest import TEST_BACKEND
++
++
++def open_fd_count():
++    return len(os.listdir('/dev/fd'))
++
++
++def run_one_fixture_cycle():
++    app = TestApp(config={'result_backend': TEST_BACKEND})
++
++    @app.task
++    def store_result():
++        return 'stored'
++
++    # Teardown should close the backend connections before leaving.
++    with setup_default_app(app):
++        with start_worker(app):
++            # The task ensures the connection to the backend is opened.
++            result = store_result.delay()
++            assert result.get(timeout=10) == 'stored'
++
++
++def test_fixture_teardown_releases_backend_connections():
++    iterations = 10
++
++    # Automatic collections could hide a missing teardown collect, so
++    # run the loop without them.
++    gc.disable()
++    try:
++        # Warm-up cycle so lazy imports and logging setup do not count
++        # against the baseline.
++        run_one_fixture_cycle()
++        gc.collect()
++        baseline = open_fd_count()
++
++        for _ in range(iterations):
++            run_one_fixture_cycle()
++
++        growth = open_fd_count() - baseline
++    finally:
++        gc.enable()
++        gc.collect()
++
++    # Each leaked backend keeps at least one redis socket open
++    # (https://github.com/celery/celery/issues/6382), so a regression
++    # grows the count by >= iterations; a healthy teardown keeps it flat.
++    assert growth < iterations
+diff --git a/t/unit/contrib/test_worker.py b/t/unit/contrib/test_worker.py
+index fe4ac2ef8e5..e53d4e03a4f 100644
+--- a/t/unit/contrib/test_worker.py
++++ b/t/unit/contrib/test_worker.py
+@@ -1,3 +1,4 @@
++import weakref
+ from unittest.mock import Mock, patch
+ 
+ import pytest
+@@ -6,6 +7,7 @@
+ # to install the celery.ping task that the test lib uses
+ import celery.contrib.testing.tasks  # noqa
+ from celery import Celery
++from celery.contrib.testing.app import TestApp, setup_default_app
+ from celery.contrib.testing.worker import TestWorkController, start_worker
+ 
+ 
+@@ -61,6 +63,31 @@ def test_start_worker_with_hostname_config(self):
+         assert val == 3
+ 
+ 
++class test_setup_default_app:
++
++    def test_teardown_collects_when_backend_was_created(self):
++        app = TestApp()
++        with patch('celery.contrib.testing.app.gc.collect') as collect:
++            with setup_default_app(app):
++                app.backend
++        collect.assert_called()
++        assert app._backend_cache is None
++        assert app._local.backend is None
++
++    def test_teardown_skips_collect_when_no_backend_was_created(self):
++        app = TestApp()
++        with patch('celery.contrib.testing.app.gc.collect') as collect:
++            with setup_default_app(app):
++                pass
++        collect.assert_not_called()
++
++    def test_teardown_releases_the_backend(self):
++        app = TestApp()
++        with setup_default_app(app):
++            backend_ref = weakref.ref(app.backend)
++        assert backend_ref() is None
++
++
+ class test_TestWorkController:
+ 
+     @patch('celery.contrib.testing.worker.worker.WorkController.__init__')

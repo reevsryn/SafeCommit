@@ -1,0 +1,227 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 7d72f6b74f7..edebbff5254 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -5,7 +5,7 @@ requires = [
+     "cymem>=2.0.2,<2.1.0",
+     "preshed>=3.0.2,<3.1.0",
+     "murmurhash>=0.28.0,<1.1.0",
+-    "thinc>=8.3.0,<8.4.0",
++    "thinc>=8.3.4,<8.4.0",
+     "numpy>=2.0.0,<3.0.0"
+ ]
+ build-backend = "setuptools.build_meta"
+diff --git a/requirements.txt b/requirements.txt
+index c3553508d5d..bfdcf0d96c1 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -3,7 +3,7 @@ spacy-legacy>=3.0.11,<3.1.0
+ spacy-loggers>=1.0.0,<2.0.0
+ cymem>=2.0.2,<2.1.0
+ preshed>=3.0.2,<3.1.0
+-thinc>=8.3.0,<8.4.0
++thinc>=8.3.4,<8.4.0
+ ml_datasets>=0.2.0,<0.3.0
+ murmurhash>=0.28.0,<1.1.0
+ wasabi>=0.9.1,<1.2.0
+diff --git a/setup.cfg b/setup.cfg
+index 2afea1a3b17..daba8865fa6 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -41,7 +41,7 @@ setup_requires =
+     cymem>=2.0.2,<2.1.0
+     preshed>=3.0.2,<3.1.0
+     murmurhash>=0.28.0,<1.1.0
+-    thinc>=8.3.0,<8.4.0
++    thinc>=8.3.4,<8.4.0
+ install_requires =
+     # Our libraries
+     spacy-legacy>=3.0.11,<3.1.0
+@@ -49,7 +49,7 @@ install_requires =
+     murmurhash>=0.28.0,<1.1.0
+     cymem>=2.0.2,<2.1.0
+     preshed>=3.0.2,<3.1.0
+-    thinc>=8.3.0,<8.4.0
++    thinc>=8.3.4,<8.4.0
+     wasabi>=0.9.1,<1.2.0
+     srsly>=2.4.3,<3.0.0
+     catalogue>=2.0.6,<2.1.0
+diff --git a/spacy/tests/lang/ca/test_text.py b/spacy/tests/lang/ca/test_text.py
+index 5db7af5536e..231cc085edf 100644
+--- a/spacy/tests/lang/ca/test_text.py
++++ b/spacy/tests/lang/ca/test_text.py
+@@ -1,4 +1,5 @@
+ """Test that longer and mixed texts are tokenized correctly."""
++
+ import pytest
+ 
+ 
+diff --git a/spacy/tests/lang/ja/test_lemmatization.py b/spacy/tests/lang/ja/test_lemmatization.py
+index 21879a5694c..523917f6d88 100644
+--- a/spacy/tests/lang/ja/test_lemmatization.py
++++ b/spacy/tests/lang/ja/test_lemmatization.py
+@@ -3,7 +3,13 @@
+ 
+ @pytest.mark.parametrize(
+     "word,lemma",
+-    [("新しく", "新しい"), ("赤く", "赤い"), ("すごく", "すごい"), ("いただきました", "いただく"), ("なった", "なる")],
++    [
++        ("新しく", "新しい"),
++        ("赤く", "赤い"),
++        ("すごく", "すごい"),
++        ("いただきました", "いただく"),
++        ("なった", "なる"),
++    ],
+ )
+ def test_ja_lemmatizer_assigns(ja_tokenizer, word, lemma):
+     test_lemma = ja_tokenizer(word)[0].lemma_
+diff --git a/spacy/tests/lang/ja/test_tokenizer.py b/spacy/tests/lang/ja/test_tokenizer.py
+index a2634744441..36f7e3240dd 100644
+--- a/spacy/tests/lang/ja/test_tokenizer.py
++++ b/spacy/tests/lang/ja/test_tokenizer.py
+@@ -143,7 +143,12 @@ def test_ja_tokenizer_sub_tokens(
+     [
+         (
+             "取ってつけた",
+-            (["五段-ラ行;連用形-促音便"], [], ["下一段-カ行;連用形-一般"], ["助動詞-タ;終止形-一般"]),
++            (
++                ["五段-ラ行;連用形-促音便"],
++                [],
++                ["下一段-カ行;連用形-一般"],
++                ["助動詞-タ;終止形-一般"],
++            ),
+             (["トッ"], ["テ"], ["ツケ"], ["タ"]),
+         ),
+         ("2=3", ([], [], []), (["ニ"], ["_"], ["サン"])),
+diff --git a/spacy/tests/lang/ko/test_lemmatization.py b/spacy/tests/lang/ko/test_lemmatization.py
+index 7782ca4bcab..371e410a696 100644
+--- a/spacy/tests/lang/ko/test_lemmatization.py
++++ b/spacy/tests/lang/ko/test_lemmatization.py
+@@ -2,7 +2,14 @@
+ 
+ 
+ @pytest.mark.parametrize(
+-    "word,lemma", [("새로운", "새롭"), ("빨간", "빨갛"), ("클수록", "크"), ("뭡니까", "뭣"), ("됐다", "되")]
++    "word,lemma",
++    [
++        ("새로운", "새롭"),
++        ("빨간", "빨갛"),
++        ("클수록", "크"),
++        ("뭡니까", "뭣"),
++        ("됐다", "되"),
++    ],
+ )
+ def test_ko_lemmatizer_assigns(ko_tokenizer, word, lemma):
+     test_lemma = ko_tokenizer(word)[0].lemma_
+diff --git a/spacy/tests/lang/pl/test_text.py b/spacy/tests/lang/pl/test_text.py
+index e8654a498a6..43e4ab86225 100644
+--- a/spacy/tests/lang/pl/test_text.py
++++ b/spacy/tests/lang/pl/test_text.py
+@@ -1,4 +1,5 @@
+ """Words like numbers are recognized correctly."""
++
+ import pytest
+ 
+ 
+diff --git a/spacy/tests/training/test_pretraining.py.disabled b/spacy/tests/training/test_pretraining.py
+similarity index 83%
+rename from spacy/tests/training/test_pretraining.py.disabled
+rename to spacy/tests/training/test_pretraining.py
+index 22364bb78de..f33089f610e 100644
+--- a/spacy/tests/training/test_pretraining.py.disabled
++++ b/spacy/tests/training/test_pretraining.py
+@@ -265,50 +265,50 @@ def test_pretraining_tagger():
+ 
+ 
+ # Try to debug segfault on windows
+-#def test_pretraining_training():
+-#    """Test that training can use a pretrained Tok2Vec model"""
+-#    config = Config().from_str(pretrain_string_internal)
+-#    nlp = util.load_model_from_config(config, auto_fill=True, validate=False)
+-#    filled = nlp.config
+-#    pretrain_config = util.load_config(DEFAULT_CONFIG_PRETRAIN_PATH)
+-#    filled = pretrain_config.merge(filled)
+-#    train_config = util.load_config(DEFAULT_CONFIG_PATH)
+-#    filled = train_config.merge(filled)
+-#    with make_tempdir() as tmp_dir:
+-#        pretrain_dir = tmp_dir / "pretrain"
+-#        pretrain_dir.mkdir()
+-#        file_path = write_sample_jsonl(pretrain_dir)
+-#        filled["paths"]["raw_text"] = file_path
+-#        filled["pretraining"]["component"] = "tagger"
+-#        filled["pretraining"]["layer"] = "tok2vec"
+-#        train_dir = tmp_dir / "train"
+-#        train_dir.mkdir()
+-#        train_path, dev_path = write_sample_training(train_dir)
+-#        filled["paths"]["train"] = train_path
+-#        filled["paths"]["dev"] = dev_path
+-#        filled = filled.interpolate()
+-#        P = filled["pretraining"]
+-#        nlp_base = init_nlp(filled)
+-#        model_base = (
+-#            nlp_base.get_pipe(P["component"]).model.get_ref(P["layer"]).get_ref("embed")
+-#        )
+-#        embed_base = None
+-#        for node in model_base.walk():
+-#            if node.name == "hashembed":
+-#                embed_base = node
+-#        pretrain(filled, pretrain_dir)
+-#        pretrained_model = Path(pretrain_dir / "model3.bin")
+-#        assert pretrained_model.exists()
+-#        filled["initialize"]["init_tok2vec"] = str(pretrained_model)
+-#        nlp = init_nlp(filled)
+-#        model = nlp.get_pipe(P["component"]).model.get_ref(P["layer"]).get_ref("embed")
+-#        embed = None
+-#        for node in model.walk():
+-#            if node.name == "hashembed":
+-#                embed = node
+-#        # ensure that the tok2vec weights are actually changed by the pretraining
+-#        assert np.any(np.not_equal(embed.get_param("E"), embed_base.get_param("E")))
+-#        train(nlp, train_dir)
++def test_pretraining_training():
++    """Test that training can use a pretrained Tok2Vec model"""
++    config = Config().from_str(pretrain_string_internal)
++    nlp = util.load_model_from_config(config, auto_fill=True, validate=False)
++    filled = nlp.config
++    pretrain_config = util.load_config(DEFAULT_CONFIG_PRETRAIN_PATH)
++    filled = pretrain_config.merge(filled)
++    train_config = util.load_config(DEFAULT_CONFIG_PATH)
++    filled = train_config.merge(filled)
++    with make_tempdir() as tmp_dir:
++        pretrain_dir = tmp_dir / "pretrain"
++        pretrain_dir.mkdir()
++        file_path = write_sample_jsonl(pretrain_dir)
++        filled["paths"]["raw_text"] = file_path
++        filled["pretraining"]["component"] = "tagger"
++        filled["pretraining"]["layer"] = "tok2vec"
++        train_dir = tmp_dir / "train"
++        train_dir.mkdir()
++        train_path, dev_path = write_sample_training(train_dir)
++        filled["paths"]["train"] = train_path
++        filled["paths"]["dev"] = dev_path
++        filled = filled.interpolate()
++        P = filled["pretraining"]
++        nlp_base = init_nlp(filled)
++        model_base = (
++            nlp_base.get_pipe(P["component"]).model.get_ref(P["layer"]).get_ref("embed")
++        )
++        embed_base = None
++        for node in model_base.walk():
++            if node.name == "hashembed":
++                embed_base = node
++        pretrain(filled, pretrain_dir)
++        pretrained_model = Path(pretrain_dir / "model3.bin")
++        assert pretrained_model.exists()
++        filled["initialize"]["init_tok2vec"] = str(pretrained_model)
++        nlp = init_nlp(filled)
++        model = nlp.get_pipe(P["component"]).model.get_ref(P["layer"]).get_ref("embed")
++        embed = None
++        for node in model.walk():
++            if node.name == "hashembed":
++                embed = node
++        # ensure that the tok2vec weights are actually changed by the pretraining
++        assert np.any(np.not_equal(embed.get_param("E"), embed_base.get_param("E")))
++        train(nlp, train_dir)
+ 
+ 
+ def write_sample_jsonl(tmp_dir):
