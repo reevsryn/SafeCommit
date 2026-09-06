@@ -37,6 +37,10 @@ class Case:
     label: str
     truths: list[Truth] = field(default_factory=list)
     source: dict = field(default_factory=dict)
+    # Captured repository layout for this case (see bench/context.py). Lets the
+    # benchmark exercise first-party resolution, which needs a checkout that a
+    # corpus of diffs does not have.
+    context: str | None = None
     # Human rulings on names a QA pass flagged ({"name", "decision", "reason",
     # "date"}). `bench verify` respects these instead of re-quarantining.
     adjudicated: list[dict] = field(default_factory=list)
@@ -86,6 +90,7 @@ def load_corpus(corpus_dir: str | Path) -> list[Case]:
                 label=label,
                 truths=truths,
                 source=row.get("source", {}),
+                context=(str(root / row["context"]) if row.get("context") else None),
                 adjudicated=row.get("adjudicated", []),
             )
         )

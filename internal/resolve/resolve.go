@@ -5,7 +5,9 @@
 //
 //	relative      -> first-party by construction, suppress
 //	stdlib        -> suppress   (36% of real candidates)
-//	first-party   -> suppress   (49% of real candidates)
+//	first-party   -> suppress   (49% of real candidates), from the diff's own
+//	                paths and, when a repo index is available, from the
+//	                repository's actual layout (PHASE1-NOTES.md R6)
 //	alias lookup  -> rewrite import name to distribution name
 //	registry 200  -> suppress
 //	registry 404  -> FIRE
@@ -52,9 +54,19 @@ type Oracle interface {
 	Exists(name string) registry.Result
 }
 
+// A RepoIndex answers first-party questions the diff alone cannot: names
+// provided by a nested src-layout, and modules sitting beside the importing
+// file. Optional -- nil means "no checkout available", which is the benchmark's
+// degraded mode and a conservative lower bound on production precision.
+type RepoIndex interface {
+	IsFirstParty(top string) bool
+	IsSibling(top, importingFile string) bool
+}
+
 // A Resolver resolves imports for ONE diff. FirstParty is derived per-diff.
 type Resolver struct {
 	FirstParty map[string]bool
+	Repo       RepoIndex
 	Registry   Oracle
 }
 
@@ -72,6 +84,19 @@ func (r *Resolver) Resolve(im pyparse.Import) Decision {
 	}
 	if r.FirstParty[top] {
 		return Decision{Suppress, "first-party", "matches a path in this diff", ""}
+	}
+	if r.Repo != nil {
+		// R6: the two holdout failure modes. A nested src-layout package
+		// (devel-common/src/tests_common) and a sibling module
+		// (scripts/ci/prek/extract_permissions.py) are both first-party but
+		// appear nowhere as a top path component in the diff.
+		if r.Repo.IsFirstParty(top) {
+			return Decision{Suppress, "first-party/repo", "provided by this repository's layout", ""}
+		}
+		if r.Repo.IsSibling(top, im.File) {
+			return Decision{Suppress, "first-party/sibling",
+				"module sits beside " + im.File + " (its directory is on sys.path)", ""}
+		}
 	}
 
 	dist, aliased := DistFor(top)

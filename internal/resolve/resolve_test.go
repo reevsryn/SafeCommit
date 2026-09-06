@@ -129,3 +129,75 @@ func TestEmptyTopStaysSilent(t *testing.T) {
 		t.Errorf("got %v, want Silent for an unresolvable name", d.Verdict)
 	}
 }
+
+// fakeRepo implements RepoIndex for cascade tests.
+type fakeRepo struct {
+	top      map[string]bool
+	siblings map[string]map[string]bool
+}
+
+func (f *fakeRepo) IsFirstParty(top string) bool { return f.top[top] }
+func (f *fakeRepo) IsSibling(top, file string) bool {
+	m, ok := f.siblings[file]
+	return ok && m[top]
+}
+
+// R6: the two holdout failure modes must be suppressed before the registry is
+// ever consulted.
+func TestRepoIndexSuppressesBeforeRegistry(t *testing.T) {
+	oracle := &fakeOracle{} // everything 404s, so any leak becomes a Fire
+	r := &Resolver{
+		Registry: oracle,
+		Repo: &fakeRepo{
+			top: map[string]bool{"tests_common": true},
+			siblings: map[string]map[string]bool{
+				"scripts/ci/prek/fab_permissions_doc.py": {"extract_permissions": true},
+			},
+		},
+	}
+
+	d := r.Resolve(pyparse.Import{
+		Module: "tests_common.test_utils.config", Top: "tests_common",
+		Kind: pyparse.KindFromImport, File: "providers/edge3/tests/unit/x.py",
+	})
+	if d.Verdict != Suppress || d.Reason != "first-party/repo" {
+		t.Errorf("nested src-layout package: got %v/%s, want Suppress/first-party/repo", d.Verdict, d.Reason)
+	}
+
+	d = r.Resolve(pyparse.Import{
+		Module: "extract_permissions", Top: "extract_permissions",
+		Kind: pyparse.KindFromImport, File: "scripts/ci/prek/fab_permissions_doc.py",
+	})
+	if d.Verdict != Suppress || d.Reason != "first-party/sibling" {
+		t.Errorf("sibling module: got %v/%s, want Suppress/first-party/sibling", d.Verdict, d.Reason)
+	}
+
+	if len(oracle.asked) != 0 {
+		t.Errorf("registry consulted %v; repo context must short-circuit", oracle.asked)
+	}
+}
+
+// The repo index must not become a blanket amnesty: a genuine hallucination in
+// a repo with an index still has to fire.
+func TestRepoIndexDoesNotSuppressRealHallucinations(t *testing.T) {
+	r := &Resolver{
+		Registry: &fakeOracle{},
+		Repo: &fakeRepo{
+			top:      map[string]bool{"tests_common": true},
+			siblings: map[string]map[string]bool{},
+		},
+	}
+	d := r.Resolve(pyparse.Import{
+		Module: "reqursts", Top: "reqursts", Kind: pyparse.KindImport, File: "app/api.py",
+	})
+	if d.Verdict != Fire {
+		t.Fatalf("got %v/%s, want Fire — an unknown absent name must still fire", d.Verdict, d.Reason)
+	}
+}
+
+func TestNoRepoIndexIsTheDegradedButSafeMode(t *testing.T) {
+	r := &Resolver{Registry: &fakeOracle{exists: map[string]bool{"requests": true}}}
+	if d := r.Resolve(imp("requests", pyparse.KindImport)); d.Verdict != Suppress {
+		t.Errorf("got %v, want Suppress with no repo index", d.Verdict)
+	}
+}

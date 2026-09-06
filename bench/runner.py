@@ -132,7 +132,11 @@ def evaluate(
         num_findings = 0
         noise = 0
         for case in cases:
-            run = run_tool(tool_argv, case.read_diff(), timeout=timeout)
+            # {context} lets one tool command carry per-case repo context. An
+            # empty string when a case has none, which the detector reads as
+            # "no checkout available" -- the degraded mode.
+            argv = [a.replace("{context}", case.context or "") for a in tool_argv]
+            run = run_tool(argv, case.read_diff(), timeout=timeout)
             if run.error:
                 errors.append(f"{case.id}: {run.error}")
             num_findings += len(run.findings)

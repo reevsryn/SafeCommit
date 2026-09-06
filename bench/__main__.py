@@ -12,6 +12,7 @@ import argparse
 import shlex
 import sys
 
+from . import context as context_mod
 from . import mine as mine_mod
 from . import verify as verify_mod
 from . import verify_seeded as verify_seeded_mod
@@ -71,6 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_mod.add_arguments(v)
     v.set_defaults(func=verify_mod.run_cli)
+
+    c = sub.add_parser(
+        "context",
+        help="capture each repo's layout so the benchmark can exercise "
+        "first-party resolution (corpora have no checkout)",
+    )
+    context_mod.add_arguments(c)
+    c.set_defaults(func=context_mod.run_cli)
 
     vs = sub.add_parser(
         "verify-seeded",

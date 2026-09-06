@@ -30,6 +30,7 @@ import (
 	"github.com/reevsryn/safecommit/internal/pathrules"
 	"github.com/reevsryn/safecommit/internal/pyparse"
 	"github.com/reevsryn/safecommit/internal/registry"
+	"github.com/reevsryn/safecommit/internal/repoindex"
 	"github.com/reevsryn/safecommit/internal/resolve"
 )
 
@@ -44,20 +45,23 @@ flags:
                       file contents from (default ".")
   --no-repo-context   ignore --repo-root; resolve using only what the diff
                       itself contains
+  --repo-context PATH captured repo listing to use instead of walking a
+                      checkout (benchmark corpora have no checkout)
   --cache-dir PATH    registry lookup cache (default ".safecommit-cache/pypi")
   --offline           never contact the registry; uncached names stay silent
   --explain           write one verdict line per candidate to stderr
   --version           print version and exit
 `
 
-var version = "0.0.6-phase1-step6"
+var version = "0.1.0-repo-context"
 
 type options struct {
-	diffPath string
-	repoRoot string
-	cacheDir string
-	offline  bool
-	explain  bool
+	diffPath    string
+	repoRoot    string
+	cacheDir    string
+	offline     bool
+	explain     bool
+	repoContext string
 }
 
 func main() {
@@ -88,6 +92,7 @@ func run(args []string) error {
 	cacheDir := fs.String("cache-dir", ".safecommit-cache/pypi", "registry lookup cache")
 	offline := fs.Bool("offline", false, "never contact the registry")
 	explain := fs.Bool("explain", false, "write one verdict line per candidate to stderr")
+	repoContext := fs.String("repo-context", "", "captured repo listing (benchmark mode)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -97,7 +102,8 @@ func run(args []string) error {
 		return err
 	}
 
-	opts := options{diffPath: *diffPath, repoRoot: *repoRoot, cacheDir: *cacheDir, offline: *offline, explain: *explain}
+	opts := options{diffPath: *diffPath, repoRoot: *repoRoot, cacheDir: *cacheDir,
+		offline: *offline, explain: *explain, repoContext: *repoContext}
 	if *noRepoContext {
 		opts.repoRoot = ""
 	}
@@ -165,8 +171,28 @@ func scan(src []byte, opts options) ([]finding.Finding, error) {
 		}
 	}
 
+	// Repo context, when available. A captured listing takes precedence over a
+	// checkout so the benchmark can exercise this path deterministically; both
+	// feed the identical matching logic (internal/repoindex).
+	var repo resolve.RepoIndex
+	switch {
+	case opts.repoContext != "":
+		idx, err := repoindex.FromContextFile(opts.repoContext)
+		if err != nil {
+			return nil, fmt.Errorf("reading repo context: %w", err)
+		}
+		repo = idx
+	case opts.repoRoot != "":
+		idx, err := repoindex.FromFilesystem(opts.repoRoot)
+		if err != nil {
+			return nil, fmt.Errorf("indexing repo root: %w", err)
+		}
+		repo = idx
+	}
+
 	res := &resolve.Resolver{
 		FirstParty: resolve.FirstPartyFromPaths(paths),
+		Repo:       repo,
 		Registry:   registry.NewPyPI(opts.cacheDir, opts.offline),
 	}
 
