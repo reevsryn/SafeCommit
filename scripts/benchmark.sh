@@ -22,6 +22,7 @@ go build -o bin/safecommit ./cmd/safecommit
 
 TOOL="./bin/safecommit scan --no-repo-context --cache-dir corpus/registry-snapshot $OFFLINE"
 CORPORA="--corpus corpus/known-good --corpus corpus/seeded"
+HOLDOUT="--corpus corpus/holdout"
 
 SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DIRTY=""
@@ -32,6 +33,7 @@ PYV=$(python3 --version 2>&1 | awk '{print $2}')
 VER=$(./bin/safecommit --version)
 
 MAIN=$(python3 -m bench eval --tool "$TOOL" $CORPORA 2>/dev/null)
+HOLD=$(python3 -m bench eval --tool "$TOOL" $HOLDOUT 2>/dev/null | sed -n '/^corpus/,/^NOISE/p')
 LOOSE=$(python3 -m bench eval --tool "$TOOL" $CORPORA --match name 2>/dev/null | sed -n '/^corpus/,/^NOISE/p')
 
 # Verdict distribution over the known-good corpus: proves a zero is genuine
@@ -95,6 +97,22 @@ $LOOSE
 
 If these two differ, the detector is being credited for findings it placed in
 the wrong file.
+
+## Holdout — the figure that is not tuned
+
+132 real merged PRs from ten repositories with **no overlap** against the
+development set (fastapi, scrapy, celery, sqlalchemy, pydantic, spaCy,
+transformers, tornado, airflow, streamlit). Scored **once**, under
+\`corpus/HOLDOUT-PROTOCOL.md\`. All cases are clean, so this measures NOISE
+only; recall is not measurable here and still comes from the self-authored
+seeded set.
+
+\`\`\`
+$HOLD
+\`\`\`
+
+Every finding here is a false positive. See \`PHASE1-NOTES.md\` R6 for the
+diagnosis.
 
 ## Reference tools
 

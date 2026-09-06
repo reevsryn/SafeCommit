@@ -248,3 +248,61 @@ against the pin, and a fresh clone reproduces the numbers exactly.
 Pinning the oracle is deliberately NOT the same as claiming the corpus is still
 valid. That question is answered independently and live by
 `python3 -m bench verify-seeded`, which bypasses every cache.
+
+## R6 — Holdout result: first-party resolution is the real gap, not alias coverage
+*(2026-09-06, one-shot measurement under corpus/HOLDOUT-PROTOCOL.md)*
+
+**Result.** 132 real merged PRs from ten repositories with no overlap against
+the development set. **7 findings across 5 cases (3.8% of cases), reducing to
+just 2 distinct names.** Every finding is a false positive by construction.
+
+```
+tests_common          6 findings, 5 cases   (apache/airflow)
+extract_permissions   1 finding,  1 case    (apache/airflow)
+```
+
+**The prediction was half right, and the useful half was wrong.**
+
+- Predicted 1-10 false positives: **held** (7).
+- Predicted the dominant cause would be **R4 alias gaps** (import name !=
+  distribution name): **falsified.** The holdout drove **203 registry
+  resolutions** (163 import-path + 40 manifest-path) across ten unfamiliar
+  dependency surfaces and produced **zero** alias failures. The ~60-entry table
+  held completely.
+- Predicted first-party resolution as the *second* most likely cause: this was
+  in fact **100% of the failures**.
+
+**Diagnosis.** Both names are first-party and both are invisible to the
+diff-path heuristic, which takes the top path component (or the second under
+`src/`):
+
+- `tests_common` lives at `devel-common/src/tests_common`; the importing files
+  sit under `providers/.../tests/...` and `tests/...`, so the derived component
+  is `providers` or `tests`, never `tests_common`. Verified present in the tree.
+- `extract_permissions` is a sibling module, `scripts/ci/prek/extract_permissions.py`,
+  imported from `scripts/ci/prek/fab_permissions_doc.py`. Derived component is
+  `scripts`. Verified present (20,885 bytes).
+
+Both were already adjudicated into the corpus during mining QA as verifier
+blind spots, with independent evidence, *before* the detector was run.
+
+**What this justifies, and what it does not.**
+
+- It justifies implementing **`--repo-root` first-party resolution**, which is
+  the feature decision A anticipated and step 3 deferred as untestable without
+  checkouts. Both failing names exist in their repositories' trees, so a
+  resolver that consults the checkout suppresses both. That is a reasoned
+  expectation from verified evidence, **not a measurement** -- it stays
+  unmeasured until a fresh holdout scores the implemented feature.
+- It does **not** justify **R5's confidence gate**. The gate was conceived to
+  hold back "absent names that show no hallucination signal", aimed at alias
+  gaps. The observed failures are not that: they are first-party names the
+  detector never recognised as first-party. A hallucination-signal gate would
+  paper over the symptom while the actual defect -- missing repo context --
+  went unaddressed. R5 stays deferred, now on evidence rather than caution.
+
+**Holdout status: SPENT.** Implementing the fix burns this corpus per the
+protocol. The next published noise figure requires a newly mined holdout.
+
+**Also confirmed:** zero `SILENT` verdicts across 554 holdout candidates, so
+the resolution cascade is deciding rather than abstaining on unfamiliar repos.

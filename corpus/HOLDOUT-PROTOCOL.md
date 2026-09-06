@@ -76,3 +76,22 @@ Chosen for activity, review bar, and **dependency-surface diversity**, with no
 overlap against the development set (aiohttp, django, httpx, pandas, black,
 pip, pytest, scikit-learn). Selection was fixed before mining and is not
 revisited based on results.
+
+
+---
+
+## Outcome (recorded 2026-09-06) — this holdout is now SPENT
+
+Scored once. **7 findings across 5 of 132 cases (3.8%), two distinct names**,
+both first-party resolution failures (`tests_common`, `extract_permissions`).
+
+Against the prediction above: the count fell inside the stated 1–10 band, but
+the *ranking of causes was wrong*. R4 alias gaps — predicted as the dominant
+cause — produced **zero** failures across 203 registry resolutions. Cause (3),
+first-party resolution, accounted for **all** of them.
+
+Full diagnosis: `PHASE1-NOTES.md` R6.
+
+Per the one-shot rule, any fix motivated by these failures burns this corpus.
+The next published noise figure must come from a newly mined holdout, from
+repositories not used here and not used in the development set.
