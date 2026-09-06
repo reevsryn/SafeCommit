@@ -1,0 +1,153 @@
+diff --git a/changelogs/fragments/collection-loader-extensions.yml b/changelogs/fragments/collection-loader-extensions.yml
+new file mode 100644
+index 00000000000000..db523179f9e926
+--- /dev/null
++++ b/changelogs/fragments/collection-loader-extensions.yml
+@@ -0,0 +1,5 @@
++bugfixes:
++  - >-
++    collection loader - Fix the collection loader logic to correctly return Python module when calling
++    ``pkgutil.iter_modules`` with a package that is inside a collection path and contains compiled Python extension
++    modules.
+diff --git a/lib/ansible/utils/collection_loader/_collection_finder.py b/lib/ansible/utils/collection_loader/_collection_finder.py
+index 9f98feccc86a5e..62bb3b92fba62d 100644
+--- a/lib/ansible/utils/collection_loader/_collection_finder.py
++++ b/lib/ansible/utils/collection_loader/_collection_finder.py
+@@ -6,6 +6,7 @@
+ 
+ from __future__ import annotations
+ 
++import inspect
+ import itertools
+ import os
+ import os.path
+@@ -1237,23 +1238,33 @@ def _iter_modules_impl(paths, prefix=''):
+         prefix = _to_text(prefix)
+     # yield (module_loader, name, ispkg) for each module/pkg under path
+     # TODO: implement ignore/silent catch for unreadable?
+-    for b_path in map(_to_bytes, paths):
+-        if not os.path.isdir(b_path):
++    # Mostly based off the logic in the builtin pkgutil.iter_modules importer.
++    # Only difference is we don't check if dirs contains __init__.
++    # https://github.com/python/cpython/blob/fda056e64bdfcac3dd3d13eebda0a24994d83cb8/Lib/pkgutil.py#L130-L168
++    for path in paths:
++        if not os.path.isdir(path):
+             continue
+-        for b_basename in sorted(os.listdir(b_path)):
+-            b_candidate_module_path = os.path.join(b_path, b_basename)
+-            if os.path.isdir(b_candidate_module_path):
++
++        yielded = {'__init__'}
++        for basename in sorted(os.listdir(path)):
++            modname = inspect.getmodulename(basename)
++            if modname in yielded:
++                continue
++
++            mod_path = os.path.join(path, basename)
++            ispkg = False
++            if not modname and os.path.isdir(mod_path) and '.' not in basename:
+                 # exclude things that obviously aren't Python package dirs
+                 # FIXME: this dir is adjustable in py3.8+, check for it
+-                if b'.' in b_basename or b_basename == b'__pycache__':
++                if basename == '__pycache__':
+                     continue
+ 
+-                # TODO: proper string handling?
+-                yield prefix + _to_text(b_basename), True
+-            else:
+-                # FIXME: match builtin ordering for package/dir/file, support compiled?
+-                if b_basename.endswith(b'.py') and b_basename != b'__init__.py':
+-                    yield prefix + _to_text(os.path.splitext(b_basename)[0]), False
++                modname = basename
++                ispkg = True
++
++            if modname and '.' not in modname:
++                yielded.add(modname)
++                yield prefix + modname, ispkg
+ 
+ 
+ def _get_collection_metadata(collection_name):
+diff --git a/test/integration/targets/collection_loader/aliases b/test/integration/targets/collection_loader/aliases
+new file mode 100644
+index 00000000000000..6982add4de548d
+--- /dev/null
++++ b/test/integration/targets/collection_loader/aliases
+@@ -0,0 +1,3 @@
++shippable/posix/group3
++context/controller
++needs/target/collection
+diff --git a/test/integration/targets/collection_loader/ansible_collections/ns/col/plugins/action/test_collection_loader.py b/test/integration/targets/collection_loader/ansible_collections/ns/col/plugins/action/test_collection_loader.py
+new file mode 100644
+index 00000000000000..ec8f75490a23be
+--- /dev/null
++++ b/test/integration/targets/collection_loader/ansible_collections/ns/col/plugins/action/test_collection_loader.py
+@@ -0,0 +1,13 @@
++from __future__ import annotations
++
++from ansible.plugins.action import ActionBase
++
++
++class ActionModule(ActionBase):
++    def run(self, tmp=None, task_vars=None):
++        import my_module
++
++        result = super(ActionModule, self).run(tmp, task_vars)
++        result['modules'] = my_module.run()
++
++        return result
+diff --git a/test/integration/targets/collection_loader/ansible_collections/ns/col/temp_pythonpath/my_module/__init__.py b/test/integration/targets/collection_loader/ansible_collections/ns/col/temp_pythonpath/my_module/__init__.py
+new file mode 100644
+index 00000000000000..56889ba0ccb969
+--- /dev/null
++++ b/test/integration/targets/collection_loader/ansible_collections/ns/col/temp_pythonpath/my_module/__init__.py
+@@ -0,0 +1,9 @@
++from __future__ import annotations
++
++import pkgutil
++
++from my_module import sub
++
++
++def run() -> list[str]:
++    return [m[1] for m in pkgutil.iter_modules(sub.__path__)]
+diff --git a/test/integration/targets/collection_loader/ansible_collections/ns/col/temp_pythonpath/my_module/sub/__init__.py b/test/integration/targets/collection_loader/ansible_collections/ns/col/temp_pythonpath/my_module/sub/__init__.py
+new file mode 100644
+index 00000000000000..e69de29bb2d1d6
+diff --git a/test/integration/targets/collection_loader/main.yml b/test/integration/targets/collection_loader/main.yml
+new file mode 100644
+index 00000000000000..fd0f28fbd2725e
+--- /dev/null
++++ b/test/integration/targets/collection_loader/main.yml
+@@ -0,0 +1,11 @@
++- name: run collection loader tests
++  hosts: localhost
++  tasks:
++  - name: run module which imports Python library inside collection dir
++    ns.col.test_collection_loader:
++    register: result
++
++  - name: assert module loader results
++    assert:
++      that:
++      - result.modules == ['foo']
+diff --git a/test/integration/targets/collection_loader/runme.sh b/test/integration/targets/collection_loader/runme.sh
+new file mode 100755
+index 00000000000000..56c498bb5ece4b
+--- /dev/null
++++ b/test/integration/targets/collection_loader/runme.sh
+@@ -0,0 +1,15 @@
++#!/usr/bin/env bash
++
++set -eux
++
++PLAYBOOK_DIR="${PWD}"
++
++source ../collection/setup.sh
++
++EXT=$( python -c 'import importlib.machinery as i; print(next(iter([s for s in i.all_suffixes() if s != ".py"])))' )
++touch "temp_pythonpath/my_module/sub/foo${EXT}"
++
++ANSIBLE_COLLECTIONS_PATH="${PWD}../../../" \
++    ANSIBLE_LOCALHOST_WARNING=false \
++    PYTHONPATH="./temp_pythonpath:${PYTHONPATH}" \
++    ansible-playbook "${PLAYBOOK_DIR}/main.yml" "$@"

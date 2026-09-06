@@ -1,0 +1,22 @@
+diff --git a/docs/bokeh/source/conf.py b/docs/bokeh/source/conf.py
+index e916b9205ba..34e72efee08 100644
+--- a/docs/bokeh/source/conf.py
++++ b/docs/bokeh/source/conf.py
+@@ -8,6 +8,7 @@
+ # Standard library imports
+ import os
+ import re
++import sys
+ from datetime import date
+ 
+ from sphinx.util import logging
+@@ -140,6 +141,9 @@
+     "examples/models/widgets.py",
+ ]
+ 
++if sys.version_info[:2] < (3, 14):
++    bokeh_sampledata_xref_skiplist.append("examples/interaction/widgets/slider_template_string.py")
++
+ copybutton_prompt_text = ">>> "
+ 
+ intersphinx_mapping = {

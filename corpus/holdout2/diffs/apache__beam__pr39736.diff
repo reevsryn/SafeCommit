@@ -1,0 +1,751 @@
+diff --git a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPipelineRunner.java b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPipelineRunner.java
+index 93e1058121ed..de08480a61d4 100644
+--- a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPipelineRunner.java
++++ b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPipelineRunner.java
+@@ -18,6 +18,8 @@
+ package org.apache.beam.runners.kafka.streams;
+ 
+ import java.util.Properties;
++import java.util.UUID;
++import java.util.concurrent.atomic.AtomicReference;
+ import org.apache.beam.model.pipeline.v1.RunnerApi;
+ import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
+ import org.apache.beam.runners.jobsubmission.PortablePipelineResult;
+@@ -27,6 +29,7 @@
+ import org.apache.kafka.streams.KafkaStreams;
+ import org.apache.kafka.streams.StreamsConfig;
+ import org.apache.kafka.streams.Topology;
++import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler;
+ import org.checkerframework.checker.nullness.qual.Nullable;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -77,6 +80,19 @@ public PortablePipelineResult run(RunnerApi.Pipeline pipeline, JobInfo jobInfo)
+         topology.describe());
+ 
+     KafkaStreams kafkaStreams = new KafkaStreams(topology, streamsConfig(jobInfo));
++    // Kafka Streams reports a failed task by moving the client to ERROR and keeping the exception
++    // to itself, which left a failed job with nothing to say beyond "unknown error". Hold on to the
++    // first failure so this method can rethrow it: the job service turns what run() throws into the
++    // job's error message.
++    AtomicReference<@Nullable Throwable> failure = new AtomicReference<>();
++    kafkaStreams.setUncaughtExceptionHandler(
++        throwable -> {
++          failure.compareAndSet(null, throwable);
++          LOG.error("Pipeline {} failed", jobInfo.jobId(), throwable);
++          // The pipeline is a job with an owner waiting on it, not a service to keep alive, so a
++          // failure stops the client rather than replacing the thread and carrying on.
++          return StreamsUncaughtExceptionHandler.StreamThreadExceptionResponse.SHUTDOWN_CLIENT;
++        });
+     // Build the result before starting: it registers a state listener, and Kafka Streams only
+     // accepts one while the application is still in the CREATED state.
+     KafkaStreamsPortablePipelineResult result =
+@@ -110,6 +126,12 @@ public PortablePipelineResult run(RunnerApi.Pipeline pipeline, JobInfo jobInfo)
+       // stream threads and the joins it does would throw straight back out of an interrupted one.
+       closeInBackground(kafkaStreams, jobInfo.jobId(), "the job was cancelled");
+     }
++    Throwable thrown = failure.get();
++    if (thrown != null) {
++      // Thrown rather than returned as a failed result: the job service reads the state of what is
++      // returned, but only what is thrown carries a reason the user can act on.
++      throw new RuntimeException("Pipeline " + jobInfo.jobId() + " failed", thrown);
++    }
+     return result;
+   }
+ 
+@@ -146,7 +168,15 @@ private Properties streamsConfig(JobInfo jobInfo) {
+     props.put(StreamsConfig.APPLICATION_ID_CONFIG, pipelineOptions.getApplicationId());
+     props.put(StreamsConfig.STATE_DIR_CONFIG, pipelineOptions.getStateDir());
+     props.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, StreamsConfig.EXACTLY_ONCE_V2);
+-    props.put(StreamsConfig.CLIENT_ID_CONFIG, jobInfo.jobId());
++    // The job id identifies the pipeline, which every instance of it shares, so on its own it does
++    // not identify an instance. Kafka Streams names threads, consumers and metrics after the client
++    // id, so two workers running the same job would produce logs and JMX metrics that cannot be
++    // told
++    // apart — in a deployment whose whole point is that you add workers. Keeping the job id as the
++    // prefix leaves the pipeline recognizable; the suffix is what makes each worker distinct, and
++    // is
++    // what Kafka Streams does by default when no client id is set.
++    props.put(StreamsConfig.CLIENT_ID_CONFIG, jobInfo.jobId() + "-" + UUID.randomUUID());
+     return props;
+   }
+ }
+diff --git a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPortablePipelineResult.java b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPortablePipelineResult.java
+index 81e80b66e303..29c07917986f 100644
+--- a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPortablePipelineResult.java
++++ b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPortablePipelineResult.java
+@@ -26,8 +26,6 @@
+ import org.apache.beam.sdk.metrics.MetricResults;
+ import org.apache.kafka.streams.KafkaStreams;
+ import org.joda.time.Duration;
+-import org.slf4j.Logger;
+-import org.slf4j.LoggerFactory;
+ 
+ /**
+  * Result of executing a portable pipeline as a {@link KafkaStreams} application.
+@@ -38,9 +36,6 @@
+  */
+ class KafkaStreamsPortablePipelineResult implements PortablePipelineResult {
+ 
+-  private static final Logger LOG =
+-      LoggerFactory.getLogger(KafkaStreamsPortablePipelineResult.class);
+-
+   private final KafkaStreams kafkaStreams;
+   // The job's metrics accumulator, shared by reference with the topology's stage processors, which
+   // update it as the SDK harness reports bundle metrics.
+@@ -126,8 +121,16 @@ public MetricResults metrics() {
+ 
+   @Override
+   public JobApi.MetricResults portableMetrics() throws UnsupportedOperationException {
+-    LOG.debug("portableMetrics() not yet implemented in the Kafka Streams runner");
+-    return JobApi.MetricResults.newBuilder().build();
++    // How a pipeline from another SDK reads its metrics. The job service asks for these once the
++    // job is terminal and returns them over the job API. Without it a Python pipeline saw no
++    // metrics at all, even though the same values were already available to a Java one.
++    //
++    // Reported as attempted only, and deliberately not also as committed: the values are what the
++    // SDK harness reported per bundle, which is not tied to the commit of the records that produced
++    // them. Committed metrics are https://github.com/apache/beam/issues/39635.
++    return JobApi.MetricResults.newBuilder()
++        .addAllAttempted(metricsContainerStepMap.getMonitoringInfos())
++        .build();
+   }
+ 
+   private static State mapState(KafkaStreams.State state) {
+diff --git a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/GroupByKeyTranslator.java b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/GroupByKeyTranslator.java
+index c0e69302386a..a62d937170e9 100644
+--- a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/GroupByKeyTranslator.java
++++ b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/GroupByKeyTranslator.java
+@@ -102,10 +102,14 @@ public void translate(
+     String shuffleName = transformId + SHUFFLE_SUFFIX;
+     String sinkName = transformId + SINK_SUFFIX;
+     String sourceName = transformId + SOURCE_SUFFIX;
+-    String stateStoreName = transformId + STATE_STORE_SUFFIX;
+-    String holdsIndexStoreName = transformId + HOLDS_INDEX_STORE_SUFFIX;
+-    String timerStoreName = transformId + TIMER_STORE_SUFFIX;
+-    String timerIndexStoreName = transformId + TIMER_INDEX_STORE_SUFFIX;
++    String stateStoreName =
++        KafkaStreamsTranslationContext.getStoreName(transformId, STATE_STORE_SUFFIX);
++    String holdsIndexStoreName =
++        KafkaStreamsTranslationContext.getStoreName(transformId, HOLDS_INDEX_STORE_SUFFIX);
++    String timerStoreName =
++        KafkaStreamsTranslationContext.getStoreName(transformId, TIMER_STORE_SUFFIX);
++    String timerIndexStoreName =
++        KafkaStreamsTranslationContext.getStoreName(transformId, TIMER_INDEX_STORE_SUFFIX);
+     String repartitionTopic =
+         repartitionTopic(transformId, context.getPipelineOptions().getApplicationId());
+ 
+diff --git a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/ImpulseTranslator.java b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/ImpulseTranslator.java
+index 3daf7782362e..29bd6e6bd9d3 100644
+--- a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/ImpulseTranslator.java
++++ b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/ImpulseTranslator.java
+@@ -70,7 +70,8 @@ public void translate(
+ 
+     Topology topology = context.getTopology();
+     String sourceNodeName = transformId + SOURCE_SUFFIX;
+-    String stateStoreName = transformId + STATE_STORE_SUFFIX;
++    String stateStoreName =
++        KafkaStreamsTranslationContext.getStoreName(transformId, STATE_STORE_SUFFIX);
+     String bootstrapTopic = context.getImpulseBootstrapTopic(transformId);
+ 
+     topology.addSource(
+diff --git a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/KafkaStreamsTranslationContext.java b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/KafkaStreamsTranslationContext.java
+index 904bd8a71e3a..4a5463677163 100644
+--- a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/KafkaStreamsTranslationContext.java
++++ b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/KafkaStreamsTranslationContext.java
+@@ -192,4 +192,21 @@ public String getReadBootstrapTopic(String transformId) {
+         + "_"
+         + sanitizedTransformId;
+   }
++
++  /**
++   * Returns the name of a state store belonging to a transform.
++   *
++   * <p>The transform id is sanitized to Kafka's legal topic-name characters even though a store
++   * name is not itself a topic: Kafka Streams names a persistent store's changelog topic after the
++   * store, so a transform whose name contains a character a topic may not — which is ordinary,
++   * {@code CombinePerKey(MeanCombineFn)/Group} is a Beam transform name — would fail at runtime
++   * when the changelog is created.
++   *
++   * <p>Two transform ids differing only in characters that are replaced would sanitize to one name.
++   * Kafka Streams rejects a store name that is already taken when the topology is built, so that
++   * surfaces as a failure to start rather than as two transforms quietly sharing state.
++   */
++  public static String getStoreName(String transformId, String suffix) {
++    return ILLEGAL_TOPIC_CHARS.matcher(transformId).replaceAll("_") + suffix;
++  }
+ }
+diff --git a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/ReadTranslator.java b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/ReadTranslator.java
+index 049f29651ebf..69006661ee65 100644
+--- a/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/ReadTranslator.java
++++ b/runners/kafka-streams/src/main/java/org/apache/beam/runners/kafka/streams/translation/ReadTranslator.java
+@@ -126,7 +126,8 @@ private <T, CheckpointT extends UnboundedSource.CheckpointMark> void addUnbounde
+ 
+     Topology topology = context.getTopology();
+     String sourceNodeName = transformId + SOURCE_SUFFIX;
+-    String stateStoreName = transformId + STATE_STORE_SUFFIX;
++    String stateStoreName =
++        KafkaStreamsTranslationContext.getStoreName(transformId, STATE_STORE_SUFFIX);
+     String bootstrapTopic = context.getReadBootstrapTopic(transformId);
+     SerializablePipelineOptions options =
+         new SerializablePipelineOptions(context.getPipelineOptions());
+@@ -185,7 +186,8 @@ private <T> void addReadNodes(
+ 
+     Topology topology = context.getTopology();
+     String sourceNodeName = transformId + SOURCE_SUFFIX;
+-    String stateStoreName = transformId + STATE_STORE_SUFFIX;
++    String stateStoreName =
++        KafkaStreamsTranslationContext.getStoreName(transformId, STATE_STORE_SUFFIX);
+     String bootstrapTopic = context.getReadBootstrapTopic(transformId);
+     SerializablePipelineOptions options =
+         new SerializablePipelineOptions(context.getPipelineOptions());
+diff --git a/runners/kafka-streams/src/test/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPortablePipelineResultTest.java b/runners/kafka-streams/src/test/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPortablePipelineResultTest.java
+new file mode 100644
+index 000000000000..2c44765151b4
+--- /dev/null
++++ b/runners/kafka-streams/src/test/java/org/apache/beam/runners/kafka/streams/KafkaStreamsPortablePipelineResultTest.java
+@@ -0,0 +1,96 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.beam.runners.kafka.streams;
++
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.hasItem;
++import static org.hamcrest.Matchers.hasProperty;
++import static org.hamcrest.Matchers.is;
++import static org.hamcrest.Matchers.not;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import org.apache.beam.model.jobmanagement.v1.JobApi;
++import org.apache.beam.runners.core.metrics.MetricsContainerImpl;
++import org.apache.beam.runners.core.metrics.MetricsContainerStepMap;
++import org.apache.beam.sdk.metrics.MetricName;
++import org.apache.kafka.streams.KafkaStreams;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.junit.runners.JUnit4;
++
++/**
++ * Tests for {@link KafkaStreamsPortablePipelineResult}, in particular the metrics an SDK other than
++ * Java reads its results through.
++ */
++@RunWith(JUnit4.class)
++public class KafkaStreamsPortablePipelineResultTest {
++
++  private static final String STEP = "a-stage";
++  private static final String NAMESPACE = "ns";
++  private static final String COUNTER = "elements";
++
++  private static KafkaStreams idleClient() {
++    KafkaStreams kafkaStreams = mock(KafkaStreams.class);
++    // The result registers a state listener and checks the current state, so it has to have one.
++    when(kafkaStreams.state()).thenReturn(KafkaStreams.State.CREATED);
++    return kafkaStreams;
++  }
++
++  @Test
++  public void portableMetricsReportWhatTheHarnessMeasured() {
++    MetricsContainerStepMap stepMap = new MetricsContainerStepMap();
++    MetricsContainerImpl container = stepMap.getContainer(STEP);
++    container.getCounter(MetricName.named(NAMESPACE, COUNTER)).inc(7);
++
++    KafkaStreamsPortablePipelineResult result =
++        new KafkaStreamsPortablePipelineResult(idleClient(), stepMap, () -> {});
++
++    JobApi.MetricResults metrics = result.portableMetrics();
++
++    // A pipeline from another SDK reads these over the job API; before they were reported the list
++    // was empty and a Python pipeline saw no metrics at all.
++    assertThat(
++        metrics.getAttemptedList(),
++        hasItem(hasProperty("urn", is("beam:metric:user:sum_int64:v1"))));
++    assertThat(metrics.getAttemptedCount(), is(not(0)));
++  }
++
++  @Test
++  public void portableMetricsAreNotReportedAsCommitted() {
++    // The values are what the SDK harness reported per bundle, which is not tied to the commit of
++    // the records that produced them, so claiming them as committed would be wrong.
++    // See https://github.com/apache/beam/issues/39635.
++    MetricsContainerStepMap stepMap = new MetricsContainerStepMap();
++    stepMap.getContainer(STEP).getCounter(MetricName.named(NAMESPACE, COUNTER)).inc(1);
++
++    KafkaStreamsPortablePipelineResult result =
++        new KafkaStreamsPortablePipelineResult(idleClient(), stepMap, () -> {});
++
++    assertThat(result.portableMetrics().getCommittedCount(), is(0));
++  }
++
++  @Test
++  public void aPipelineThatMeasuredNothingReportsNothing() {
++    KafkaStreamsPortablePipelineResult result =
++        new KafkaStreamsPortablePipelineResult(
++            idleClient(), new MetricsContainerStepMap(), () -> {});
++
++    assertThat(result.portableMetrics().getAttemptedCount(), is(0));
++  }
++}
+diff --git a/runners/kafka-streams/src/test/java/org/apache/beam/runners/kafka/streams/KafkaStreamsRunnerBrokerIT.java b/runners/kafka-streams/src/test/java/org/apache/beam/runners/kafka/streams/KafkaStreamsRunnerBrokerIT.java
+index b060561eaab7..acc4130b8216 100644
+--- a/runners/kafka-streams/src/test/java/org/apache/beam/runners/kafka/streams/KafkaStreamsRunnerBrokerIT.java
++++ b/runners/kafka-streams/src/test/java/org/apache/beam/runners/kafka/streams/KafkaStreamsRunnerBrokerIT.java
+@@ -21,7 +21,14 @@
+ import static org.hamcrest.MatcherAssert.assertThat;
+ 
+ import java.nio.file.Files;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
+ import java.util.UUID;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
++import java.util.concurrent.TimeUnit;
+ import org.apache.beam.model.pipeline.v1.RunnerApi;
+ import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
+ import org.apache.beam.sdk.Pipeline;
+@@ -123,11 +130,22 @@ private KafkaStreamsPipelineOptions options() {
+   }
+ 
+   private KafkaStreamsPipelineOptions options(int topicPartitions) {
++    return options(topicPartitions, "ks-broker-it-" + UUID.randomUUID());
++  }
++
++  /**
++   * Options for one runner instance.
++   *
++   * <p>Two instances of the same job share an application id — that is what puts them in one
++   * consumer group and so splits the work between them — but each needs its own state directory,
++   * since the local stores are per instance.
++   */
++  private KafkaStreamsPipelineOptions options(int topicPartitions, String applicationId) {
+     KafkaStreamsPipelineOptions options =
+         PipelineOptionsFactory.create().as(KafkaStreamsPipelineOptions.class);
+     options.setRunner(CrashingRunner.class);
+     options.setBootstrapServers(kafka.getBootstrapServers());
+-    options.setApplicationId("ks-broker-it-" + UUID.randomUUID());
++    options.setApplicationId(applicationId);
+     options.setInternalParallelism(topicPartitions);
+     options
+         .as(PortablePipelineOptions.class)
+@@ -275,6 +293,52 @@ public void aBoundedPipelineTerminatesOnItsOwn() throws Exception {
+     assertThat(counterValue(result), is(1L));
+   }
+ 
++  @Test
++  public void twoInstancesShareThreePartitions() throws Exception {
++    // Everything else here runs one instance, which leaves the thing the runner exists for
++    // untested: the work being split between instances by Kafka's own group membership.
++    //
++    // Three partitions across two instances is deliberate. It does not divide, so the instances
++    // take an unequal share, and a watermark aggregator on either of them has to hear from all
++    // three upstream partitions — some of which are being produced by the other instance — before
++    // it may let its watermark advance. If the reports were tied to the instance that produced
++    // them rather than to the partition, this is the shape that would break.
++    String applicationId = "ks-broker-it-" + UUID.randomUUID();
++    List<PipelineResult> results = Collections.synchronizedList(new ArrayList<>());
++    ExecutorService instances = Executors.newFixedThreadPool(2);
++    try {
++      List<Future<?>> running = new ArrayList<>();
++      for (int instance = 0; instance < 2; instance++) {
++        KafkaStreamsPipelineOptions options = options(3, applicationId);
++        Pipeline pipeline = Pipeline.create(options);
++        buildChainedPipeline(pipeline);
++        running.add(
++            instances.submit(
++                () -> {
++                  // run() blocks until its instance has finished, so each needs its own thread.
++                  results.add(runPipeline(pipeline, options));
++                }));
++      }
++      for (Future<?> future : running) {
++        // Fails rather than hangs if an instance never finishes — which is the interesting way for
++        // this to go wrong, since an instance only stops once every processor it owns is done.
++        future.get(TIMEOUT.getMillis(), TimeUnit.MILLISECONDS);
++      }
++    } finally {
++      instances.shutdownNow();
++    }
++
++    // The pipeline collapses everything onto one key, so exactly one group comes out of the second
++    // GroupByKey however the partitions were shared. Each instance counts what it processed, so the
++    // total across both is what has to be one: a group counted twice would mean the instances had
++    // both claimed the same partition's data.
++    long groups = 0;
++    for (PipelineResult result : results) {
++      groups += counterValue(result);
++    }
++    assertThat(groups, is(1L));
++  }
++
+   /**
+    * Polls the pipeline's metrics until the counter reaches {@code expected} or the timeout hits.
+    */
+diff --git a/sdks/python/apache_beam/runners/portability/kafka_streams_runner_test.py b/sdks/python/apache_beam/runners/portability/kafka_streams_runner_test.py
+new file mode 100644
+index 000000000000..9285e0fd3d31
+--- /dev/null
++++ b/sdks/python/apache_beam/runners/portability/kafka_streams_runner_test.py
+@@ -0,0 +1,285 @@
++#
++# Licensed to the Apache Software Foundation (ASF) under one or more
++# contributor license agreements.  See the NOTICE file distributed with
++# this work for additional information regarding copyright ownership.
++# The ASF licenses this file to You under the Apache License, Version 2.0
++# (the "License"); you may not use this file except in compliance with
++# the License.  You may obtain a copy of the License at
++#
++#    http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++# pytype: skip-file
++
++import argparse
++import logging
++import shlex
++import unittest
++import uuid
++from shutil import rmtree
++from tempfile import mkdtemp
++
++import pytest
++
++from apache_beam.options.pipeline_options import KafkaStreamsRunnerOptions
++from apache_beam.options.pipeline_options import PortableOptions
++from apache_beam.runners.portability import job_server
++from apache_beam.runners.portability import portable_runner
++from apache_beam.runners.portability import portable_runner_test
++from apache_beam.utils import subprocess_server
++
++# Runs Beam's portable ValidatesRunner suite against the Kafka Streams runner, which is what shows
++# the runner works for a pipeline that was not written in Java.
++#
++# Needs a Kafka broker, unlike the Flink and Spark suites, because the runner executes on Kafka
++# rather than on a cluster of its own. Point it at one with --bootstrap_servers.
++#
++# Run as
++#
++# pytest kafka_streams_runner_test.py[::TestClass::test_case] \
++#     --test-pipeline-options="--bootstrap_servers=localhost:9092"
++
++_LOGGER = logging.getLogger(__name__)
++
++
++class KafkaStreamsRunnerTest(portable_runner_test.PortableRunnerTest):
++  _use_grpc = True
++  _use_subprocesses = True
++
++  expansion_port = None
++  kafka_streams_job_server_jar = None
++  bootstrap_servers = 'localhost:9092'
++  environment_type = 'LOOPBACK'
++  environment_options = None
++
++  @pytest.fixture(autouse=True)
++  def parse_options(self, request):
++    if not request.config.option.test_pipeline_options:
++      raise unittest.SkipTest(
++          'Skipping because --test-pipeline-options is not specified.')
++    test_pipeline_options = request.config.option.test_pipeline_options
++    parser = argparse.ArgumentParser(add_help=True)
++    parser.add_argument(
++        '--kafka_streams_job_server_jar',
++        help='Job server jar to submit jobs.',
++        action='store')
++    parser.add_argument(
++        '--bootstrap_servers',
++        default='localhost:9092',
++        help='Kafka the runner executes on, and creates its own topics in.')
++    parser.add_argument(
++        '--environment_type',
++        default='LOOPBACK',
++        choices=['DOCKER', 'PROCESS', 'LOOPBACK'],
++        help='Set the environment type for running user code. DOCKER runs '
++        'user code in a container. PROCESS runs user code in '
++        'automatically started processes. LOOPBACK runs user code on '
++        'the same process that originally submitted the job.')
++    parser.add_argument(
++        '--environment_option',
++        '--environment_options',
++        dest='environment_options',
++        action='append',
++        default=None,
++        help=(
++            'Environment configuration for running the user code. '
++            'Recognized options depend on --environment_type.'))
++    known_args, unknown_args = parser.parse_known_args(
++        shlex.split(test_pipeline_options))
++    if unknown_args:
++      _LOGGER.warning('Discarding unrecognized arguments %s' % unknown_args)
++    self.set_kafka_streams_job_server_jar(
++        known_args.kafka_streams_job_server_jar or
++        job_server.JavaJarJobServer.path_to_beam_jar(
++            ':runners:kafka-streams:job-server:shadowJar'))
++    type(self).bootstrap_servers = known_args.bootstrap_servers
++    self.environment_type = known_args.environment_type
++    self.environment_options = known_args.environment_options
++
++  @classmethod
++  def _subprocess_command(cls, job_port, expansion_port):
++    # Created and used by the job server; removed here so the job server makes it itself.
++    tmp_dir = mkdtemp(prefix='kafkastreamstest')
++
++    cls.expansion_port = expansion_port
++
++    try:
++      return [
++          subprocess_server.JavaHelper.get_java(),
++          '-jar',
++          cls.kafka_streams_job_server_jar,
++          '--artifacts-dir',
++          tmp_dir,
++          '--job-port',
++          str(job_port),
++          '--artifact-port',
++          '0',
++          '--expansion-port',
++          str(expansion_port),
++      ]
++    finally:
++      rmtree(tmp_dir)
++
++  @classmethod
++  def get_runner(cls):
++    return portable_runner.PortableRunner()
++
++  @classmethod
++  def get_expansion_service(cls):
++    return 'localhost:%s' % cls.expansion_port
++
++  @classmethod
++  def set_kafka_streams_job_server_jar(cls, kafka_streams_job_server_jar):
++    cls.kafka_streams_job_server_jar = kafka_streams_job_server_jar
++
++  def create_options(self):
++    options = super().create_options()
++    options.view_as(PortableOptions).environment_type = self.environment_type
++    options.view_as(
++        PortableOptions).environment_options = self.environment_options
++
++    kafka_streams_options = options.view_as(KafkaStreamsRunnerOptions)
++    kafka_streams_options.bootstrap_servers = self.bootstrap_servers
++    # A fresh application id per pipeline. The id names the consumer group and the runner's own
++    # topics, so reusing one would have a test resume another test's offsets and read its data.
++    kafka_streams_options.application_id = 'beam-vr-%s' % uuid.uuid4()
++    return options
++
++  # ---------------------------------------------------------------------------
++  # Features the runner does not support yet. Each skip points at the issue that
++  # would implement it, so this list doubles as the runner's capability gaps.
++  # ---------------------------------------------------------------------------
++
++  def test_pardo_side_inputs(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_pardo_windowed_side_inputs(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_flattened_side_input(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_multimap_side_input(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_multimap_multiside_input(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_multimap_side_input_type_coercion(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_pardo_unfusable_side_inputs(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_pardo_state_only(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_pardo_timers(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_pardo_timers_clear(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_pardo_state_timers(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_pardo_state_timers_non_standard_coder(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_windowed_pardo_state_timers(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_pardo_dynamic_timer(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_custom_merging_window(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39630")
++
++  def test_custom_window_type(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39630")
++
++  def test_sdf_with_watermark_tracking(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39631")
++
++  def test_sdf_with_sdf_initiated_checkpointing(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39631")
++
++  def test_sdf_synthetic_source(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39631")
++
++  def test_sdf_with_dofn_as_watermark_estimator(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39631")
++
++  def test_callbacks_with_exception(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/18479")
++
++  def test_register_finalizations(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/18479")
++
++  def test_batch_pardo_fusion_break(self):
++    # CombineGlobally expands to a stage with side inputs.
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_batch_to_element_pardo(self):
++    # CombineGlobally expands to a stage with side inputs.
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_gbk_side_input(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_pack_combiners(self):
++    # The packed combiners are CombineGlobally, which needs side inputs.
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_pardo_side_input_dependencies(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_pardo_unfusable_side_inputs_with_separation(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39628")
++
++  def test_pardo_state_with_custom_key_coder(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_pardo_et_timer_with_no_firing(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_pardo_et_timer_with_no_reset(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_pardo_et_timer_with_no_reset_and_no_clear(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39629")
++
++  def test_windowing(self):
++    # Sessions, which are merging windows.
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39630")
++
++  def test_windowed_combine_per_key(self):
++    # The fixed and sliding parts pass; the sessions part does not, sessions being merging windows.
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39630")
++
++  def test_reshuffle_after_custom_window(self):
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39630")
++
++  def test_metrics(self):
++    # The runner reports attempted values, which do reach a Python pipeline; this asserts on
++    # committed ones.
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39635")
++
++  def test_read(self):
++    # The runner reads sources through the deprecated primitive Read, which carries a serialized
++    # Java source; a Python pipeline's source is a Python object, so reading one needs splittable
++    # DoFn support rather than anything specific to Read.
++    raise unittest.SkipTest("https://github.com/apache/beam/issues/39631")
++
++  # Inherits all other tests from PortableRunnerTest.
++
++
++if __name__ == '__main__':
++  logging.getLogger().setLevel(logging.INFO)
++  unittest.main()
+diff --git a/sdks/python/test-suites/portable/common.gradle b/sdks/python/test-suites/portable/common.gradle
+index 17bf9989f28b..c8c789ca96df 100644
+--- a/sdks/python/test-suites/portable/common.gradle
++++ b/sdks/python/test-suites/portable/common.gradle
+@@ -174,6 +174,41 @@ tasks.register("sparkValidatesRunner") {
+   dependsOn 'sparkCompatibilityMatrixLOOPBACK'
+ }
+ 
++// Unlike the Flink and Spark suites, this one needs a Kafka broker: the runner executes on Kafka
++// rather than on a cluster of its own. It is therefore not wired into any aggregate build. Run it
++// against a broker, e.g.
++//
++//   docker run -d -p 9092:9092 --name beam-kafka apache/kafka:4.0.0
++//   ./gradlew :sdks:python:test-suites:portable:py312:kafkaStreamsValidatesRunner
++//
++// The broker defaults to localhost:9092; point it elsewhere with
++// -PkafkaStreamsBootstrapServers=host:port.
++//
++// LOOPBACK only, unlike the other runners: it is the environment the suite has been run in, and a
++// task for an environment nobody has tried would claim more than is known.
++def createKafkaStreamsRunnerTestTask() {
++  def taskName = "kafkaStreamsCompatibilityMatrixLOOPBACK"
++  // Not resolvable until runtime, as for the Spark job server above, so the path is spelled out.
++  def jobServerJar =
++      "${rootDir}/runners/kafka-streams/job-server/build/libs/beam-runners-kafka-streams-job-server-${version}.jar"
++  def bootstrapServers =
++      project.findProperty('kafkaStreamsBootstrapServers') ?: 'localhost:9092'
++  def options =
++      "--kafka_streams_job_server_jar=${jobServerJar} --environment_type=LOOPBACK" +
++      " --bootstrap_servers=${bootstrapServers}"
++  def task = toxTask(taskName, 'kafka-streams-runner-test', options)
++  task.configure {
++    dependsOn ':runners:kafka-streams:job-server:shadowJar'
++  }
++  return task
++}
++
++createKafkaStreamsRunnerTestTask()
++
++tasks.register("kafkaStreamsValidatesRunner") {
++  dependsOn 'kafkaStreamsCompatibilityMatrixLOOPBACK'
++}
++
+ def createPrismRunnerTestTask(String workerType) {
+   def taskName = "prismCompatibilityMatrix${workerType}"
+ 
+diff --git a/sdks/python/tox.ini b/sdks/python/tox.ini
+index 6dab85083a02..beab0399d50c 100644
+--- a/sdks/python/tox.ini
++++ b/sdks/python/tox.ini
+@@ -330,6 +330,11 @@ extras = test
+ commands =
+   bash {toxinidir}/scripts/pytest_validates_runner.sh {envname} {toxinidir}/apache_beam/runners/portability/spark_runner_test.py {posargs}
+ 
++[testenv:kafka-streams-runner-test]
++extras = test
++commands =
++  bash {toxinidir}/scripts/pytest_validates_runner.sh {envname} {toxinidir}/apache_beam/runners/portability/kafka_streams_runner_test.py {posargs}
++
+ [testenv:prism-runner-test]
+ extras = test
+ commands =

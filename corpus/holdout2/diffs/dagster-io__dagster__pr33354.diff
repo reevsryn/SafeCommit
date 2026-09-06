@@ -1,0 +1,617 @@
+diff --git a/docs/docs/integrations/libraries/gcp/component.md b/docs/docs/integrations/libraries/gcp/component.md
+new file mode 100644
+index 0000000000000..00982673fbf57
+--- /dev/null
++++ b/docs/docs/integrations/libraries/gcp/component.md
+@@ -0,0 +1,66 @@
++---
++title: GCP Components
++sidebar_label: Components
++sidebar_position: 1
++description: Configuration-driven GCP resources using Dagster Components.
++tags: [dagster-supported, gcp, components]
++---
++
++<p>{frontMatter.description}</p>
++
++The `dagster-gcp` library provides a set of components that allow you to configure GCP resources directly in YAML. These components wrap existing `dagster-gcp` resources, enabling faster setup and better reusability.
++
++## Service Components
++
++### BigQuery & GCS
++
++Components for interacting with BigQuery and Google Cloud Storage.
++
++- **BigQueryResourceComponent**: Provides a standard `BigQueryResource`.
++- **GCSResourceComponent**: Provides a standard `GCSResource`.
++- **GCSFileManagerResourceComponent**: Provides a `GCSFileManager` for artifact storage.
++
++### Dataproc
++
++Manage Dataproc clusters.
++
++- **DataprocResourceComponent**: Configures a `DataprocResource` (Beta).
++
++## Examples
++
++### BigQuery (Default Credentials)
++
++```yaml
++type: dagster_gcp.BigQueryResourceComponent
++attributes:
++  project: my-gcp-project
++  location: us-central1
++  resource_key: bigquery
++```
++
++### GCS Resource
++
++```yaml
++type: dagster_gcp.GCSResourceComponent
++attributes:
++  project: my-gcp-project
++  resource_key: gcs
++```
++
++### Dataproc Cluster
++
++```yaml
++type: dagster_gcp.DataprocResourceComponent
++attributes:
++  project_id: my-gcp-project
++  region: us-central1
++  cluster_name: dagster-cluster
++  cluster_config_dict:
++    master_config:
++      num_instances: 1
++      machine_type_uri: n1-standard-4
++    worker_config:
++      num_instances: 2
++      machine_type_uri: n1-standard-4
++  resource_key: dataproc
++```
+diff --git a/docs/sphinx/sections/integrations/libraries/gcp/dagster-gcp.rst b/docs/sphinx/sections/integrations/libraries/gcp/dagster-gcp.rst
+index b8340bbc13a1f..247f290ace4d5 100644
+--- a/docs/sphinx/sections/integrations/libraries/gcp/dagster-gcp.rst
++++ b/docs/sphinx/sections/integrations/libraries/gcp/dagster-gcp.rst
+@@ -86,6 +86,7 @@ File Manager
+ 
+ GCS Compute Log Manager
+ ^^^^^^^^^^^^^^^^^^^^^^^^
++
+ .. autoclass:: dagster_gcp.gcs.GCSComputeLogManager
+ 
+ Dataproc
+@@ -147,3 +148,19 @@ Legacy
+ 
+ .. autoconfigurable:: dataproc_resource
+   :annotation: ResourceDefinition
++
++Components
++----------
++
++Resource components for use with Dagster's component system.
++
++Resource Components
++^^^^^^^^^^^^^^^^^^^
++
++.. autoclass:: dagster_gcp.BigQueryResourceComponent
++
++.. autoclass:: dagster_gcp.GCSResourceComponent
++
++.. autoclass:: dagster_gcp.GCSFileManagerResourceComponent
++
++.. autoclass:: dagster_gcp.DataprocResourceComponent
+diff --git a/python_modules/libraries/dagster-gcp/dagster_gcp/__init__.py b/python_modules/libraries/dagster-gcp/dagster_gcp/__init__.py
+index 2ff236d6a6c09..13f9d25a32afa 100644
+--- a/python_modules/libraries/dagster-gcp/dagster_gcp/__init__.py
++++ b/python_modules/libraries/dagster-gcp/dagster_gcp/__init__.py
+@@ -18,6 +18,12 @@
+     fetch_last_updated_timestamps as fetch_last_updated_timestamps,
+ )
+ from dagster_gcp.bigquery.types import BigQueryError as BigQueryError
++from dagster_gcp.components import (
++    BigQueryResourceComponent as BigQueryResourceComponent,
++    DataprocResourceComponent as DataprocResourceComponent,
++    GCSFileManagerResourceComponent as GCSFileManagerResourceComponent,
++    GCSResourceComponent as GCSResourceComponent,
++)
+ from dagster_gcp.dataproc.ops import (
+     DataprocOpConfig as DataprocOpConfig,
+     configurable_dataproc_op as configurable_dataproc_op,
+diff --git a/python_modules/libraries/dagster-gcp/dagster_gcp/components/__init__.py b/python_modules/libraries/dagster-gcp/dagster_gcp/components/__init__.py
+new file mode 100644
+index 0000000000000..680a6064e5b76
+--- /dev/null
++++ b/python_modules/libraries/dagster-gcp/dagster_gcp/components/__init__.py
+@@ -0,0 +1,10 @@
++from dagster_gcp.components.bigquery import BigQueryResourceComponent
++from dagster_gcp.components.dataproc import DataprocResourceComponent
++from dagster_gcp.components.gcs import GCSFileManagerResourceComponent, GCSResourceComponent
++
++__all__ = [
++    "BigQueryResourceComponent",
++    "DataprocResourceComponent",
++    "GCSFileManagerResourceComponent",
++    "GCSResourceComponent",
++]
+diff --git a/python_modules/libraries/dagster-gcp/dagster_gcp/components/bigquery.py b/python_modules/libraries/dagster-gcp/dagster_gcp/components/bigquery.py
+new file mode 100644
+index 0000000000000..78913641c3357
+--- /dev/null
++++ b/python_modules/libraries/dagster-gcp/dagster_gcp/components/bigquery.py
+@@ -0,0 +1,55 @@
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_gcp.bigquery.resources import BigQueryResource
++
++
++@public
++@preview
++class BigQueryResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a BigQueryResource for interacting with Google BigQuery."""
++
++    project: str | None = Field(
++        default=None,
++        description=(
++            "Project ID for the project which the client acts on behalf of. Will be passed when"
++            " creating a dataset / job. If not passed, falls back to the default inferred from the"
++            " environment."
++        ),
++    )
++
++    location: str | None = Field(
++        default=None,
++        description="Default location for jobs / datasets / tables.",
++    )
++
++    gcp_credentials: str | None = Field(
++        default=None,
++        description=(
++            "GCP authentication credentials. If provided, a temporary file will be created"
++            " with the credentials and ``GOOGLE_APPLICATION_CREDENTIALS`` will be set to the"
++            " temporary file. To avoid issues with newlines in the keys, you must base64"
++            " encode the key. You can retrieve the base64 encoded key with this shell"
++            " command: ``cat $GOOGLE_AUTH_CREDENTIALS | base64``"
++        ),
++    )
++
++    resource_key: str | None = Field(
++        default=None,
++        description="The key under which the BigQuery resource will be bound to the definitions.",
++    )
++
++    @property
++    def resource(self) -> BigQueryResource:
++        """Returns a configured BigQueryResource."""
++        return BigQueryResource(
++            project=self.project,
++            location=self.location,
++            gcp_credentials=self.gcp_credentials,
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-gcp/dagster_gcp/components/dataproc.py b/python_modules/libraries/dagster-gcp/dagster_gcp/components/dataproc.py
+new file mode 100644
+index 0000000000000..df4db97ca2d4a
+--- /dev/null
++++ b/python_modules/libraries/dagster-gcp/dagster_gcp/components/dataproc.py
+@@ -0,0 +1,97 @@
++from typing import Any
++
++import dagster as dg
++from dagster._annotations import beta, preview, public
++from pydantic import Field
++
++from dagster_gcp.dataproc.resources import DataprocResource
++
++
++@public
++@beta
++@preview
++class DataprocResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a DataprocResource."""
++
++    project_id: str = Field(
++        description=(
++            "Required. Project ID for the project which the client acts on behalf of. Will be"
++            " passed when creating a dataset/job."
++        ),
++    )
++
++    region: str = Field(
++        description="Required. The GCP region.",
++    )
++
++    cluster_name: str = Field(
++        description=(
++            "Required. The cluster name. Cluster names within a project must be unique. Names of"
++            " deleted clusters can be reused."
++        ),
++    )
++
++    labels: dict[str, str] | None = Field(
++        default=None,
++        description=(
++            "Optional. The labels to associate with this cluster. Label keys must"
++            " contain 1 to 63 characters, and must conform to RFC 1035"
++            " (https://www.ietf.org/rfc/rfc1035.txt). Label values may be empty, but, if"
++            " present, must contain 1 to 63 characters, and must conform to RFC 1035"
++            " (https://www.ietf.org/rfc/rfc1035.txt). No more than 32 labels can be associated"
++            " with a cluster."
++        ),
++    )
++
++    cluster_config_yaml_path: str | None = Field(
++        default=None,
++        description=(
++            "Full path to a YAML file containing cluster configuration. See"
++            " https://cloud.google.com/dataproc/docs/reference/rest/v1/ClusterConfig for"
++            " configuration options. Only one of cluster_config_yaml_path,"
++            " cluster_config_json_path, or cluster_config_dict may be provided."
++        ),
++    )
++
++    cluster_config_json_path: str | None = Field(
++        default=None,
++        description=(
++            "Full path to a JSON file containing cluster configuration. See"
++            " https://cloud.google.com/dataproc/docs/reference/rest/v1/ClusterConfig for"
++            " configuration options. Only one of cluster_config_yaml_path,"
++            " cluster_config_json_path, or cluster_config_dict may be provided."
++        ),
++    )
++
++    cluster_config_dict: dict[str, Any] | None = Field(
++        default=None,
++        description=(
++            "Python dictionary containing cluster configuration. See"
++            " https://cloud.google.com/dataproc/docs/reference/rest/v1/ClusterConfig for"
++            " configuration options. Only one of cluster_config_yaml_path,"
++            " cluster_config_json_path, or cluster_config_dict may be provided."
++        ),
++    )
++
++    resource_key: str | None = Field(
++        default=None,
++        description="The key under which the Dataproc resource will be bound to the definitions.",
++    )
++
++    @property
++    def resource(self) -> DataprocResource:
++        """Returns a configured DataprocResource."""
++        return DataprocResource(
++            project_id=self.project_id,
++            region=self.region,
++            cluster_name=self.cluster_name,
++            labels=self.labels,
++            cluster_config_yaml_path=self.cluster_config_yaml_path,
++            cluster_config_json_path=self.cluster_config_json_path,
++            cluster_config_dict=self.cluster_config_dict,
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-gcp/dagster_gcp/components/gcs.py b/python_modules/libraries/dagster-gcp/dagster_gcp/components/gcs.py
+new file mode 100644
+index 0000000000000..dc832b9e50fbf
+--- /dev/null
++++ b/python_modules/libraries/dagster-gcp/dagster_gcp/components/gcs.py
+@@ -0,0 +1,75 @@
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_gcp.gcs.resources import GCSFileManagerResource, GCSResource
++
++
++@public
++@preview
++class GCSResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a GCSResource for interacting with Google Cloud Storage."""
++
++    project: str | None = Field(
++        default=None,
++        description="Project name",
++    )
++
++    resource_key: str | None = Field(
++        default=None,
++        description="The key under which the GCS resource will be bound to the definitions.",
++    )
++
++    @property
++    def resource(self) -> GCSResource:
++        """Returns a configured GCSResource."""
++        return GCSResource(
++            project=self.project,
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
++
++
++@public
++@preview
++class GCSFileManagerResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a GCSFileManagerResource."""
++
++    project: str | None = Field(
++        default=None,
++        description="Project name",
++    )
++
++    gcs_bucket: str = Field(description="GCS bucket to store files.")
++
++    gcs_prefix: str = Field(
++        default="dagster",
++        description="Prefix to add to all file paths.",
++    )
++
++    gcp_credentials: str | None = Field(
++        default=None,
++        description="GCP authentication credentials (base64).",
++    )
++
++    resource_key: str | None = Field(
++        default=None,
++        description="The key under which the GCS FileManager resource will be bound to the definitions.",
++    )
++
++    @property
++    def resource(self) -> GCSFileManagerResource:
++        """Returns a configured GCSFileManagerResource."""
++        return GCSFileManagerResource(
++            project=self.project,
++            gcs_bucket=self.gcs_bucket,
++            gcs_prefix=self.gcs_prefix,
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-gcp/dagster_gcp_tests/component_tests/__init__.py b/python_modules/libraries/dagster-gcp/dagster_gcp_tests/component_tests/__init__.py
+new file mode 100644
+index 0000000000000..e69de29bb2d1d
+diff --git a/python_modules/libraries/dagster-gcp/dagster_gcp_tests/component_tests/test_gcp_components.py b/python_modules/libraries/dagster-gcp/dagster_gcp_tests/component_tests/test_gcp_components.py
+new file mode 100644
+index 0000000000000..06f47b6cf7ff2
+--- /dev/null
++++ b/python_modules/libraries/dagster-gcp/dagster_gcp_tests/component_tests/test_gcp_components.py
+@@ -0,0 +1,215 @@
++from typing import get_args, get_origin
++
++import pytest
++from dagster._utils.env import environ
++from dagster._utils.test.definitions import scoped_definitions_load_context
++from dagster.components.testing import create_defs_folder_sandbox
++from dagster_gcp.bigquery.resources import BigQueryResource
++from dagster_gcp.components import (
++    BigQueryResourceComponent,
++    DataprocResourceComponent,
++    GCSFileManagerResourceComponent,
++    GCSResourceComponent,
++)
++from dagster_gcp.dataproc.resources import DataprocResource
++from dagster_gcp.gcs.resources import GCSFileManagerResource, GCSResource
++
++
++class TestComponentFieldsSync:
++    """Tests that component fields are synchronized with their underlying resource definitions."""
++
++    @pytest.mark.parametrize(
++        "component_class, resource_class, exclude_fields",
++        [
++            (BigQueryResourceComponent, BigQueryResource, {"gcp_credentials"}),
++            (GCSResourceComponent, GCSResource, set()),
++            (GCSFileManagerResourceComponent, GCSFileManagerResource, {"gcp_credentials"}),
++            (DataprocResourceComponent, DataprocResource, set()),
++        ],
++    )
++    def test_component_fields_sync_with_resource(
++        self, component_class, resource_class, exclude_fields
++    ):
++        """Validates that component configuration schemas are fully synchronized with their underlying resource definitions."""
++        component_fields = set(component_class.model_fields.keys())
++        resource_fields = set(resource_class.model_fields.keys())
++
++        # Handle nested field structures if present
++        if "credentials" in component_class.model_fields:
++            creds_field = component_class.model_fields["credentials"]
++            creds_annotation = creds_field.annotation
++            origin = get_origin(creds_annotation)
++            if origin:
++                args = get_args(creds_annotation)
++                actual_creds_class = next(
++                    (arg for arg in args if hasattr(arg, "model_fields")), None
++                )
++            else:
++                actual_creds_class = creds_annotation
++
++            if actual_creds_class and hasattr(actual_creds_class, "model_fields"):
++                component_fields.update(actual_creds_class.model_fields.keys())
++
++        resource_fields = resource_fields - exclude_fields
++
++        missing = resource_fields - component_fields
++        assert resource_fields.issubset(component_fields), (
++            f"Missing fields in {component_class.__name__}: {missing}"
++        )
++
++
++class TestYAMLIntegration:
++    """Tests for YAML-based component instantiation and definition loading."""
++
++    def test_bigquery_component_yaml(self):
++        """Verifies successful instantiation of BigQueryResource from YAML."""
++        with create_defs_folder_sandbox() as sandbox:
++            defs_path = sandbox.scaffold_component(
++                component_cls=BigQueryResourceComponent,
++                defs_yaml_contents={
++                    "type": "dagster_gcp.components.BigQueryResourceComponent",
++                    "attributes": {
++                        "project": "my-project",
++                        "location": "us-west1",
++                        "resource_key": "my_bigquery",
++                    },
++                },
++            )
++            with scoped_definitions_load_context():
++                with sandbox.load_component_and_build_defs(defs_path=defs_path) as (
++                    _component,
++                    defs,
++                ):
++                    assert defs.resources
++                    assert "my_bigquery" in defs.resources
++                    resource = defs.resources["my_bigquery"]
++                    assert isinstance(resource, BigQueryResource)
++                    assert resource.project == "my-project"
++                    assert resource.location == "us-west1"
++
++    def test_bigquery_component_yaml_minimal(self):
++        """Verifies BigQueryResource with minimal configuration (allows ADC fallback)."""
++        with create_defs_folder_sandbox() as sandbox:
++            defs_path = sandbox.scaffold_component(
++                component_cls=BigQueryResourceComponent,
++                defs_yaml_contents={
++                    "type": "dagster_gcp.components.BigQueryResourceComponent",
++                    "attributes": {
++                        "resource_key": "bigquery_default",
++                    },
++                },
++            )
++            with scoped_definitions_load_context():
++                with sandbox.load_component_and_build_defs(defs_path=defs_path) as (
++                    _component,
++                    defs,
++                ):
++                    assert defs.resources
++                    assert "bigquery_default" in defs.resources
++                    resource = defs.resources["bigquery_default"]
++                    assert isinstance(resource, BigQueryResource)
++                    assert resource.project is None
++
++    def test_gcs_component_yaml(self):
++        """Verifies successful instantiation of GCSResource from YAML."""
++        with create_defs_folder_sandbox() as sandbox:
++            defs_path = sandbox.scaffold_component(
++                component_cls=GCSResourceComponent,
++                defs_yaml_contents={
++                    "type": "dagster_gcp.components.GCSResourceComponent",
++                    "attributes": {
++                        "project": "{{ env.GCP_PROJECT }}",
++                        "resource_key": "my_gcs",
++                    },
++                },
++            )
++            with environ({"GCP_PROJECT": "my-gcp-project"}):
++                with scoped_definitions_load_context():
++                    with sandbox.load_component_and_build_defs(defs_path=defs_path) as (
++                        _component,
++                        defs,
++                    ):
++                        assert defs.resources
++                        assert "my_gcs" in defs.resources
++                        resource = defs.resources["my_gcs"]
++                        assert isinstance(resource, GCSResource)
++                        assert resource.project == "my-gcp-project"
++
++    def test_gcs_file_manager_component_yaml(self):
++        """Verifies successful instantiation of GCSFileManagerResource from YAML."""
++        with create_defs_folder_sandbox() as sandbox:
++            defs_path = sandbox.scaffold_component(
++                component_cls=GCSFileManagerResourceComponent,
++                defs_yaml_contents={
++                    "type": "dagster_gcp.components.GCSFileManagerResourceComponent",
++                    "attributes": {
++                        "project": "my-gcp-project",
++                        "gcs_bucket": "my-bucket",
++                        "gcs_prefix": "dagster/data",
++                        "resource_key": "my_file_manager",
++                    },
++                },
++            )
++            with scoped_definitions_load_context():
++                with sandbox.load_component_and_build_defs(defs_path=defs_path) as (
++                    _component,
++                    defs,
++                ):
++                    assert defs.resources
++                    assert "my_file_manager" in defs.resources
++                    resource = defs.resources["my_file_manager"]
++                    assert isinstance(resource, GCSFileManagerResource)
++                    assert resource.project == "my-gcp-project"
++                    assert resource.gcs_bucket == "my-bucket"
++                    assert resource.gcs_prefix == "dagster/data"
++
++    def test_dataproc_component_yaml(self):
++        """Verifies successful instantiation of DataprocResource from YAML."""
++        cluster_config = {
++            "masterConfig": {"machineTypeUri": "n1-standard-4"},
++            "workerConfig": {"machineTypeUri": "n1-standard-4", "numInstances": 3},
++        }
++
++        with create_defs_folder_sandbox() as sandbox:
++            defs_path = sandbox.scaffold_component(
++                component_cls=DataprocResourceComponent,
++                defs_yaml_contents={
++                    "type": "dagster_gcp.components.DataprocResourceComponent",
++                    "attributes": {
++                        "project_id": "my-project",
++                        "region": "us-central1",
++                        "cluster_name": "my-cluster",
++                        "cluster_config_dict": cluster_config,
++                        "resource_key": "my_dataproc",
++                    },
++                },
++            )
++            with scoped_definitions_load_context():
++                with sandbox.load_component_and_build_defs(defs_path=defs_path) as (
++                    _component,
++                    defs,
++                ):
++                    assert defs.resources
++                    assert "my_dataproc" in defs.resources
++                    resource = defs.resources["my_dataproc"]
++                    assert isinstance(resource, DataprocResource)
++                    assert resource.project_id == "my-project"
++
++    def test_component_without_resource_key(self):
++        """Verifies that components without resource_key don't register resources."""
++        with create_defs_folder_sandbox() as sandbox:
++            defs_path = sandbox.scaffold_component(
++                component_cls=BigQueryResourceComponent,
++                defs_yaml_contents={
++                    "type": "dagster_gcp.components.BigQueryResourceComponent",
++                    "attributes": {
++                        "project": "my-project",
++                    },
++                },
++            )
++            with scoped_definitions_load_context():
++                with sandbox.load_component_and_build_defs(defs_path=defs_path) as (
++                    _component,
++                    defs,
++                ):
++                    assert not defs.resources
+diff --git a/python_modules/libraries/dagster-gcp/pyproject.toml b/python_modules/libraries/dagster-gcp/pyproject.toml
+index ecccc05768910..8848001fbb44b 100644
+--- a/python_modules/libraries/dagster-gcp/pyproject.toml
++++ b/python_modules/libraries/dagster-gcp/pyproject.toml
+@@ -41,3 +41,6 @@ test = [
+ dataproc = [
+     "google-cloud-dataproc",
+ ]
++
++[project.entry-points."dagster_dg_cli.registry_modules"]
++dagster_gcp = "dagster_gcp.components"

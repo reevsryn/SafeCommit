@@ -1,0 +1,863 @@
+diff --git a/docs/bokeh/source/conf.py b/docs/bokeh/source/conf.py
+index 1a02b0e1fb4..51362e776f8 100644
+--- a/docs/bokeh/source/conf.py
++++ b/docs/bokeh/source/conf.py
+@@ -41,6 +41,7 @@
+     "sphinx_favicon",
+     "sphinx.ext.autodoc",
+     "sphinx.ext.autosummary",
++    "sphinx.ext.duration",
+     "sphinx.ext.ifconfig",
+     "sphinx.ext.napoleon",
+     "sphinx.ext.intersphinx",
+@@ -155,6 +156,9 @@
+ 
+ napoleon_include_init_with_doc = True
+ 
++duration_n_slowest = 10
++duration_write_json = None
++
+ ogp_site_url = "https://docs.bokeh.org/en/latest/"
+ ogp_image = "http://static.bokeh.org/og/logotype-on-hex.png"
+ ogp_custom_meta_tags = (
+diff --git a/docs/bokeh/source/docs/dev_guide/documentation.rst b/docs/bokeh/source/docs/dev_guide/documentation.rst
+index 76b53e2e0f7..bf0d96f42f2 100644
+--- a/docs/bokeh/source/docs/dev_guide/documentation.rst
++++ b/docs/bokeh/source/docs/dev_guide/documentation.rst
+@@ -280,11 +280,9 @@ supported by ``make.bat``). For example:
+                 make.bat html
+                 make.bat serve
+ 
+-To speed up the build of your local documentation, you have the option to use
+-an `experimental Sphinx feature`_ that distributes the build process over
+-several CPUs and cores. This only works on Linux and macOS (not on Windows). On
+-macOS, this feature only works on Python 3.7. To use this experimental feature,
+-add the option ``SPHINXOPTS="-j auto"`` to your build command:
++Sphinx can distribute reading and writing over several worker processes. To
++use all available CPUs for a clean local build, add the option
++``SPHINXOPTS="-j auto"`` to your build command:
+ 
+ .. code-block:: sh
+ 
+@@ -462,5 +460,4 @@ For example:
+ .. _Napoleon's Google style: https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html#example-google
+ .. _Google Python Style Guide: https://google.github.io/styleguide/pyguide.html#383-functions-and-methods
+ .. _official reStructuredText website: https://docutils.sourceforge.io/rst.html
+-.. _experimental Sphinx feature: https://github.com/sphinx-doc/sphinx/issues/6881
+ .. _release management: https://github.com/bokeh/bokeh/wiki/BEP-2:-Release-Management
+diff --git a/examples/output/webgl/clustering.py b/examples/output/webgl/clustering.py
+index d16d3a18298..8691ba6b316 100644
+--- a/examples/output/webgl/clustering.py
++++ b/examples/output/webgl/clustering.py
+@@ -25,7 +25,7 @@
+ colors = np.hstack([colors] * 20)
+ 
+ # create clustering algorithms
+-dbscan   = cluster.DBSCAN(eps=.2)
++dbscan   = cluster.DBSCAN(eps=.2, n_jobs=-1)
+ birch    = cluster.Birch(n_clusters=2)
+ means    = cluster.MiniBatchKMeans(n_clusters=2)
+ spectral = cluster.SpectralClustering(n_clusters=2, eigen_solver='arpack', affinity="nearest_neighbors")
+diff --git a/src/bokeh/sphinxext/_internal/bokeh_autodoc.py b/src/bokeh/sphinxext/_internal/bokeh_autodoc.py
+index 6a02fc94e05..0cb58843f2e 100644
+--- a/src/bokeh/sphinxext/_internal/bokeh_autodoc.py
++++ b/src/bokeh/sphinxext/_internal/bokeh_autodoc.py
+@@ -16,7 +16,7 @@
+ # -----------------------------------------------------------------------------
+ from __future__ import annotations
+ 
+-import logging  # isort:skip
++from sphinx.util import logging  # isort:skip
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -25,6 +25,8 @@
+ # -----------------------------------------------------------------------------
+ 
+ # Standard library imports
++from dataclasses import dataclass
++from time import perf_counter
+ from typing import Any
+ 
+ # External imports
+@@ -43,6 +45,7 @@
+ # Bokeh imports
+ from . import PARALLEL_SAFE, SphinxParallelSpec
+ from .bokeh_toc import _shorten_reference_toc_titles
++from .timing import _setup_docs_profile
+ 
+ # -----------------------------------------------------------------------------
+ # Globals and constants
+@@ -125,7 +128,11 @@ def setup(app: Any) -> SphinxParallelSpec:
+     app.add_autodocumenter(EnumDocumenter)
+     app.add_autodocumenter(PropDocumenter)
+     app.add_autodocumenter(ModelDocumenter)
++    _setup_docs_profile(app)
+     app.connect("env-updated", _shorten_reference_toc_titles)
++    app.connect("env-updated", _prune_empty_viewcode_modules)
++    app.connect("write-started", _cache_python_domain_fuzzy_lookups, priority=999)
++    app.connect("build-finished", _log_fuzzy_lookup_stats, priority=999)
+ 
+     return PARALLEL_SAFE
+ 
+@@ -133,6 +140,107 @@ def setup(app: Any) -> SphinxParallelSpec:
+ # Private API
+ # -----------------------------------------------------------------------------
+ 
++_FUZZY_LOOKUP_STATS_ATTR = "_bokeh_python_fuzzy_lookup_stats"
++
++
++@dataclass
++class _FuzzyLookupStats:
++    calls: int = 0
++    contextual: int = 0
++    fallbacks: int = 0
++    computed: int = 0
++    elapsed: float = 0.0
++
++
++def _log_fuzzy_lookup_stats(app: Any, exception: Exception | None) -> None:
++    stats = getattr(app.builder, _FUZZY_LOOKUP_STATS_ATTR, None)
++    if stats is not None:
++        reused = stats.fallbacks - stats.computed
++        reuse_percent = 100 * reused / stats.fallbacks if stats.fallbacks else 0
++        log.info(
++            f"Bokeh Python fuzzy lookups: calls={stats.calls} contextual={stats.contextual} "
++            f"suffix-computed={stats.computed} suffix-reused={reused} ({reuse_percent:.1f}%) "
++            f"compute={stats.elapsed:.3f}s",
++        )
++
++
++def _prune_empty_viewcode_modules(app: Any, env: Any) -> None:
++    """Remove unused module entries retained by parallel viewcode merges."""
++    modules = getattr(env, "_viewcode_modules", None)
++    if modules is None:
++        return
++
++    # Sphinx removes these entries while purging serial builds, but its worker
++    # merge can retain entries whose documented members were removed elsewhere.
++    for name, entry in list(modules.items()):
++        if entry and not entry[2]:
++            del modules[name]
++
++
++def _cache_python_domain_fuzzy_lookups(app: Any, builder: Any) -> None:
++    """Cache fuzzy Python-domain lookups once the object inventory is final."""
++    domain = builder.env.domains.get("py")
++    if domain is None:
++        return
++
++    find_obj = domain.find_obj
++    fallback_cache: dict[tuple[str, str | None], tuple[Any, ...]] = {}
++    objtypes_cache: dict[str | None, list[str] | None] = {}
++    stats = _FuzzyLookupStats()
++    setattr(builder, _FUZZY_LOOKUP_STATS_ATTR, stats)
++
++    def cached_find_obj(
++        env: Any,
++        modname: str | None,
++        classname: str | None,
++        name: str,
++        objtype: str | None,
++        searchmode: int = 0,
++    ) -> Any:
++        # Exact lookups are already constant-time. Fuzzy lookups scan every
++        # Python object, so repeated misses for common annotations are costly.
++        if env is not builder.env or searchmode != 1:
++            return find_obj(env, modname, classname, name, objtype, searchmode)
++
++        stats.calls += 1
++        name = name.removesuffix("()")
++        if not name:
++            return []
++
++        try:
++            objtypes = objtypes_cache[objtype]
++        except KeyError:
++            objtypes = list(domain.object_types) if objtype is None else domain.objtypes_for_role(objtype)
++            objtypes_cache[objtype] = objtypes
++
++        if objtypes is None:
++            return []
++
++        candidates = (
++            f"{modname}.{classname}.{name}" if modname and classname else None,
++            f"{modname}.{name}" if modname else None,
++            name,
++        )
++        for candidate in candidates:
++            entry = domain.objects.get(candidate)
++            if entry is not None and entry.objtype in objtypes:
++                stats.contextual += 1
++                return [(candidate, entry)]
++
++        stats.fallbacks += 1
++        key = (name, objtype)
++        try:
++            return list(fallback_cache[key])
++        except KeyError:
++            started = perf_counter()
++            result = find_obj(env, None, None, name, objtype, searchmode)
++            stats.elapsed += perf_counter() - started
++            stats.computed += 1
++            fallback_cache[key] = tuple(result)
++            return result
++
++    domain.find_obj = cached_find_obj
++
+ # -----------------------------------------------------------------------------
+ # Code
+ # -----------------------------------------------------------------------------
+diff --git a/src/bokeh/sphinxext/_internal/bokeh_model.py b/src/bokeh/sphinxext/_internal/bokeh_model.py
+index 8914c325dff..032336193fd 100644
+--- a/src/bokeh/sphinxext/_internal/bokeh_model.py
++++ b/src/bokeh/sphinxext/_internal/bokeh_model.py
+@@ -27,7 +27,7 @@
+ # -----------------------------------------------------------------------------
+ from __future__ import annotations
+ 
+-import logging  # isort:skip
++from sphinx.util import logging  # isort:skip
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -41,8 +41,10 @@
+ import json
+ import warnings
+ from collections.abc import Collection
++from heapq import nlargest
+ from os import getenv
+-from typing import Any
++from time import perf_counter
++from typing import Any, NamedTuple, cast
+ 
+ # External imports
+ from docutils.parsers.rst.directives import unchanged
+@@ -103,6 +105,7 @@ def run(self) -> list[Any]:
+         if getenv("BOKEH_SPHINX_QUICK") == "1":
+             return self.parse(f"{model_name}\n{'-'*len(model_name)}\n", f"<bokeh-model: {model_name}>")
+ 
++        started = perf_counter()
+         module_name = self.options["module"]
+ 
+         try:
+@@ -147,17 +150,29 @@ def run(self) -> list[Any]:
+             property_names=properties + python_properties,
+             python_properties=python_properties,
+         )
++        rendered = perf_counter()
+ 
+         for template in (MODEL_DETAIL, PROP_DETAIL):
+             if template.filename is not None:
+                 self.env.note_dependency(template.filename)
+ 
+         parsed = self.parse(rst_text, f"<bokeh-model: {model_name}>")
++        parsed_at = perf_counter()
+         _shorten_member_signatures(
+             parsed,
+             module_name=adjusted_module_name,
+             model_name=model_name,
+         )
++        finished = perf_counter()
++        env = cast(Any, self.env)
++        env.bokeh_model_timings.append(_ModelTiming(
++            total=finished - started,
++            generate=rendered - started,
++            parse=parsed_at - rendered,
++            post_process=finished - parsed_at,
++            docname=env.docname,
++            model_name=model_name,
++        ))
+         return parsed
+ 
+ 
+@@ -170,6 +185,9 @@ def setup(app: Any) -> SphinxParallelSpec:
+         types=(list, tuple, set, frozenset),
+     )
+     app.add_directive_to_domain("py", "bokeh-model", BokehModelDirective)
++    app.connect("builder-inited", _builder_inited)
++    app.connect("env-merge-info", _env_merge_info)
++    app.connect("build-finished", _build_finished)
+ 
+     return PARALLEL_SAFE
+ 
+@@ -184,6 +202,46 @@ def setup(app: Any) -> SphinxParallelSpec:
+ })
+ 
+ 
++class _ModelTiming(NamedTuple):
++    total: float
++    generate: float
++    parse: float
++    post_process: float
++    docname: str
++    model_name: str
++
++
++def _builder_inited(app: Any) -> None:
++    app.env.bokeh_model_timings = []
++
++
++def _env_merge_info(app: Any, env: Any, docnames: list[str], other: Any) -> None:
++    docnames_set = set(docnames)
++    env.bokeh_model_timings.extend(item for item in other.bokeh_model_timings if item.docname in docnames_set)
++
++
++def _build_finished(app: Any, exception: Exception | None) -> None:
++    timings = app.env.bokeh_model_timings
++    if not timings:
++        return
++
++    total_seconds = sum(item.total for item in timings)
++    generate_seconds = sum(item.generate for item in timings)
++    parse_seconds = sum(item.parse for item in timings)
++    post_process_seconds = sum(item.post_process for item in timings)
++    log.info(
++        f"Bokeh model timings: directives={len(timings)} total={total_seconds:.3f}s "
++        f"generate={generate_seconds:.3f}s parse={parse_seconds:.3f}s "
++        f"post-process={post_process_seconds:.3f}s",
++    )
++    for timing in nlargest(5, timings, key=lambda timing: timing.total):
++        log.info(
++            f"Bokeh model slow: total={timing.total:.3f}s generate={timing.generate:.3f}s "
++            f"parse={timing.parse:.3f}s post-process={timing.post_process:.3f}s "
++            f"{timing.docname} ({timing.model_name})",
++        )
++
++
+ def _shorten_member_signatures(
+     parsed: list[Any],
+     *,
+diff --git a/src/bokeh/sphinxext/_internal/timing.py b/src/bokeh/sphinxext/_internal/timing.py
+new file mode 100644
+index 00000000000..7f24ab82316
+--- /dev/null
++++ b/src/bokeh/sphinxext/_internal/timing.py
+@@ -0,0 +1,149 @@
++# -----------------------------------------------------------------------------
++# Copyright (c) Anaconda, Inc., and Bokeh Contributors.
++# All rights reserved.
++#
++# The full license is in the file LICENSE.txt, distributed with this software.
++# -----------------------------------------------------------------------------
++"""Measure and report the major phases of a Sphinx documentation build."""
++
++# -----------------------------------------------------------------------------
++# Boilerplate
++# -----------------------------------------------------------------------------
++from __future__ import annotations
++
++from sphinx.util import logging  # isort:skip
++
++log = logging.getLogger(__name__)
++
++# -----------------------------------------------------------------------------
++# Imports
++# -----------------------------------------------------------------------------
++
++# Standard library imports
++from dataclasses import dataclass, field
++from heapq import nlargest
++from time import perf_counter
++from typing import Any, NamedTuple
++
++# -----------------------------------------------------------------------------
++# Private API
++# -----------------------------------------------------------------------------
++
++_PROFILE_ATTR = "_bokeh_docs_profile"
++
++
++class _DocumentTiming(NamedTuple):
++    duration: float
++    docname: str
++
++
++@dataclass
++class _DocsProfile:
++    started: float
++    read_started: float | None = None
++    read_finished: float | None = None
++    write_started: float | None = None
++    documents: int = 0
++    resolve_timings: list[_DocumentTiming] = field(default_factory=list)
++    serialize_timings: list[_DocumentTiming] = field(default_factory=list)
++
++
++def _setup_docs_profile(app: Any) -> None:
++    app.connect("builder-inited", _start_docs_profile, priority=999)
++    app.connect("env-before-read-docs", _start_docs_read)
++    app.connect("env-updated", _finish_docs_read, priority=999)
++    app.connect("write-started", _start_docs_write, priority=100)
++    app.connect("build-finished", _log_docs_profile, priority=999)
++
++
++def _start_docs_profile(app: Any) -> None:
++    setattr(app, _PROFILE_ATTR, _DocsProfile(started=perf_counter()))
++
++
++def _start_docs_read(app: Any, env: Any, docnames: list[str]) -> None:
++    profile = getattr(app, _PROFILE_ATTR, None)
++    if profile is not None:
++        profile.read_started = perf_counter()
++        profile.documents = len(docnames)
++
++
++def _finish_docs_read(app: Any, env: Any) -> None:
++    profile = getattr(app, _PROFILE_ATTR, None)
++    if profile is not None:
++        profile.read_finished = perf_counter()
++
++
++def _start_docs_write(app: Any, builder: Any) -> None:
++    profile = getattr(app, _PROFILE_ATTR, None)
++    if profile is not None:
++        profile.write_started = perf_counter()
++        profile.resolve_timings.clear()
++        profile.serialize_timings.clear()
++
++        resolve_doctree = builder.env.get_and_resolve_doctree
++
++        def timed_resolve_doctree(docname: str, *args: Any, **kwargs: Any) -> Any:
++            started = perf_counter()
++            try:
++                return resolve_doctree(docname, *args, **kwargs)
++            finally:
++                profile.resolve_timings.append(_DocumentTiming(
++                    duration=perf_counter() - started,
++                    docname=docname,
++                ))
++
++        builder.env.get_and_resolve_doctree = timed_resolve_doctree
++
++        write_serialized = builder.write_doc_serialized
++
++        def timed_write_serialized(docname: str, *args: Any, **kwargs: Any) -> Any:
++            started = perf_counter()
++            try:
++                return write_serialized(docname, *args, **kwargs)
++            finally:
++                profile.serialize_timings.append(_DocumentTiming(
++                    duration=perf_counter() - started,
++                    docname=docname,
++                ))
++
++        builder.write_doc_serialized = timed_write_serialized
++
++
++def _log_docs_profile(app: Any, exception: Exception | None) -> None:
++    finished = perf_counter()
++    profile = getattr(app, _PROFILE_ATTR, None)
++    if (
++        profile is not None
++        and profile.read_started is not None
++        and profile.read_finished is not None
++        and profile.write_started is not None
++    ):
++        read_seconds = profile.read_finished - profile.read_started
++        prepare_seconds = profile.write_started - profile.read_finished
++        write_seconds = finished - profile.write_started
++        total_seconds = finished - profile.started
++        log.info(
++            f"Bokeh Sphinx timings: read={read_seconds:.3f}s prepare={prepare_seconds:.3f}s "
++            f"write={write_seconds:.3f}s total={total_seconds:.3f}s "
++            f"documents={profile.documents} workers={app.parallel}",
++        )
++
++        resolve_timings = profile.resolve_timings
++        log.info(
++            f"Bokeh doctree resolution: documents={len(resolve_timings)} "
++            f"total={sum(timing.duration for timing in resolve_timings):.3f}s",
++        )
++        for timing in nlargest(5, resolve_timings, key=lambda timing: timing.duration):
++            log.info(f"Bokeh doctree slow: {timing.duration:.3f}s {timing.docname}")
++
++        serialize_timings = profile.serialize_timings
++        log.info(
++            f"Bokeh search-index serialization: documents={len(serialize_timings)} "
++            f"total={sum(timing.duration for timing in serialize_timings):.3f}s",
++        )
++        for timing in nlargest(5, serialize_timings, key=lambda timing: timing.duration):
++            log.info(f"Bokeh search-index slow: {timing.duration:.3f}s {timing.docname}")
++
++# -----------------------------------------------------------------------------
++# Code
++# -----------------------------------------------------------------------------
+diff --git a/src/bokeh/sphinxext/bokeh_plot.py b/src/bokeh/sphinxext/bokeh_plot.py
+index a1cb2a35044..691385015c1 100644
+--- a/src/bokeh/sphinxext/bokeh_plot.py
++++ b/src/bokeh/sphinxext/bokeh_plot.py
+@@ -88,10 +88,12 @@
+ # Standard library imports
+ import re
+ import warnings
++from heapq import nlargest
+ from importlib import import_module
+ from os import getenv
+ from os.path import basename, dirname, join
+-from typing import Any, cast
++from time import perf_counter
++from typing import Any, NamedTuple, cast
+ from uuid import uuid4
+ 
+ # External imports
+@@ -129,6 +131,15 @@
+ 
+ RESOURCES = get_sphinx_resources()
+ 
++
++class _PlotTiming(NamedTuple):
++    total: float
++    evaluate: float
++    serialize: float
++    write: float
++    docname: str
++    source: str
++
+ # -----------------------------------------------------------------------------
+ # General API
+ # -----------------------------------------------------------------------------
+@@ -245,16 +256,29 @@ def process_source(self, source: str, path: str, js_filename: str) -> tuple[str,
+         Model.clear_extensions()
+ 
+         env = cast(Any, self.env)
++        started = perf_counter()
+         root, docstring = _evaluate_source(source, path, env)
++        evaluated = perf_counter()
+ 
+         height_hint = cast(Any, root)._sphinx_height_hint()
+ 
+         js_path = join(env.bokeh_plot_auxdir, js_filename)
+         js, script_tag = autoload_static(root, RESOURCES, js_filename)
++        serialized = perf_counter()
+ 
+         with open(js_path, "w") as f:
+             f.write(js)
+ 
++        finished = perf_counter()
++        env.bokeh_plot_timings.append(_PlotTiming(
++            total=finished - started,
++            evaluate=evaluated - started,
++            serialize=serialized - evaluated,
++            write=finished - serialized,
++            docname=env.docname,
++            source=basename(path),
++        ))
++
+         return (script_tag, js_path, source, docstring, height_hint)
+ 
+     def process_sampledata(self, source: str) -> None:
+@@ -299,6 +323,7 @@ def builder_inited(app: Any) -> None:
+ 
+     if not hasattr(app.env, "bokeh_plot_files"):
+         app.env.bokeh_plot_files = set()
++    app.env.bokeh_plot_timings = []
+ 
+ 
+ def build_finished(app: Any, exception: Exception | None) -> None:
+@@ -313,8 +338,27 @@ def build_finished(app: Any, exception: Exception | None) -> None:
+         except OSError as e:
+             raise SphinxError(f"cannot copy local file {file!r}, reason: {e}")
+ 
++    timings = app.env.bokeh_plot_timings
++    if timings:
++        total_seconds = sum(item.total for item in timings)
++        evaluate_seconds = sum(item.evaluate for item in timings)
++        serialize_seconds = sum(item.serialize for item in timings)
++        write_seconds = sum(item.write for item in timings)
++        log.info(
++            f"Bokeh plot timings: directives={len(timings)} total={total_seconds:.3f}s "
++            f"evaluate={evaluate_seconds:.3f}s serialize={serialize_seconds:.3f}s write={write_seconds:.3f}s",
++        )
++        for timing in nlargest(5, timings, key=lambda timing: timing.total):
++            log.info(
++                f"Bokeh plot slow: total={timing.total:.3f}s evaluate={timing.evaluate:.3f}s "
++                f"serialize={timing.serialize:.3f}s write={timing.write:.3f}s "
++                f"{timing.docname} ({timing.source})",
++            )
++
+ def env_merge_info(app: Any, env: Any, docnames: list[str], other: Any) -> None:
+     env.bokeh_plot_files |= other.bokeh_plot_files
++    docnames_set = set(docnames)
++    env.bokeh_plot_timings.extend(item for item in other.bokeh_plot_timings if item.docname in docnames_set)
+ 
+ def setup(app: Any) -> SphinxParallelSpec:
+     """ Required Sphinx extension setup function. """
+diff --git a/tests/unit/bokeh/sphinxext/conftest.py b/tests/unit/bokeh/sphinxext/conftest.py
+index 8f641cba316..ac26628b3f6 100644
+--- a/tests/unit/bokeh/sphinxext/conftest.py
++++ b/tests/unit/bokeh/sphinxext/conftest.py
+@@ -8,6 +8,8 @@
+ 
+ if find_spec("sphinx") is None:
+     collect_ignore.extend([
++        "test_bokeh_autodoc.py",
++        "test_bokeh_instrumentation.py",
+         "test_bokeh_model.py",
+         "test_bokeh_sitemap.py",
+     ])
+diff --git a/tests/unit/bokeh/sphinxext/test_bokeh_autodoc.py b/tests/unit/bokeh/sphinxext/test_bokeh_autodoc.py
+new file mode 100644
+index 00000000000..092155bf9ff
+--- /dev/null
++++ b/tests/unit/bokeh/sphinxext/test_bokeh_autodoc.py
+@@ -0,0 +1,81 @@
++from __future__ import annotations
++
++# Standard library imports
++from types import SimpleNamespace
++from typing import Any, cast
++
++# Bokeh imports
++from bokeh.sphinxext._internal.bokeh_autodoc import (
++    _cache_python_domain_fuzzy_lookups,
++    _prune_empty_viewcode_modules,
++)
++
++
++def test_prune_empty_viewcode_modules() -> None:
++    used = ("source", {}, {"function": "docname"}, "module")
++    empty = ("source", {}, {}, "module")
++    env = SimpleNamespace(_viewcode_modules={
++        "used": used,
++        "empty": empty,
++        "unavailable": False,
++    })
++
++    _prune_empty_viewcode_modules(None, cast(Any, env))
++
++    assert env._viewcode_modules == {
++        "used": used,
++        "unavailable": False,
++    }
++
++
++def test_prune_empty_viewcode_modules_without_viewcode() -> None:
++    env = SimpleNamespace()
++
++    _prune_empty_viewcode_modules(None, cast(Any, env))
++
++
++def test_cache_python_domain_fuzzy_lookups() -> None:
++    calls = []
++    contextual = SimpleNamespace(objtype="class")
++    fallback = SimpleNamespace(objtype="class")
++
++    def find_obj(*args: Any) -> list[tuple[str, Any]]:
++        calls.append(args)
++        return [(f"other.{args[3]}", fallback)]
++
++    domain = SimpleNamespace(
++        find_obj=find_obj,
++        objects={"module.Class.target": contextual},
++        object_types={"class": object()},
++        objtypes_for_role=lambda role: [role],
++    )
++    env = SimpleNamespace(domains={"py": domain})
++    builder = SimpleNamespace(env=env)
++
++    _cache_python_domain_fuzzy_lookups(None, cast(Any, builder))
++
++    first = domain.find_obj(env, "module", "Class", "target", "class", 1)
++    second = domain.find_obj(env, "module", "Class", "target", "class", 1)
++
++    assert first == second == [("module.Class.target", contextual)]
++    assert first is not second
++    assert len(calls) == 0
++
++    first = domain.find_obj(env, "module", "Class", "suffix", "class", 1)
++    second = domain.find_obj(env, "other", "Context", "suffix", "class", 1)
++
++    assert first == second == [("other.suffix", fallback)]
++    assert first is not second
++    assert len(calls) == 1
++    assert calls[0][1:3] == (None, None)
++
++    domain.find_obj(env, "module", "Class", "target", "class", 0)
++    domain.find_obj(SimpleNamespace(), "module", "Class", "target", "class", 1)
++
++    assert len(calls) == 3
++    stats = builder._bokeh_python_fuzzy_lookup_stats
++    assert stats.calls == 4
++    assert stats.contextual == 2
++    assert stats.fallbacks == 2
++    assert stats.computed == 1
++    assert stats.elapsed >= 0
+diff --git a/tests/unit/bokeh/sphinxext/test_bokeh_instrumentation.py b/tests/unit/bokeh/sphinxext/test_bokeh_instrumentation.py
+new file mode 100644
+index 00000000000..d712a8ac649
+--- /dev/null
++++ b/tests/unit/bokeh/sphinxext/test_bokeh_instrumentation.py
+@@ -0,0 +1,139 @@
++from __future__ import annotations
++
++# Standard library imports
++from pickle import dumps, loads
++from types import SimpleNamespace
++from typing import Any, cast
++
++# Bokeh imports
++from bokeh.sphinxext._internal.bokeh_model import (
++    _env_merge_info as merge_model_timings,
++    _ModelTiming,
++)
++from bokeh.sphinxext._internal.timing import (
++    _DocsProfile,
++    _setup_docs_profile,
++    _start_docs_write,
++)
++from bokeh.sphinxext.bokeh_plot import _PlotTiming, env_merge_info as merge_plot_timings
++
++
++def test_setup_docs_profile_registers_phase_hooks() -> None:
++    connections = []
++
++    def connect(event: str, callback: Any, priority: int = 500) -> None:
++        connections.append((event, callback.__name__, priority))
++
++    _setup_docs_profile(SimpleNamespace(connect=connect))
++
++    assert connections == [
++        ("builder-inited", "_start_docs_profile", 999),
++        ("env-before-read-docs", "_start_docs_read", 500),
++        ("env-updated", "_finish_docs_read", 999),
++        ("write-started", "_start_docs_write", 100),
++        ("build-finished", "_log_docs_profile", 999),
++    ]
++
++
++def test_start_docs_write_times_main_process_operations() -> None:
++    calls = []
++
++    def resolve(docname: str, value: int) -> tuple[str, int]:
++        calls.append(("resolve", docname, value))
++        return docname, value
++
++    def serialize(docname: str, value: int) -> tuple[str, int]:
++        calls.append(("serialize", docname, value))
++        return docname, value
++
++    env = SimpleNamespace(get_and_resolve_doctree=resolve)
++    builder = SimpleNamespace(env=env, write_doc_serialized=serialize)
++    app = SimpleNamespace(_bokeh_docs_profile=_DocsProfile(started=0.0))
++
++    _start_docs_write(cast(Any, app), cast(Any, builder))
++
++    assert env.get_and_resolve_doctree("document", 1) == ("document", 1)
++    assert builder.write_doc_serialized("document", 2) == ("document", 2)
++    assert calls == [
++        ("resolve", "document", 1),
++        ("serialize", "document", 2),
++    ]
++    assert app._bokeh_docs_profile.resolve_timings[0].docname == "document"
++    assert app._bokeh_docs_profile.serialize_timings[0].docname == "document"
++
++
++def test_merge_plot_timings_only_includes_worker_docnames() -> None:
++    included = _PlotTiming(
++        total=1.0,
++        evaluate=0.4,
++        serialize=0.5,
++        write=0.1,
++        docname="included",
++        source="included.py",
++    )
++    inherited = _PlotTiming(
++        total=2.0,
++        evaluate=0.8,
++        serialize=1.0,
++        write=0.2,
++        docname="inherited",
++        source="inherited.py",
++    )
++    env = SimpleNamespace(bokeh_plot_files=set(), bokeh_plot_timings=[])
++    other = SimpleNamespace(
++        bokeh_plot_files={"plot.js"},
++        bokeh_plot_timings=[inherited, included],
++    )
++
++    merge_plot_timings(None, cast(Any, env), ["included"], cast(Any, other))
++
++    assert env.bokeh_plot_files == {"plot.js"}
++    assert env.bokeh_plot_timings == [included]
++
++
++def test_merge_model_timings_only_includes_worker_docnames() -> None:
++    included = _ModelTiming(
++        total=1.0,
++        generate=0.1,
++        parse=0.8,
++        post_process=0.1,
++        docname="included",
++        model_name="Included",
++    )
++    inherited = _ModelTiming(
++        total=2.0,
++        generate=0.2,
++        parse=1.6,
++        post_process=0.2,
++        docname="inherited",
++        model_name="Inherited",
++    )
++    env = SimpleNamespace(bokeh_model_timings=[])
++    other = SimpleNamespace(bokeh_model_timings=[inherited, included])
++
++    merge_model_timings(None, cast(Any, env), ["included"], cast(Any, other))
++
++    assert env.bokeh_model_timings == [included]
++
++
++def test_timing_records_are_pickle_safe() -> None:
++    timings = [
++        _PlotTiming(
++            total=1.0,
++            evaluate=0.4,
++            serialize=0.5,
++            write=0.1,
++            docname="plot",
++            source="plot.py",
++        ),
++        _ModelTiming(
++            total=1.0,
++            generate=0.1,
++            parse=0.8,
++            post_process=0.1,
++            docname="model",
++            model_name="Model",
++        ),
++    ]
++
++    assert loads(dumps(timings)) == timings
+diff --git a/tools/ci/build_docs.sh b/tools/ci/build_docs.sh
+index 036cb35f09d..51686044037 100644
+--- a/tools/ci/build_docs.sh
++++ b/tools/ci/build_docs.sh
+@@ -4,10 +4,25 @@ set -x #echo on
+ 
+ cd docs/bokeh
+ export GOOGLE_API_KEY=${GOOGLE_API_KEY:-"unset"}
+-make SPHINXOPTS=-v all
+-STATUS=$(echo $?)
++
++START=$SECONDS
++
++BUILD_START=$SECONDS
++make SPHINXOPTS="${SPHINXOPTS:--j auto}" all
++BUILD_STATUS=$?
++BUILD_SECONDS=$((SECONDS-BUILD_START))
++
++ARCHIVE_START=$SECONDS
++tar czf docs-html.tgz build/html
++ARCHIVE_STATUS=$?
++ARCHIVE_SECONDS=$((SECONDS-ARCHIVE_START))
++
++STATUS=$BUILD_STATUS
++if [[ $STATUS -eq 0 ]]; then
++    STATUS=$ARCHIVE_STATUS
++fi
+ 
+ { set +x ;} 2> /dev/null # echo off
+-tar cvzf docs-html.tgz build/html
++echo "Docs phase timings: build=${BUILD_SECONDS}s archive=${ARCHIVE_SECONDS}s total=$((SECONDS-START))s"
+ 
+ exit $STATUS

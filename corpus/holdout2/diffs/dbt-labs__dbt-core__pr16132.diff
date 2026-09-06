@@ -1,0 +1,113 @@
+diff --git a/.changes/unreleased/Features-20260831-064700.yaml b/.changes/unreleased/Features-20260831-064700.yaml
+new file mode 100644
+index 00000000000..0612673f782
+--- /dev/null
++++ b/.changes/unreleased/Features-20260831-064700.yaml
+@@ -0,0 +1,7 @@
++kind: Features
++body: 'Announce dbt v2 availability as an INFO message on `dbt --version`, with a link
++    to the v2 install docs'
++time: 2026-08-31T06:47:00.000000-07:00
++custom:
++    Author: tauhid621
++    Issue: ""
+diff --git a/core/dbt/cli/params.py b/core/dbt/cli/params.py
+index 8af6be89f50..9f9e46ed8b0 100644
+--- a/core/dbt/cli/params.py
++++ b/core/dbt/cli/params.py
+@@ -15,6 +15,7 @@
+ from dbt.cli.options import MultiOption
+ from dbt.cli.resolvers import default_profiles_dir, default_project_dir
+ from dbt.deprecated_version import check_deprecated_version
++from dbt.v2_announcement import announce_v2_available
+ from dbt.version import get_version_information
+ from dbt_common.constants import ENGINE_ENV_PREFIX
+ from dbt_common.exceptions import DbtInternalError
+@@ -861,6 +862,7 @@ def _version_callback(ctx, _param, value):
+     if not value or ctx.resilient_parsing:
+         return
+     click.echo(get_version_information())
++    announce_v2_available()
+     check_deprecated_version(is_warn=True)
+     ctx.exit()
+ 
+diff --git a/core/dbt/v2_announcement.py b/core/dbt/v2_announcement.py
+new file mode 100644
+index 00000000000..28e13d3d32e
+--- /dev/null
++++ b/core/dbt/v2_announcement.py
+@@ -0,0 +1,29 @@
++from dbt_common.events.functions import fire_event
++from dbt_common.events.types import Note
++
++# Width of the "HH:MM:SS  " prefix the default stdout logger puts on the first line
++# of an event. Continuation lines get no prefix, so they are padded to line up under
++# the message text. This message always renders through that logger -- `--version` is
++# an eager click option, so it fires before setup_event_logger() applies --log-format.
++_LOG_PREFIX_WIDTH = 10
++
++_INSTALL_URL = "https://docs.getdbt.com/docs/local/install-dbt?utm_source=dbt-cli"
++_UPGRADE_URL = (
++    "https://docs.getdbt.com/docs/dbt-versions/dbt-upgrade/upgrading-to-v2?utm_source=dbt-cli"
++)
++
++# dbt v2 is the default experience for new installs. This message points net-new
++# installs of dbt Core v1 (very often automated ones) at the v2 install docs, and
++# existing v1 projects at the upgrade guide.
++V2_AVAILABLE_MSG = "\n".join(
++    [
++        "dbt v2 is available, and is the default for new installations. This is dbt Core v1.",
++        f"{' ' * _LOG_PREFIX_WIDTH}New project - install v2: {_INSTALL_URL}",
++        f"{' ' * _LOG_PREFIX_WIDTH}Existing v1 project - upgrade guide: {_UPGRADE_URL}",
++    ]
++)
++
++
++def announce_v2_available() -> None:
++    """Notify that dbt v2 exists, from user-facing entry points like `--version`."""
++    fire_event(Note(msg=V2_AVAILABLE_MSG))
+diff --git a/tests/functional/cli/test_v2_announcement.py b/tests/functional/cli/test_v2_announcement.py
+new file mode 100644
+index 00000000000..04483317909
+--- /dev/null
++++ b/tests/functional/cli/test_v2_announcement.py
+@@ -0,0 +1,39 @@
++from unittest import mock
++
++import pytest
++
++from dbt.cli.main import dbtRunner
++
++
++class TestVersionFlagAnnouncesV2:
++    @pytest.fixture(scope="class")
++    def models(self):
++        return {}
++
++    def test_version_flag_announces_v2(self, project):
++        # --version is an eager click option that runs before cli.invoke()/
++        # preflight() -- i.e. before dbtRunner's `callbacks` get registered with
++        # the event manager via setup_event_logger() -- so assert directly on
++        # fire_event rather than through callbacks.
++        with mock.patch("dbt.v2_announcement.fire_event") as fire_event, mock.patch(
++            "dbt.cli.params.get_version_information", return_value=""
++        ):
++            res = dbtRunner().invoke(["--version"])
++
++        assert res.exception is None
++        fire_event.assert_called_once()
++        (fired_event,), _ = fire_event.call_args
++        assert type(fired_event).__name__ == "Note"
++
++        from dbt.v2_announcement import V2_AVAILABLE_MSG
++
++        assert fired_event.msg == V2_AVAILABLE_MSG
++        assert "docs.getdbt.com/docs/local/install-dbt" in fired_event.msg
++        assert "docs.getdbt.com/docs/dbt-versions/dbt-upgrade/upgrading-to-v2" in fired_event.msg
++
++    def test_other_commands_do_not_announce_v2(self, project):
++        with mock.patch("dbt.v2_announcement.fire_event") as fire_event:
++            res = dbtRunner().invoke(["run"])
++
++        assert res.success
++        fire_event.assert_not_called()

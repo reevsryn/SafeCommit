@@ -1,0 +1,105 @@
+{
+  "criteria": {
+    "recency_days": 730,
+    "max_files": 30,
+    "max_changed_lines": 1500,
+    "per_repo_cap": 15,
+    "gates": [
+      "merged",
+      "merged within 730 days",
+      "human-authored (no bots)",
+      "touches >=1 .py file",
+      "adds import line or dependency requirement",
+      "size <= 1500 changed lines / 30 files",
+      "per-repo cap 15"
+    ]
+  },
+  "repos": {
+    "dagster-io/dagster": {
+      "skipped_not_merged": 45,
+      "examined_merged": 77,
+      "kept_new": 15,
+      "rejected_too_old": 26,
+      "rejected_no_python_file": 23,
+      "rejected_too_large": 4,
+      "rejected_no_import_or_dep": 7,
+      "rejected_bot": 1,
+      "rejected_diff_unavailable": 1
+    },
+    "apache/beam": {
+      "examined_merged": 194,
+      "rejected_no_python_file": 102,
+      "rejected_no_import_or_dep": 20,
+      "skipped_not_merged": 45,
+      "kept_new": 15,
+      "rejected_bot": 52,
+      "rejected_diff_unavailable": 1,
+      "rejected_too_large": 4
+    },
+    "ray-project/ray": {
+      "skipped_not_merged": 23,
+      "examined_merged": 33,
+      "kept_new": 15,
+      "rejected_no_python_file": 12,
+      "rejected_no_import_or_dep": 6
+    },
+    "PrefectHQ/prefect": {
+      "skipped_not_merged": 84,
+      "examined_merged": 187,
+      "rejected_bot": 122,
+      "rejected_no_python_file": 27,
+      "rejected_no_import_or_dep": 21,
+      "kept_new": 15,
+      "rejected_too_large": 2
+    },
+    "bokeh/bokeh": {
+      "examined_merged": 51,
+      "rejected_no_import_or_dep": 11,
+      "kept_new": 15,
+      "rejected_no_python_file": 17,
+      "rejected_too_large": 8,
+      "skipped_not_merged": 4
+    },
+    "mlflow/mlflow": {
+      "examined_merged": 92,
+      "rejected_bot": 54,
+      "kept_new": 15,
+      "skipped_not_merged": 22,
+      "rejected_no_python_file": 10,
+      "rejected_no_import_or_dep": 8,
+      "rejected_too_large": 5
+    },
+    "dbt-labs/dbt-core": {
+      "examined_merged": 53,
+      "rejected_no_python_file": 26,
+      "skipped_not_merged": 86,
+      "rejected_bot": 12,
+      "kept_new": 15
+    },
+    "kedro-org/kedro": {
+      "examined_merged": 48,
+      "rejected_no_python_file": 22,
+      "kept_new": 15,
+      "skipped_not_merged": 30,
+      "rejected_too_large": 1,
+      "rejected_bot": 3,
+      "rejected_no_import_or_dep": 7
+    },
+    "Netflix/metaflow": {
+      "examined_merged": 38,
+      "rejected_no_import_or_dep": 13,
+      "kept_new": 15,
+      "rejected_bot": 10,
+      "skipped_not_merged": 36
+    },
+    "ansible/ansible": {
+      "examined_merged": 73,
+      "rejected_too_old": 2,
+      "skipped_not_merged": 40,
+      "rejected_no_import_or_dep": 45,
+      "rejected_no_python_file": 11,
+      "kept_new": 15
+    }
+  },
+  "updated": "2026-09-06T22:08:43+00:00"
+}

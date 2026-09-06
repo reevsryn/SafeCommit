@@ -1,0 +1,79 @@
+diff --git a/integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/integration_utils.py b/integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/integration_utils.py
+index 2d1bdd11a495f..58dbb608c5d18 100644
+--- a/integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/integration_utils.py
++++ b/integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/integration_utils.py
+@@ -29,14 +29,6 @@ def check_output(*args, **kwargs):
+         raise Exception(output) from exc
+ 
+ 
+-def which_(exe):
+-    """Uses distutils to look for an executable, mimicking unix which."""
+-    from distutils import spawn
+-
+-    # https://github.com/PyCQA/pylint/issues/73
+-    return spawn.find_executable(exe)
+-
+-
+ def get_test_namespace(prefix="dagster-test"):
+     namespace_suffix = hex(random.randint(0, 16**6))[2:]
+     return f"{prefix}-{namespace_suffix}"
+diff --git a/integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/kind.py b/integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/kind.py
+index 0989157b8287d..e367a950d2029 100644
+--- a/integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/kind.py
++++ b/integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/kind.py
+@@ -2,6 +2,7 @@
+ 
+ import os
+ import random
++import shutil
+ import subprocess
+ import time
+ import uuid
+@@ -13,12 +14,7 @@
+ from dagster._utils import safe_tempfile_path
+ 
+ from dagster_k8s_test_infra.cluster import ClusterConfig
+-from dagster_k8s_test_infra.integration_utils import (
+-    IS_BUILDKITE,
+-    check_output,
+-    which_,
+-    within_docker,
+-)
++from dagster_k8s_test_infra.integration_utils import IS_BUILDKITE, check_output, within_docker
+ 
+ CLUSTER_INFO_DUMP_DIR = "kind-info-dump"
+ 
+@@ -354,7 +350,7 @@ def kind_sync_dockerconfig():
+     """
+     print("--- Syncing docker config to nodes...")
+ 
+-    docker_exe = which_("docker")
++    docker_exe = shutil.which("docker")
+ 
+     nodes = kubernetes.client.CoreV1Api().list_node().items
+     for node in nodes:
+diff --git a/python_modules/automation/automation/utils.py b/python_modules/automation/automation/utils.py
+index 9ed5ac82d3002..a25bbe16138b9 100644
+--- a/python_modules/automation/automation/utils.py
++++ b/python_modules/automation/automation/utils.py
+@@ -2,7 +2,6 @@
+ import subprocess
+ from collections.abc import Iterable, Iterator
+ from contextlib import contextmanager
+-from distutils import spawn
+ from pathlib import Path
+ 
+ import click
+@@ -18,12 +17,6 @@ def check_output(cmd: list[str], dry_run: bool = True, cwd: str | None = None) -
+         return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT, cwd=cwd)
+ 
+ 
+-def which_(exe: str) -> str | None:
+-    """Uses distutils to look for an executable, mimicking unix which."""
+-    # https://github.com/PyCQA/pylint/issues/73
+-    return spawn.find_executable(exe)
+-
+-
+ def all_equal(iterable: Iterable[object]) -> bool:
+     return len(set(iterable)) == 1
+ 

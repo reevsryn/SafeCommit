@@ -1,0 +1,110 @@
+diff --git a/features/steps/validation_steps.py b/features/steps/validation_steps.py
+new file mode 100644
+index 0000000000..9911326063
+--- /dev/null
++++ b/features/steps/validation_steps.py
+@@ -0,0 +1,56 @@
++"""Behave steps for dataset validation scenarios."""
++
++from __future__ import annotations
++
++import behave
++
++_VALIDATORS_MODULE = '''"""Validators used by the dataset validation e2e scenarios."""
++
++
++def accept_everything(data):
++    """Validator that passes any data through unchanged."""
++    return data
++
++
++def reject_everything(data):
++    """Validator that fails whatever data it is given."""
++    raise ValueError("rejected by the e2e validator")
++'''
++
++_CATALOG_ENTRY = """example_iris_data:
++  type: pandas.CSVDataset
++  filepath: data/01_raw/iris.csv
++"""
++
++
++@behave.given('I have added a "{kind}" validator to the example dataset')
++def add_validator_to_example_dataset(context, kind):
++    """Declare a validator on the starter's example dataset.
++
++    `kind` is either "passing" or "failing".
++    """
++    function = {"passing": "accept_everything", "failing": "reject_everything"}[kind]
++
++    validators_path = (
++        context.root_project_dir / "src" / context.package_name / "validators.py"
++    )
++    validators_path.write_text(_VALIDATORS_MODULE, encoding="utf-8")
++
++    catalog_path = context.root_project_dir / "conf" / "base" / "catalog.yml"
++    catalog = catalog_path.read_text(encoding="utf-8")
++    assert _CATALOG_ENTRY in catalog, "starter catalog changed; update this step"
++    catalog = catalog.replace(
++        _CATALOG_ENTRY,
++        _CATALOG_ENTRY + f"  validator: {context.package_name}.validators.{function}\n",
++    )
++    catalog_path.write_text(catalog, encoding="utf-8")
++
++
++@behave.given("I have disabled dataset validation in the project settings")
++def disable_dataset_validation(context):
++    """Append the DATASET_VALIDATION kill switch to the project settings."""
++    settings_path = (
++        context.root_project_dir / "src" / context.package_name / "settings.py"
++    )
++    with settings_path.open("a", encoding="utf-8") as handle:
++        handle.write("\nDATASET_VALIDATION = False\n")
+diff --git a/features/validation.feature b/features/validation.feature
+new file mode 100644
+index 0000000000..d2a15c3d31
+--- /dev/null
++++ b/features/validation.feature
+@@ -0,0 +1,42 @@
++Feature: Dataset validation in a project
++
++  Scenario: Run a pipeline whose dataset passes its declared validator
++    Given I have prepared a config file
++    And I have run a non-interactive kedro new with starter "default"
++    And I have added a "passing" validator to the example dataset
++    When I execute the kedro command "run"
++    Then I should get a successful exit code
++    And the logs should show that 4 nodes were run
++
++  Scenario: A failing validator blocks the run at the dataset boundary
++    Given I have prepared a config file
++    And I have run a non-interactive kedro new with starter "default"
++    And I have added a "failing" validator to the example dataset
++    When I execute the kedro command "run"
++    Then I should get an error exit code
++    And I should get an error message including "Validation failed for dataset 'example_iris_data' on load"
++
++  Scenario: The project setting switches validation off
++    Given I have prepared a config file
++    And I have run a non-interactive kedro new with starter "default"
++    And I have added a "failing" validator to the example dataset
++    And I have disabled dataset validation in the project settings
++    When I execute the kedro command "run"
++    Then I should get a successful exit code
++    And the logs should show that 4 nodes were run
++
++  Scenario: Validators work with the parallel runner
++    Given I have prepared a config file
++    And I have run a non-interactive kedro new with starter "default"
++    And I have added a "passing" validator to the example dataset
++    When I execute the kedro command "run --runner=ParallelRunner"
++    Then I should get a successful exit code
++    And the logs should show that "split_data" was run
++
++  Scenario: A failing validator blocks the parallel runner too
++    Given I have prepared a config file
++    And I have run a non-interactive kedro new with starter "default"
++    And I have added a "failing" validator to the example dataset
++    When I execute the kedro command "run --runner=ParallelRunner"
++    Then I should get an error exit code
++    And I should get an error message including "rejected by the e2e validator"

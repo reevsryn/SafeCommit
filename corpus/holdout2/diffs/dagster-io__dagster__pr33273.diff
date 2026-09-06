@@ -1,0 +1,785 @@
+diff --git a/docs/docs/guides/build/assets/creating-asset-factories.md b/docs/docs/guides/build/assets/creating-asset-factories.md
+index e72c3d1d6167a..9ec0e98f002ac 100644
+--- a/docs/docs/guides/build/assets/creating-asset-factories.md
++++ b/docs/docs/guides/build/assets/creating-asset-factories.md
+@@ -1,90 +1,115 @@
+ ---
+-description: Learn to create Dagster asset factories in Python using YAML configuration, Pydantic for schema validation, and Jinja2 for templating, optimizing ETL processes.
+-sidebar_position: 500
+ title: Creating asset factories
++description: Learn how to create asset factories using components to generate multiple similar assets from configuration.
++sidebar_position: 500
+ ---
+ 
+-Often in data engineering, you'll find yourself needing to create a large number of similar assets. For example:
++Data engineers often need to implement multiple similar workflows in data pipelines. To keep this code maintainable, many engineers use asset factories to generate Dagster objects based on configuration instead of defining each one manually.
+ 
+-- A set of database tables all have the same schema
+-- A set of files in a directory all have the same format
++In this guide, we will implement an asset factory as a custom [component](/guides/build/components).
+ 
+-It's also possible you're serving stakeholders who aren't familiar with Python or Dagster. They may prefer interacting with assets using a domain-specific language (DSL) built on top of a configuration language such as YAML.
++:::note Prerequisites
+ 
+-The asset factory pattern can solve both of these problems.
++Before scaffolding a custom component, you must either [create a components-ready Dagster project](/guides/build/projects/creating-projects) or [migrate an existing project to `dg`](/guides/build/projects/moving-to-components/migrating-project).
+ 
+-:::note
++:::
+ 
+-This article assumes familiarity with:
+-  - [Assets](/guides/build/assets/defining-assets)
+-  - [Resources](/guides/build/external-resources)
+-  - SQL, YAML, and Amazon Web Services (AWS) S3
+-  - [Pydantic](https://docs.pydantic.dev/latest) and [Jinja2](https://jinja.palletsprojects.com/en/3.1.x)
++## 1. Scaffold the custom component
+ 
+-:::
++When creating a new custom component in Dagster, the first step is to scaffold the component using `dg`. This generates the necessary boilerplate code and file structure for you to implement and register the component:
++
++<CliInvocationExample contents="dg scaffold component AssetFactory" />
+ 
+-<details>
+-  <summary>Prerequisites</summary>
++## 2. Define the component
+ 
+-To run the example code in this article, you'll need:
++Next, we will need to define the component. We recommend beginning new components by designing the interface. In the case of our asset factory, there is one set resource and one or more ETL assets that will be configured. Since there will be a number of ETL assets configured, we will need to define a `Model` that can be used in the component.
+ 
+-- Install the necessary Python libraries:
++Looking at the parameters of the `build_etl_job` factory, we can see what needs to be in the model:
+ 
+-<Tabs groupId="package-manager">
+-   <TabItem value="uv" label="uv">
+-      Install the required dependencies:
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory/asset_factory.py"
++  language="python"
++  startAfter="start_build_etl_job"
++  endBefore="end_build_etl_job"
++/>
+ 
+-         ```shell
+-         uv add dagster dagster-aws duckdb pyyaml pydantic
+-         ```
++Within the component code in `asset_factory.py`, we will create a class that inherits from `dg.Model` with the attributes of the asset factory:
+ 
+-   </TabItem>
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory/asset_factory_component.py"
++  language="python"
++  title="src/<project_name>/components/asset_factory.py"
++  startAfter="start_etl_job_model"
++  endBefore="end_etl_job_model"
++/>
+ 
+-   <TabItem value="pip" label="pip">
+-      Install the required dependencies:
++Next, we can use that Model within the `AssetFactory` class. At the top of the class, create attributes for `access_key_id` and  `secret_access_key`. These will be shared across the assets and only need to be set once. The `etl_job` attribute will be a list since it can be any number of assets:
+ 
+-         ```shell
+-         pip install dagster dagster-aws duckdb pyyaml pydantic
+-         ```
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory/asset_factory_component.py"
++  language="python"
++  title="src/<project_name>/components/asset_factory.py"
++  startAfter="start_asset_factory_component"
++  endBefore="end_asset_factory_component"
++/>
+ 
+-   </TabItem>
+-</Tabs>
++Most of the new `AssetFactory` code will look similar to the code in the old asset factory, although the <PyObject section="definitions" module="dagster" object="Definitions" />  object returned contains all of the assets that will be generated, as well as the resource.
+ 
+-</details>
++## 3. Use the component
+ 
+-## Building an asset factory in Python
++With the component created and registered, we can now use it in the project. The first step is to initialize the component:
+ 
+-Let's imagine a team that often has to perform the same repetitive ETL task: download a CSV file from S3, run a basic SQL query on it, and then upload the result as a new file back to S3.
++<CliInvocationExample contents="dg scaffold defs 'my_project.components.asset_factory.AssetFactory' asset_factory" />
+ 
+-To automate this process, you might define an asset factory in Python like the following:
++Next, set the attributes of the component:
+ 
+-<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories/python-asset-factory.py" language="python" title="src/<project_name>/defs/assets.py" />
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory/defs.yaml"
++  language="yaml"
++  title="src/<project_name>/defs/asset_factory/defs.yaml"
++/>
+ 
+-The asset factory pattern is essentially a function that takes in some configuration and returns `dg.Definitions`.
++## 4. Viewing component assets
+ 
+-## Configuring an asset factory with YAML
++The assets generated by the initialized component behave the same as those created by the factory. You can view them on the command line:
+ 
+-Now, the team wants to be able to configure the asset factory using YAML instead of Python, with a file like this:
++<CliInvocationExample contents="dg list defs" />
+ 
+-<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories/etl_jobs.yaml" language="yaml" title="etl_jobs.yaml" />
++or interact with them in the Dagster UI by running `dg dev`:
+ 
+-To implement this, parse the YAML file and use it to create the S3 resource and ETL jobs:
++![Asset factory DAG](/images/guides/labs/components/asset-factory.png)
+ 
+-<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories/simple-yaml-asset-factory.py" language="python" title="src/<project_name>/defs/assets.py" />
++## 5. Adding downstream assets
+ 
+-## Improving usability with Pydantic and Jinja
++You can use assets generated from components as dependencies of other assets in your Dagster project by referencing the asset key of the asset.
+ 
+-There are a few problems with the current approach:
++Looking at the logic within the component, we can see how the asset key is created for each asset:
+ 
+-1. **The YAML file isn't type-checked**, so it's easy to make mistakes that will cause cryptic `KeyError`s
+-2. **The YAML file contains secrets**. Instead, it should reference environment variables.
++```python
++    asset_key = f"etl_{bucket}_{target_object}".replace(".", "_")
++```
+ 
+-To solve these problems, you can use Pydantic to define a schema for the YAML file and Jinja to template the YAML file with environment variables.
++Based on the input from the YAML file, this will generate the following two asset keys:
+ 
+-Here's what the new YAML file might look like. Note how Jinja templating is used to reference environment variables:
++| bucket | target object | asset key |
++| --- | --- | --- |
++| `my_bucket` | `cleaned_transactions.csv` | `etl_my_bucket_cleaned_transactions_csv` |
++| `my_bucket` | `risky_customers.csv` | `etl_my_bucket_risky_customers_csv` |
+ 
+-<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories/etl_jobs_with_jinja.yaml" language="yaml" title="etl_jobs.yaml" />
++These asset keys can then be used by other assets as dependencies to continue building out the asset lineage of the project:
+ 
+-And the Python implementation:
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory/downstream_assets.py"
++  language="python"
++  title="src/<project_name>/defs/downstream_assets.py"
++/>
+ 
+-<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories/advanced-yaml-asset-factory.py" language="python" title="src/<project_name>/defs/assets.py" />
++![Asset factory DAG downstream](/images/guides/labs/components/asset-factory-downstream.png)
++
++:::info Pure Python asset factories
++
++If you prefer not to use components, you can also create asset factories using pure Python. The factory pattern is essentially a function that takes configuration and returns <PyObject section="definitions" module="dagster" object="Definitions" />:
++
++<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories/python-asset-factory.py" language="python" />
++
++:::
+diff --git a/docs/docs/guides/build/assets/defining-dependencies-with-asset-factories.md b/docs/docs/guides/build/assets/defining-dependencies-with-asset-factories.md
+index ee7a8b788eb0f..a0a5238b8e55c 100644
+--- a/docs/docs/guides/build/assets/defining-dependencies-with-asset-factories.md
++++ b/docs/docs/guides/build/assets/defining-dependencies-with-asset-factories.md
+@@ -1,14 +1,14 @@
+ ---
+-description: You can define dependencies between factory assets and regular assets in Dagster.
++description: Define dependencies between component-generated assets and regular assets in Dagster.
+ sidebar_position: 600
+ title: Defining dependencies with asset factories
+ ---
+ 
+-In data engineering, it's often helpful to reuse code to define similar assets. For example, you may want to represent every file in a directory as an asset.
++When building asset factories with [components](/guides/build/components), you often need to define dependencies between the generated assets. For example, you may have ETL tables where some tables depend on others.
+ 
+-Additionally, you may be serving stakeholders who aren't familiar with Python or Dagster. They may prefer interacting with assets using a domain-specific language (DSL) built on top of a configuration language such as YAML.
+-
+-Using an asset factory reduces complexity and creates a pluggable entry point to define additional assets.
++This guide shows how to:
++- Define dependencies between component-generated assets
++- Create regular assets that depend on component-generated assets
+ 
+ :::note
+ 
+@@ -16,19 +16,44 @@ This guide assumes familiarity with [asset factories](/guides/build/assets/creat
+ 
+ :::
+ 
+-## Building an asset factory in Python
++## Defining inter-dependencies between component assets
++
++To define dependencies between assets generated by a component, include a `deps` field in your component's Model. This allows users to specify dependencies in the YAML configuration.
++
++First, define the Model with a `deps` field:
++
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/etl_table_component.py"
++  language="python"
++  title="src/<project_name>/components/etl_table_component.py"
++  startAfter="start_etl_table_model"
++  endBefore="end_etl_table_model"
++/>
+ 
+-Imagine a data analytics team that maintains a large number of tables. To support analytics needs, the team runs queries and constructs new tables from the results.
++Then, use the `deps` field when creating assets in the component:
+ 
+-Each table can be represented in YAML by a name, upstream asset dependencies, and a query:
+-<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/table_definitions.yaml" language="yaml" title="YAML Definition for ETL tables" />
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/etl_table_component.py"
++  language="python"
++  title="src/<project_name>/components/etl_table_component.py"
++  startAfter="start_etl_table_component"
++  endBefore="end_etl_table_component"
++/>
+ 
+-Here's how you might add Python logic to define these assets in Dagster.
++Now you can define assets with dependencies in YAML. In this example, `risky_transactions` depends on both `cleaned_transactions` and `risky_customers`:
+ 
+-<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/asset-factory-with-deps.py" language="python" title="Programmatically defining asset dependencies" />
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/defs.yaml"
++  language="yaml"
++  title="src/<project_name>/defs/etl_tables/defs.yaml"
++/>
+ 
+-## Defining dependencies between factory assets and regular assets
++## Defining regular assets downstream of component assets
+ 
+-Here's how you might add Python logic to define a Dagster asset downstream of factory assets:
++You can create regular assets that depend on component-generated assets by referencing their asset keys:
+ 
+-<CodeExample path="docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/asset_downstream_of_factory_assets.py" language="python" title="Defining dependencies between factory assets and regular assets" />
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/downstream_asset.py"
++  language="python"
++  title="src/<project_name>/defs/downstream_asset.py"
++/>
+diff --git a/docs/docs/guides/build/components/asset-factories-to-components.md b/docs/docs/guides/build/components/asset-factories-to-components.md
+deleted file mode 100644
+index 04ae9794f45e2..0000000000000
+--- a/docs/docs/guides/build/components/asset-factories-to-components.md
++++ /dev/null
+@@ -1,107 +0,0 @@
+----
+-title: Componentizing asset factories
+-description: Componentizing asset factories
+-sidebar_position: 200
+----
+-
+-Data engineers often need to implement multiple similar workflows in data pipelines. To keep this code maintainable, many engineers use [asset factories](/guides/build/assets/creating-asset-factories) to generate Dagster objects based on configuration instead of defining each one manually.
+-
+-While factories are powerful and flexible, many patterns that use them can also be expressed using [components](/guides/build/components). In this guide, we will implement the asset factory from the [asset factory creation guide](/guides/build/assets/creating-asset-factories) into a custom component.
+-
+-:::note Prerequisites
+-
+-Before scaffolding a custom component, you must either [create a components-ready Dagster project](/guides/build/projects/creating-projects) or [migrate an existing project to `dg`](/guides/build/projects/moving-to-components/migrating-project).
+-
+-:::
+-
+-## 1. Scaffold the custom component
+-
+-When creating a new custom component in Dagster, the first step is to scaffold the component using `dg`. This generates the necessary boilerplate code and file structure for you to implement and register the component:
+-
+-<CliInvocationExample contents="dg scaffold component AssetFactory" />
+-
+-## 2. Define the component
+-
+-Next, we will need to define the component. We recommend beginning new components by designing the interface. In the case of our asset factory, there is one set resource and one or more ETL assets that will be configured. Since there will be a number of ETL assets configured, we will need to define a `Model` that can be used in the component.
+-
+-Looking at the parameters of the `build_etl_job` factory, we can see what needs to be in the model:
+-
+-<CodeExample
+-  path="docs_snippets/docs_snippets/guides/components/asset_factory/asset_factory.py"
+-  language="python"
+-  startAfter="start_build_etl_job"
+-  endBefore="end_build_etl_job"
+-/>
+-
+-Within the component code in `asset_factory.py`, we will create a class that inherits from `dg.Model` with the attributes of the asset factory:
+-
+-<CodeExample
+-  path="docs_snippets/docs_snippets/guides/components/asset_factory/asset_factory_component.py"
+-  language="python"
+-  title="src/<project_name>/components/asset_factory.py"
+-  startAfter="start_etl_job_model"
+-  endBefore="end_etl_job_model"
+-/>
+-
+-Next, we can use that Model within the `AssetFactory` class. At the top of the class, create attributes for `access_key_id` and  `secret_access_key`. These will be shared across the assets and only need to be set once. The `etl_job` attribute will be a list since it can be any number of assets:
+-
+-<CodeExample
+-  path="docs_snippets/docs_snippets/guides/components/asset_factory/asset_factory_component.py"
+-  language="python"
+-  title="src/<project_name>/components/asset_factory.py"
+-  startAfter="start_asset_factory_component"
+-  endBefore="end_asset_factory_component"
+-/>
+-
+-Most of the new `AssetFactory` code will look similar to the code in the old asset factory, although the <PyObject section="definitions" module="dagster" object="Definitions" />  object returned contains all of the assets that will be generated, as well as the resource.
+-
+-## 3. Use the component
+-
+-With the component created and registered, we can now use it in the project. The first step is to initialize the component:
+-
+-<CliInvocationExample contents="dg scaffold defs 'my_project.components.asset_factory.AssetFactory' asset_factory" />
+-
+-Next, set the attributes of the component:
+-
+-<CodeExample
+-  path="docs_snippets/docs_snippets/guides/components/asset_factory/defs.yaml"
+-  language="yaml"
+-  title="src/<project_name>/defs/asset_factory/defs.yaml"
+-/>
+-
+-## 4. Viewing component assets
+-
+-The assets generated by the initialized component behave the same as those created by the factory. You can view them on the command line:
+-
+-<CliInvocationExample contents="dg list defs" />
+-
+-or interact with them in the Dagster UI by running `dg dev`:
+-
+-![Asset factory DAG](/images/guides/labs/components/asset-factory.png)
+-
+-## 5. Adding downstream assets
+-
+-You can use assets generated from components as dependencies of other assets in your Dagster project by referencing the asset key of the asset.
+-
+-Looking at the logic within the component, we can see how the asset key is created for each asset:
+-
+-```python
+-    asset_key = f"etl_{bucket}_{target_object}".replace(".", "_")
+-```
+-
+-Based on the input from the YAML file, this will generate the following two asset keys:
+-
+-| bucket | target object | asset key |
+-| --- | --- | --- |
+-| `my_bucket` | `cleaned_transactions.csv` | `etl_my_bucket_cleaned_transactions_csv` |
+-| `my_bucket` | `risky_customers.csv` | `etl_my_bucket_risky_customers_csv` |
+-
+-These asset keys can then be used by other assets as dependencies to continue building out the asset lineage of the project:
+-
+-<CodeExample
+-  path="docs_snippets/docs_snippets/guides/components/asset_factory/downstream_assets.py"
+-  language="python"
+-  title="src/<project_name>/defs/downstream_assets.py"
+-/>
+-
+-![Asset factory DAG downstream](/images/guides/labs/components/asset-factory-downstream.png)
+diff --git a/docs/vercel.json b/docs/vercel.json
+index d7b475211f59d..7c50bcd4c1d4b 100644
+--- a/docs/vercel.json
++++ b/docs/vercel.json
+@@ -4037,6 +4037,10 @@
+     {
+       "source": "/deployment/dagster-plus/deploying-code/branch-deployments/setting-up-branch-deployments",
+       "destination": "/deployment/dagster-plus/deploying-code/branch-deployments/configuring-branch-deployments"
++    },
++    {
++      "source": "/guides/build/components/asset-factories-to-components",
++      "destination": "/guides/build/assets/creating-asset-factories"
+     }
+   ],
+   "trailingSlash": false
+diff --git a/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/defs.yaml b/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/defs.yaml
+new file mode 100644
+index 0000000000000..b66df66c493c7
+--- /dev/null
++++ b/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/defs.yaml
+@@ -0,0 +1,30 @@
++type: my_project.components.etl_table_component.EtlTableFactory
++
++attributes:
++  etl_tables:
++    - name: cleaned_transactions
++      deps:
++        - transactions
++      query: |
++        create or replace table cleaned_transactions as (
++          SELECT * FROM transactions WHERE amount IS NOT NULL
++        )
++
++    - name: risky_customers
++      deps:
++        - customers
++      query: |
++        create or replace table risky_customers as (
++          SELECT * FROM customers WHERE risk_score > 0.8
++        )
++
++    - name: risky_transactions
++      deps:
++        - cleaned_transactions
++        - risky_customers
++      query: |
++        create or replace table risky_transactions as (
++          SELECT *
++          FROM cleaned_transactions JOIN risky_customers
++          ON cleaned_transactions.customer_id = risky_customers.customer_id
++        )
+diff --git a/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/downstream_asset.py b/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/downstream_asset.py
+new file mode 100644
+index 0000000000000..36d6c04922015
+--- /dev/null
++++ b/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/downstream_asset.py
+@@ -0,0 +1,13 @@
++import dagster as dg
++
++
++@dg.asset(
++    deps=[
++        "cleaned_transactions",
++        "risky_customers",
++        "risky_transactions",
++    ]
++)
++def aggregated_metrics():
++    """An asset that depends on all ETL tables generated by the component."""
++    ...
+diff --git a/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/etl_table_component.py b/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/etl_table_component.py
+new file mode 100644
+index 0000000000000..9fdad41dd9fce
+--- /dev/null
++++ b/examples/docs_snippets/docs_snippets/guides/components/asset_factory_with_deps/etl_table_component.py
+@@ -0,0 +1,40 @@
++from collections.abc import Sequence
++
++from dagster_snowflake import SnowflakeResource
++
++import dagster as dg
++
++
++# start_etl_table_model
++class EtlTable(dg.Model):
++    name: str
++    deps: list[str] = []
++    query: str
++
++
++# end_etl_table_model
++
++
++# start_etl_table_component
++class EtlTableFactory(dg.Component, dg.Model, dg.Resolvable):
++    etl_tables: list[EtlTable]
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        assets = []
++
++        for table in self.etl_tables:
++
++            def create_etl_asset(table_config: EtlTable):
++                @dg.asset(name=table_config.name, deps=table_config.deps)
++                def etl_table(snowflake: SnowflakeResource):
++                    with snowflake.get_connection() as conn:
++                        conn.cursor.execute(table_config.query)
++
++                return etl_table
++
++            assets.append(create_etl_asset(table))
++
++        return dg.Definitions(assets=assets)
++
++
++# end_etl_table_component
+diff --git a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/asset-factory-with-deps.py b/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/asset-factory-with-deps.py
+deleted file mode 100644
+index 6693a2ccfd393..0000000000000
+--- a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/asset-factory-with-deps.py
++++ /dev/null
+@@ -1,50 +0,0 @@
+-from collections.abc import Sequence
+-
+-import yaml
+-from dagster_snowflake import SnowflakeResource
+-
+-import dagster as dg
+-
+-
+-def build_etl_table(name: str, deps: Sequence[str], query: str) -> dg.Definitions:
+-    @dg.asset(name=name, deps=deps)
+-    def etl_table(context, snowflake: SnowflakeResource):
+-        with snowflake.get_connection() as conn:
+-            conn.cursor.execute(query)
+-
+-    return etl_table
+-
+-
+-def load_etl_tables_from_yaml(yaml_path: str) -> Sequence[dg.AssetsDefinition]:
+-    config = yaml.safe_load(open(yaml_path))
+-    factory_assets = [
+-        build_etl_table(
+-            name=table_config["name"],
+-            deps=table_config["deps"],
+-            query=table_config["query"],
+-        )
+-        for table_config in config["etl_tables"]
+-    ]
+-    return factory_assets
+-
+-
+-@dg.definitions
+-def resources() -> dg.Definitions:
+-    return dg.Definitions(
+-        resources={
+-            "snowflake": SnowflakeResource(
+-                user=dg.EnvVar("SNOWFLAKE_USER"),
+-                account=dg.EnvVar("SNOWFLAKE_ACCOUNT"),
+-                password=dg.EnvVar("SNOWFLAKE_PASSWORD"),
+-            )
+-        }
+-    )
+-
+-
+-@dg.definitions
+-def defs() -> dg.Definitions:
+-    return dg.Definitions.merge(
+-        load_etl_tables_from_yaml(
+-            dg.file_relative_path(__file__, "table_definitions.yaml")
+-        )
+-    )
+diff --git a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/asset_downstream_of_factory_assets.py b/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/asset_downstream_of_factory_assets.py
+deleted file mode 100644
+index 2cedd96bfb50c..0000000000000
+--- a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/asset_downstream_of_factory_assets.py
++++ /dev/null
+@@ -1,42 +0,0 @@
+-from collections.abc import Sequence
+-
+-import yaml
+-from dagster_snowflake import SnowflakeResource
+-
+-import dagster as dg
+-
+-
+-def build_etl_table(name: str, deps: Sequence[str], query: str) -> dg.Definitions:
+-    @dg.asset(name=name, deps=deps)
+-    def etl_table(context, snowflake: SnowflakeResource):
+-        with snowflake.get_connection() as conn:
+-            conn.cursor.execute(query)
+-
+-    return etl_table
+-
+-
+-def load_etl_tables_from_yaml(yaml_path: str) -> Sequence[dg.AssetsDefinition]:
+-    config = yaml.safe_load(open(yaml_path))
+-    factory_assets = [
+-        build_etl_table(
+-            name=table_config["name"],
+-            deps=table_config["deps"],
+-            query=table_config["query"],
+-        )
+-        for table_config in config["etl_tables"]
+-    ]
+-    return factory_assets
+-
+-
+-etl_tables = load_etl_tables_from_yaml(
+-    dg.file_relative_path(__file__, "table_definitions.yaml")
+-)
+-
+-
+-@dg.asset(deps=[etl_table.key for etl_table in etl_tables] if etl_tables else [])
+-def aggregated_metrics(): ...
+-
+-
+-@dg.definitions
+-def defs():
+-    return dg.Definitions.merge(*etl_tables)
+diff --git a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/table_definitions.yaml b/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/table_definitions.yaml
+deleted file mode 100644
+index 33b228a6e51f1..0000000000000
+--- a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories-with-deps/table_definitions.yaml
++++ /dev/null
+@@ -1,27 +0,0 @@
+-etl_tables:
+-  - name: cleaned_transactions
+-    deps:
+-      - transactions
+-    query: |
+-      create or replace table cleaned_transactions as (
+-        SELECT * FROM transactions WHERE amount IS NOT NULL
+-      )
+-
+-  - name: risky_customers
+-    deps:
+-      - customers
+-    query: |
+-      create or replace table risky_customers as (
+-        SELECT * FROM customers WHERE risk_score > 0.8
+-      )
+-
+-  - name: risky_transactions
+-    deps:
+-      - cleaned_transactions
+-      - risky_customers
+-    query: |
+-      create or replace table risky_transactions as (
+-        SELECT *
+-        FROM cleaned_transactions JOIN risky_customers
+-        ON cleaned_transactions.customer_id = risky_customers.customer_id
+-      )
+diff --git a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/advanced-yaml-asset-factory.py b/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/advanced-yaml-asset-factory.py
+deleted file mode 100644
+index c533b5867c7cb..0000000000000
+--- a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/advanced-yaml-asset-factory.py
++++ /dev/null
+@@ -1,72 +0,0 @@
+-import os
+-from typing import List  # noqa: UP035
+-
+-import dagster_aws.s3 as s3
+-import jinja2
+-import pydantic
+-import yaml
+-
+-import dagster as dg
+-
+-
+-def build_etl_job(
+-    bucket: str,
+-    source_object: str,
+-    target_object: str,
+-    sql: str,
+-) -> dg.Definitions:
+-    # Code from previous example omitted
+-    return dg.Definitions()
+-
+-
+-# highlight-start
+-class AwsConfig(pydantic.BaseModel):
+-    access_key_id: str
+-    secret_access_key: str
+-
+-    def to_resource(self) -> s3.S3Resource:
+-        return s3.S3Resource(
+-            aws_access_key_id=self.access_key_id,
+-            aws_secret_access_key=self.secret_access_key,
+-        )
+-
+-
+-class JobConfig(pydantic.BaseModel):
+-    bucket: str
+-    source: str
+-    target: str
+-    sql: str
+-
+-    def to_etl_job(self, s3_resource: s3.S3Resource) -> dg.Definitions:
+-        return build_etl_job(
+-            s3_resource=s3_resource,
+-            bucket=self.bucket,
+-            source_object=self.source,
+-            target_object=self.target,
+-            sql=self.sql,
+-        )
+-
+-
+-class EtlJobsConfig(pydantic.BaseModel):
+-    aws: AwsConfig
+-    etl_jobs: list[JobConfig]
+-
+-    def to_definitions(self) -> dg.Definitions:
+-        s3_resource = self.aws.to_resource()
+-        return dg.Definitions.merge(
+-            *[job.to_etl_job(s3_resource) for job in self.etl_jobs]
+-        )
+-
+-
+-def load_etl_jobs_from_yaml(yaml_path: str) -> dg.Definitions:
+-    yaml_template = jinja2.Environment().from_string(open(yaml_path).read())
+-    config = yaml.safe_load(yaml_template.render(env=os.environ))
+-    return EtlJobsConfig.model_validate(config).to_definitions()
+-
+-
+-# highlight-end
+-
+-
+-@dg.definitions
+-def defs():
+-    return load_etl_jobs_from_yaml("etl_jobs_with_jinja.yaml")
+diff --git a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/etl_jobs.yaml b/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/etl_jobs.yaml
+deleted file mode 100644
+index ff0043879085b..0000000000000
+--- a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/etl_jobs.yaml
++++ /dev/null
+@@ -1,14 +0,0 @@
+-aws:
+-  access_key_id: "YOUR_ACCESS_KEY_ID"
+-  secret_access_key: "YOUR_SECRET_ACCESS_KEY"
+-
+-etl_jobs:
+-  - bucket: my_bucket
+-    source: raw_transactions.csv
+-    target: cleaned_transactions.csv
+-    sql: SELECT * FROM source WHERE amount IS NOT NULL
+-
+-  - bucket: my_bucket
+-    source: all_customers.csv
+-    target: risky_customers.csv
+-    sql: SELECT * FROM source WHERE risk_score > 0.8
+diff --git a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/etl_jobs_with_jinja.yaml b/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/etl_jobs_with_jinja.yaml
+deleted file mode 100644
+index 238b2a72dcfbe..0000000000000
+--- a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/etl_jobs_with_jinja.yaml
++++ /dev/null
+@@ -1,16 +0,0 @@
+-aws:
+-  # highlight-start
+-  access_key_id: "{{ env.AWS_ACCESS_KEY_ID }}"
+-  secret_access_key: "{{ env.AWS_SECRET_ACCESS_KEY }}"
+-# highlight-end
+-
+-etl_jobs:
+-  - bucket: my_bucket
+-    source: raw_transactions.csv
+-    target: cleaned_transactions.csv
+-    sql: SELECT * FROM source WHERE amount IS NOT NULL
+-
+-  - bucket: my_bucket
+-    source: all_customers.csv
+-    target: risky_customers.csv
+-    sql: SELECT * FROM source WHERE risk_score > 0.8
+diff --git a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/simple-yaml-asset-factory.py b/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/simple-yaml-asset-factory.py
+deleted file mode 100644
+index 7475b9764b58d..0000000000000
+--- a/examples/docs_snippets/docs_snippets/guides/data-modeling/asset-factories/simple-yaml-asset-factory.py
++++ /dev/null
+@@ -1,43 +0,0 @@
+-import dagster_aws.s3 as s3
+-import yaml
+-
+-import dagster as dg
+-
+-
+-def build_etl_job(
+-    bucket: str,
+-    source_object: str,
+-    target_object: str,
+-    sql: str,
+-) -> dg.Definitions:
+-    # Code from previous example omitted
+-    return dg.Definitions()
+-
+-
+-# highlight-start
+-def load_etl_jobs_from_yaml(yaml_path: str) -> dg.Definitions:
+-    config = yaml.safe_load(open(yaml_path))
+-    s3_resource = s3.S3Resource(
+-        aws_access_key_id=config["aws"]["access_key_id"],
+-        aws_secret_access_key=config["aws"]["secret_access_key"],
+-    )
+-    defs = []
+-    for job_config in config["etl_jobs"]:
+-        defs.append(
+-            build_etl_job(
+-                s3_resource=s3_resource,
+-                bucket=job_config["bucket"],
+-                source_object=job_config["source"],
+-                target_object=job_config["target"],
+-                sql=job_config["sql"],
+-            )
+-        )
+-    return dg.Definitions.merge(*defs)
+-
+-
+-@dg.definitions
+-def defs():
+-    return load_etl_jobs_from_yaml("etl_jobs.yaml")
+-
+-
+-# highlight-end

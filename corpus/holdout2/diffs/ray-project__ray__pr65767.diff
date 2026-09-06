@@ -1,0 +1,337 @@
+diff --git a/python/ray/_private/runtime_env/uv.py b/python/ray/_private/runtime_env/uv.py
+index 4e61e211fe2a..14a054f7c8be 100644
+--- a/python/ray/_private/runtime_env/uv.py
++++ b/python/ray/_private/runtime_env/uv.py
+@@ -5,13 +5,15 @@
+ import json
+ import logging
+ import os
++import re
+ import shutil
+ import sys
+ from asyncio import create_task, get_running_loop
+-from typing import Dict, List, Optional
++from typing import Dict, List, Mapping, Optional
+ 
+ from ray._common.runtime_env_uri import parse_uri
+ from ray._common.utils import try_to_create_directory
++from ray._private import ray_constants
+ from ray._private.runtime_env import dependency_utils, virtualenv_utils
+ from ray._private.runtime_env.plugin import RuntimeEnvPlugin
+ from ray._private.runtime_env.protocol import Protocol
+@@ -20,10 +22,58 @@
+ 
+ default_logger = logging.getLogger(__name__)
+ 
++_ENV_VAR_PATTERN = re.compile(r"\$(\w+|\{[^}]*\})", re.ASCII)
++_UV_ENV_VAR_FIELDS = ("packages", "uv_pip_install_options")
+ 
+-def _get_uv_hash(uv_dict: Dict) -> str:
++
++def _get_env_var_name(match: re.Match) -> str:
++    name = match.group(1)
++    if name.startswith("{"):
++        name = name[1:-1]
++    return name
++
++
++def _expand_env_vars(value: str, env: Mapping[str, str]) -> str:
++    """Expand shell-style variables using a per-install environment snapshot."""
++
++    def replace(match: re.Match) -> str:
++        return env.get(_get_env_var_name(match), match.group(0))
++
++    return _ENV_VAR_PATTERN.sub(replace, value)
++
++
++def _get_uv_hash_env_vars(uv_dict: Dict, runtime_env: Dict) -> Dict[str, str]:
++    """Return per-runtime values referenced by fields expanded during install."""
++    referenced_vars = set()
++    for field in _UV_ENV_VAR_FIELDS:
++        for value in uv_dict.get(field, []):
++            referenced_vars.update(
++                _get_env_var_name(match) for match in _ENV_VAR_PATTERN.finditer(value)
++            )
++
++    hash_env = {}
++    working_dir_var = ray_constants.RAY_RUNTIME_ENV_CREATE_WORKING_DIR_ENV_VAR
++    working_dir = runtime_env.get("working_dir")
++    if working_dir_var in referenced_vars and working_dir is not None:
++        # The local working directory is node- and session-specific.  Its URI is the
++        # stable content identifier that is available before the directory is unpacked.
++        hash_env[working_dir_var] = working_dir
++
++    runtime_env_vars = runtime_env.get("env_vars") or {}
++    for name in referenced_vars:
++        if name in runtime_env_vars:
++            # Match install-time precedence: explicit env_vars override process env.
++            hash_env[name] = runtime_env_vars[name]
++    return hash_env
++
++
++def _get_uv_hash(uv_dict: Dict, env_vars: Optional[Mapping[str, str]] = None) -> str:
+     """Get a deterministic hash value for `uv` related runtime envs."""
+-    serialized_uv_spec = json.dumps(uv_dict, sort_keys=True)
++    hash_input = uv_dict
++    if env_vars:
++        # Keep existing cache keys unchanged when no expanded value affects install.
++        hash_input = {"uv": uv_dict, "env_vars": dict(env_vars)}
++    serialized_uv_spec = json.dumps(hash_input, sort_keys=True)
+     hash_val = hashlib.sha1(serialized_uv_spec.encode("utf-8")).hexdigest()
+     return hash_val
+ 
+@@ -33,14 +83,16 @@ def get_uri(runtime_env: Dict) -> Optional[str]:
+     uv = runtime_env.get("uv")
+     if uv is not None:
+         if isinstance(uv, dict):
+-            uri = "uv://" + _get_uv_hash(uv_dict=uv)
++            uv_dict = uv
+         elif isinstance(uv, list):
+-            uri = "uv://" + _get_uv_hash(uv_dict=dict(packages=uv))
++            uv_dict = dict(packages=uv)
+         else:
+             raise TypeError(
+                 "uv field received by RuntimeEnvAgent must be "
+                 f"list or dict, not {type(uv).__name__}."
+             )
++        env_vars = _get_uv_hash_env_vars(uv_dict, runtime_env)
++        uri = "uv://" + _get_uv_hash(uv_dict=uv_dict, env_vars=env_vars)
+     else:
+         uri = None
+     return uri
+@@ -147,6 +199,7 @@ async def _install_uv_packages(
+         """Install required python packages via `uv`."""
+         virtualenv_path = virtualenv_utils.get_virtualenv_path(path)
+         python = virtualenv_utils.get_virtualenv_python(path)
++        uv_packages = [_expand_env_vars(package, pip_env) for package in uv_packages]
+         # TODO(fyrestone): Support -i, --no-deps, --no-cache-dir, ...
+         requirements_file = dependency_utils.get_requirements_file(path, uv_packages)
+ 
+@@ -179,7 +232,9 @@ async def _install_uv_packages(
+ 
+         uv_opt_list = self._uv_config.get("uv_pip_install_options", ["--no-cache"])
+         if uv_opt_list:
+-            uv_install_cmd += uv_opt_list
++            uv_install_cmd += [
++                _expand_env_vars(option, pip_env) for option in uv_opt_list
++            ]
+ 
+         logger.info("Installing python requirements to %s", virtualenv_path)
+         await check_output_cmd(uv_install_cmd, logger=logger, cwd=cwd, env=pip_env)
+diff --git a/python/ray/_private/runtime_env/validation.py b/python/ray/_private/runtime_env/validation.py
+index f7bbb41f3995..a88f64da7018 100644
+--- a/python/ray/_private/runtime_env/validation.py
++++ b/python/ray/_private/runtime_env/validation.py
+@@ -243,6 +243,12 @@ def parse_and_validate_uv(uv: Union[str, List[str], Dict]) -> Optional[Dict]:
+                 "runtime_env['uv']['packages'] must be of type list, "
+                 f"got: {type(uv['packages'])}"
+             )
++        for idx, package in enumerate(uv["packages"]):
++            if not isinstance(package, str):
++                raise TypeError(
++                    "runtime_env['uv']['packages'] must be of type list[str] "
++                    f"got {type(package)} for {idx}-th item."
++                )
+     else:
+         raise TypeError(
+             "runtime_env['uv'] must be of type " f"List[str], or dict, got {type(uv)}"
+diff --git a/python/ray/tests/test_runtime_env_uv.py b/python/ray/tests/test_runtime_env_uv.py
+index 451e49690bc0..ea50fce720bb 100644
+--- a/python/ray/tests/test_runtime_env_uv.py
++++ b/python/ray/tests/test_runtime_env_uv.py
+@@ -11,6 +11,7 @@
+ 
+ import ray
+ from ray._private.runtime_env import virtualenv_utils
++from ray._private.runtime_env.working_dir import upload_working_dir_if_needed
+ 
+ 
+ @pytest.fixture(scope="function")
+@@ -114,6 +115,37 @@ def f():
+     assert ray.get(f.remote()) == "2.32.3"
+ 
+ 
++def test_package_cache_with_working_dir_requirements(shutdown_only, tmp_path):
++    ray.init(num_cpus=2)
++    runtime_envs = []
++    for version in ("2.32.3", "2.32.2"):
++        working_dir = tmp_path / version
++        working_dir.mkdir()
++        (working_dir / "requirements.txt").write_text(f"requests=={version}\n")
++        runtime_env = {
++            "working_dir": str(working_dir),
++            "uv": ["-r ${RAY_RUNTIME_ENV_CREATE_WORKING_DIR}/requirements.txt"],
++        }
++        upload_working_dir_if_needed(
++            runtime_env,
++            include_gitignore=False,
++            scratch_dir=str(tmp_path),
++        )
++        runtime_envs.append((runtime_env, version))
++
++    @ray.remote
++    def get_requests_version():
++        import requests
++
++        return requests.__version__
++
++    for runtime_env, version in runtime_envs:
++        assert (
++            ray.get(get_requests_version.options(runtime_env=runtime_env).remote())
++            == version
++        )
++
++
+ # Install different versions of the same package across different tasks, used to check
+ # uv cache doesn't break runtime env requirement.
+ def test_package_install_with_different_versions(shutdown_only):
+diff --git a/python/ray/tests/unit/test_runtime_env_uv.py b/python/ray/tests/unit/test_runtime_env_uv.py
+index 2d8aeec68d5a..bf8eb14b0652 100644
+--- a/python/ray/tests/unit/test_runtime_env_uv.py
++++ b/python/ray/tests/unit/test_runtime_env_uv.py
+@@ -1,17 +1,22 @@
+ import sys
+-from unittest.mock import patch
++from copy import deepcopy
++from unittest.mock import AsyncMock, patch
+ 
+ import pytest
+ 
+ from ray._private.runtime_env import uv
+ 
+ 
+-class TestRuntimeEnv:
++class FakeRuntimeEnv:
++    def __init__(self, uv_config=None, env_vars=None):
++        self._uv_config = uv_config or {"packages": ["requests"]}
++        self._env_vars = env_vars or {}
++
+     def uv_config(self):
+-        return {"packages": ["requests"]}
++        return self._uv_config
+ 
+     def env_vars(self):
+-        return {}
++        return self._env_vars
+ 
+ 
+ @pytest.fixture
+@@ -33,13 +38,100 @@ def mock_install_uv_packages():
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_run(mock_install_uv, mock_install_uv_packages):
+-    target_dir = "/tmp"
+-    runtime_env = TestRuntimeEnv()
++async def test_run(mock_install_uv, mock_install_uv_packages, tmp_path):
++    target_dir = str(tmp_path)
++    runtime_env = FakeRuntimeEnv()
+ 
+     uv_processor = uv.UvProcessor(target_dir=target_dir, runtime_env=runtime_env)
+     await uv_processor._run()
+ 
+ 
++def test_get_uri_changes_with_referenced_working_dir():
++    packages = ["-r ${RAY_RUNTIME_ENV_CREATE_WORKING_DIR}/requirements.txt"]
++    first = {"uv": packages, "working_dir": "gcs://first.zip"}
++    second = {"uv": packages, "working_dir": "gcs://second.zip"}
++    first_before = deepcopy(first)
++    second_before = deepcopy(second)
++
++    assert uv.get_uri(first) != uv.get_uri(second)
++    assert first == first_before
++    assert second == second_before
++
++
++def test_get_uri_changes_with_referenced_env_var_in_install_options():
++    uv_config = {
++        "packages": ["demo-package==1.0"],
++        "uv_pip_install_options": ["--find-links=$UV_FIND_LINKS"],
++    }
++    first = {"uv": uv_config, "env_vars": {"UV_FIND_LINKS": "/first"}}
++    second = {"uv": uv_config, "env_vars": {"UV_FIND_LINKS": "/second"}}
++
++    assert uv.get_uri(first) != uv.get_uri(second)
++
++
++def test_get_uri_ignores_unreferenced_env_vars():
++    first = {"uv": ["demo-package==1.0"], "env_vars": {"UNUSED": "first"}}
++    second = {"uv": ["demo-package==1.0"], "env_vars": {"UNUSED": "second"}}
++    legacy_uri = "uv://" + uv._get_uv_hash(uv_dict={"packages": ["demo-package==1.0"]})
++
++    assert uv.get_uri(first) == uv.get_uri(second) == legacy_uri
++
++
++def test_get_uri_keeps_undefined_env_vars_stable():
++    runtime_env = {
++        "uv": {
++            "packages": ["demo-package==1.0"],
++            "uv_pip_install_options": ["--find-links=${UNDEFINED}"],
++        }
++    }
++    legacy_uri = "uv://" + uv._get_uv_hash(uv_dict=runtime_env["uv"])
++
++    assert uv.get_uri(runtime_env) == legacy_uri
++
++
++@pytest.mark.asyncio
++async def test_install_uv_packages_expands_env_vars_from_install_env(
++    tmp_path, monkeypatch
++):
++    monkeypatch.setenv("UV_TEST_ROOT", "/wrong/process/path")
++    expected_root = "/expected/runtime-env/path"
++    runtime_env = FakeRuntimeEnv(
++        uv_config={
++            "packages": [
++                "-r ${UV_TEST_ROOT}/requirements.txt",
++                "demo-package==1.0",
++            ],
++            "uv_pip_install_options": ["--find-links=${UV_TEST_ROOT}/wheels"],
++        }
++    )
++    uv_processor = uv.UvProcessor(target_dir=str(tmp_path), runtime_env=runtime_env)
++    install_env = {"UV_TEST_ROOT": expected_root}
++
++    with patch.object(
++        uv_processor,
++        "_check_uv_existence",
++        new=AsyncMock(return_value=True),
++    ):
++        with patch(
++            "ray._private.runtime_env.uv.check_output_cmd",
++            new=AsyncMock(),
++        ) as check_output_cmd:
++            await uv_processor._install_uv_packages(
++                str(tmp_path),
++                runtime_env.uv_config()["packages"],
++                str(tmp_path),
++                install_env,
++                uv.default_logger,
++            )
++
++    requirements_file = tmp_path / "ray_runtime_env_internal_pip_requirements.txt"
++    assert requirements_file.read_text().splitlines() == [
++        f"-r {expected_root}/requirements.txt",
++        "demo-package==1.0",
++    ]
++    uv_install_cmd = check_output_cmd.await_args.args[0]
++    assert f"--find-links={expected_root}/wheels" in uv_install_cmd
++
++
+ if __name__ == "__main__":
+     sys.exit(pytest.main(["-vv", __file__]))
+diff --git a/python/ray/tests/unit/test_runtime_env_validation.py b/python/ray/tests/unit/test_runtime_env_validation.py
+index 36941f163ced..b26b57e34c7d 100644
+--- a/python/ray/tests/unit/test_runtime_env_validation.py
++++ b/python/ray/tests/unit/test_runtime_env_validation.py
+@@ -457,6 +457,10 @@ def test_parse_and_validate_uv(self, test_directory):
+                 }
+             )
+ 
++        # Invalid uv package type.
++        with pytest.raises(TypeError, match=r"packages.*list\[str\].*0-th item"):
++            validation.parse_and_validate_uv({"packages": [1]})
++
+         # Valid uv install options.
+         result = validation.parse_and_validate_uv(
+             {

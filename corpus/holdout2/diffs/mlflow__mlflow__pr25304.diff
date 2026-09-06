@@ -1,0 +1,760 @@
+diff --git a/mlflow/environment_variables.py b/mlflow/environment_variables.py
+index ce86c3459d802..801b2295608dc 100644
+--- a/mlflow/environment_variables.py
++++ b/mlflow/environment_variables.py
+@@ -161,6 +161,12 @@ def get(self):
+     "MLFLOW_ASSISTANT_SANDBOX_CLI_IMAGE", str, "mlflow-assistant-sandbox:latest"
+ )
+ 
++#: Internal. A per-server-boot identifier set by the server on startup and inherited by all of
++#: its worker processes. Sandbox containers are labeled with it so startup cleanup can remove
++#: only containers left by a *previous* server generation, never one a sibling worker in the
++#: current generation just launched. Not intended to be set by users.
++_MLFLOW_SERVER_BOOT_ID = _EnvironmentVariable("_MLFLOW_SERVER_BOOT_ID", str, None)
++
+ #: When true, newly created workspaces are seeded with two default RBAC roles
+ #: (``admin``, ``user``) that super-admins can assign to other
+ #: users. ``CreateWorkspace`` is gated to super-admins, whose ``is_admin`` flag already
+diff --git a/mlflow/server/__init__.py b/mlflow/server/__init__.py
+index ff39acfe68130..3e0629e9c0574 100644
+--- a/mlflow/server/__init__.py
++++ b/mlflow/server/__init__.py
+@@ -8,6 +8,7 @@
+ import tempfile
+ import textwrap
+ import types
++import uuid
+ import warnings
+ from pathlib import Path
+ 
+@@ -18,6 +19,7 @@
+ 
+ from mlflow.environment_variables import (
+     _MLFLOW_INTERNAL_GATEWAY_AUTH_TOKEN,
++    _MLFLOW_SERVER_BOOT_ID,
+     _MLFLOW_SGI_NAME,
+     MLFLOW_FLASK_SERVER_SECRET_KEY,
+     MLFLOW_SERVER_ENABLE_JOB_EXECUTION,
+@@ -386,6 +388,10 @@ def _run_server(
+     if secret_key := MLFLOW_FLASK_SERVER_SECRET_KEY.get():
+         env_map[MLFLOW_FLASK_SERVER_SECRET_KEY.name] = secret_key
+ 
++    # A per-boot id shared by all worker processes, used to distinguish sandbox containers of
++    # this server generation from orphans left by a previous one during startup cleanup.
++    env_map[_MLFLOW_SERVER_BOOT_ID.name] = uuid.uuid4().hex
++
+     # Determine which server we're using (only one should be true)
+     using_gunicorn = gunicorn_opts is not None
+     using_waitress = waitress_opts is not None
+diff --git a/mlflow/server/assistant/session.py b/mlflow/server/assistant/session.py
+index 92c0de44f0053..53701c5c74f3c 100644
+--- a/mlflow/server/assistant/session.py
++++ b/mlflow/server/assistant/session.py
+@@ -1,8 +1,10 @@
+ import json
+ import logging
+ import os
++import shutil
+ import signal
+ import tempfile
++import time
+ import uuid
+ from dataclasses import dataclass, field
+ from pathlib import Path
+@@ -14,6 +16,9 @@
+ 
+ SESSION_DIR = Path(tempfile.gettempdir()) / "mlflow-assistant-sessions"
+ 
++# Per-session sandbox $HOME directories with no activity within this window are reaped.
++_SANDBOX_HOME_MAX_AGE_SECONDS = 24 * 60 * 60
++
+ 
+ @dataclass
+ class Session:
+@@ -309,9 +314,58 @@ def get_session_sandbox_home(session_id: str) -> Path:
+     # server user (0700). mkdir() above is subject to the process umask, and a pre-existing dir
+     # may have looser modes, so enforce it explicitly.
+     home.chmod(0o700)
++    # Bump the top-level mtime so reap_stale_sandbox_homes sees each turn as recent activity:
++    # the CLI writes --resume state into nested subdirs (e.g. .claude/), which does not advance
++    # the directory's own mtime.
++    os.utime(home, None)
+     return home
+ 
+ 
++def reap_stale_sandbox_homes(max_age_seconds: float = _SANDBOX_HOME_MAX_AGE_SECONDS) -> int:
++    """Remove per-session sandbox ``$HOME`` directories untouched within the window.
++
++    These accumulate one per session (see ``get_session_sandbox_home``, which bumps a
++    directory's mtime on every turn); a directory whose mtime is older than ``max_age_seconds``
++    is treated as belonging to a finished session. Best-effort: returns the number removed.
++    """
++    base = SESSION_DIR / "sandbox-home"
++    if not base.exists():
++        return 0
++    cutoff = time.time() - max_age_seconds
++    removed = 0
++    try:
++        entries = list(base.iterdir())
++    except OSError:
++        return 0
++    for entry in entries:
++        try:
++            # Skip symlinks (do not follow them out of the base dir) and non-directories.
++            if entry.is_symlink() or not entry.is_dir() or entry.stat().st_mtime >= cutoff:
++                continue
++        except OSError:
++            continue
++        shutil.rmtree(entry, ignore_errors=True)
++        if entry.exists():
++            # rmtree with ignore_errors swallows failures; note it rather than reap silently.
++            _logger.debug("Could not remove stale sandbox home directory %s", entry)
++            continue
++        removed += 1
++        # The reaped HOME held the CLI's --resume state; drop the stored provider session id so
++        # the next turn starts a fresh CLI session instead of resuming deleted state. The
++        # directory name is the session id (see get_session_sandbox_home). A corrupt/unreadable
++        # session file must not abort the whole sweep, so this is best-effort.
++        try:
++            session = SessionManager.load(entry.name)
++            if session and session.provider_session_id is not None:
++                session.provider_session_id = None
++                SessionManager.save(entry.name, session)
++        except Exception:
++            _logger.debug("Could not clear provider session id for reaped session %s", entry.name)
++    if removed:
++        _logger.info("Reaped %d stale sandbox home directories.", removed)
++    return removed
++
++
+ def terminate_session_container(session_id: str) -> bool:
+     """Kill the sandbox container running a session's turn, if any.
+ 
+diff --git a/mlflow/server/fastapi_app.py b/mlflow/server/fastapi_app.py
+index 37b37d7281c29..85e75c0e62479 100644
+--- a/mlflow/server/fastapi_app.py
++++ b/mlflow/server/fastapi_app.py
+@@ -8,9 +8,12 @@
+ 
+ import inspect
+ import json
++import logging
+ import os
++import shutil
+ import time
+ import typing
++from contextlib import asynccontextmanager
+ 
+ import anyio
+ from fastapi import FastAPI, Request
+@@ -20,6 +23,8 @@
+ from starlette.middleware.wsgi import WSGIResponder, build_environ
+ from starlette.types import Receive, Scope, Send
+ 
++from mlflow.assistant.providers.base import assistant_sandbox_enabled
++from mlflow.environment_variables import MLFLOW_ENABLE_REMOTE_ASSISTANT
+ from mlflow.exceptions import MlflowException
+ from mlflow.gateway.constants import MLFLOW_GATEWAY_DURATION_HEADER, MLFLOW_GATEWAY_OVERHEAD_HEADER
+ from mlflow.gateway.providers.utils import provider_call_duration_ms
+@@ -49,6 +54,8 @@
+ )
+ from mlflow.version import VERSION
+ 
++_logger = logging.getLogger(__name__)
++
+ 
+ class _EfficientWSGIResponder(WSGIResponder):
+     """WSGIResponder with O(n) body buffering instead of O(n^2) concatenation.
+@@ -198,6 +205,45 @@ async def mcp_request_validation_error_handler(request: Request, exc: RequestVal
+     fastapi_app.state.mcp_exception_handlers_added = True
+ 
+ 
++@asynccontextmanager
++async def _lifespan(app: FastAPI):
++    # On startup, clean up assistant sandbox artifacts orphaned by a previous server generation:
++    # containers whose in-process stream is gone, and stale per-session $HOME directories. Runs in
++    # every uvicorn worker but only removes containers from a *previous* boot id, so it is safe
++    # across workers. Note: this only runs under uvicorn (the default ASGI server); gunicorn and
++    # waitress use the Flask app, which has no lifespan.
++    #
++    # Container reaping is NOT gated on the sandbox being enabled in this process: a server that
++    # crashed with a sandbox container running and was restarted with the sandbox now off must
++    # still reap that orphan, so it runs whenever a `docker` executable is present. The two reapers
++    # run under separate error boundaries so one failing does not skip the other.
++    if shutil.which("docker") is not None:
++        try:
++            from mlflow.server.sandbox import reap_orphaned_sandbox_containers
++
++            # Reaping does blocking Docker I/O; keep it off the event loop.
++            await anyio.to_thread.run_sync(reap_orphaned_sandbox_containers)
++        except Exception:
++            _logger.warning("Assistant sandbox container cleanup failed", exc_info=True)
++    try:
++        from mlflow.server.assistant.session import reap_stale_sandbox_homes
++
++        await anyio.to_thread.run_sync(reap_stale_sandbox_homes)
++    except Exception:
++        _logger.warning("Assistant sandbox home cleanup failed", exc_info=True)
++
++    # Remote mode but no sandbox means the assistant runs its work on the host; surface that once
++    # at startup rather than silently, since it is a weaker isolation posture for a shared server.
++    if MLFLOW_ENABLE_REMOTE_ASSISTANT.get() and not assistant_sandbox_enabled():
++        _logger.warning(
++            "The MLflow Assistant is in remote mode but the Docker sandbox is not active "
++            "(no `docker` executable found, or MLFLOW_ENABLE_ASSISTANT_SANDBOX=false); the "
++            "assistant will run its Bash tool on the server host. Install Docker, or set "
++            "MLFLOW_ENABLE_ASSISTANT_SANDBOX=true to require the sandbox."
++        )
++    yield
++
++
+ def create_fastapi_app(flask_app: Flask = flask_app):
+     """
+     Create a FastAPI application that wraps the existing Flask app.
+@@ -219,6 +265,7 @@ def create_fastapi_app(flask_app: Flask = flask_app):
+         docs_url=None,
+         redoc_url=None,
+         openapi_url=None,
++        lifespan=_lifespan,
+     )
+ 
+     # Initialize security middleware BEFORE adding routes
+diff --git a/mlflow/server/sandbox/__init__.py b/mlflow/server/sandbox/__init__.py
+index 7f4b443323941..606ec749b2197 100644
+--- a/mlflow/server/sandbox/__init__.py
++++ b/mlflow/server/sandbox/__init__.py
+@@ -10,6 +10,7 @@
+ from mlflow.server.sandbox.container import (
+     SandboxResult,
+     SandboxUnavailableError,
++    reap_orphaned_sandbox_containers,
+     run_in_sandbox,
+     to_container_host_uri,
+ )
+@@ -23,6 +24,7 @@
+     "SandboxProcess",
+     "SandboxResult",
+     "SandboxUnavailableError",
++    "reap_orphaned_sandbox_containers",
+     "run_in_sandbox",
+     "sandbox_input_path",
+     "start_sandbox_process",
+diff --git a/mlflow/server/sandbox/container.py b/mlflow/server/sandbox/container.py
+index 1850983e618e8..1f345a06d39d9 100644
+--- a/mlflow/server/sandbox/container.py
++++ b/mlflow/server/sandbox/container.py
+@@ -25,7 +25,7 @@
+ 
+ import requests
+ 
+-from mlflow.environment_variables import MLFLOW_SANDBOX_DOCKER_IMAGE
++from mlflow.environment_variables import _MLFLOW_SERVER_BOOT_ID, MLFLOW_SANDBOX_DOCKER_IMAGE
+ 
+ _logger = logging.getLogger(__name__)
+ 
+@@ -45,6 +45,19 @@
+ # Marker exit code used when the container is killed for exceeding its timeout.
+ _TIMEOUT_EXIT_CODE = -1
+ 
++# Labels stamped on every sandbox container. The first marks it as a sandbox container; the
++# second carries the server's boot id so startup cleanup removes only containers from a
++# previous server generation, never one a sibling worker in the current generation launched.
++SANDBOX_CONTAINER_LABEL = "mlflow.sandbox"
++SANDBOX_BOOT_LABEL = "mlflow.sandbox.boot"
++
++
++def sandbox_container_labels() -> dict[str, str]:
++    labels = {SANDBOX_CONTAINER_LABEL: "1"}
++    if boot_id := _MLFLOW_SERVER_BOOT_ID.get():
++        labels[SANDBOX_BOOT_LABEL] = boot_id
++    return labels
++
+ 
+ class SandboxUnavailableError(Exception):
+     """Raised when the sandbox cannot run because Docker is not usable."""
+@@ -203,6 +216,7 @@ def run_in_sandbox(
+             image,
+             command=container_command,
+             detach=True,
++            labels=sandbox_container_labels(),
+             network_mode="bridge",
+             extra_hosts={"host.docker.internal": "host-gateway"},
+             mem_limit=_MEMORY_LIMIT,
+@@ -230,17 +244,17 @@ def run_in_sandbox(
+     try:
+         try:
+             outcome = container.wait(timeout=timeout)
+-        except requests.exceptions.ReadTimeout:
+-            # docker-py raises ReadTimeout when wait() exceeds `timeout`; the container is
+-            # still running, so kill it and report the timeout.
+-            _logger.info("Sandbox command exceeded %.0fs timeout", timeout)
+-            _kill_quietly(container)
+-            output = _logs(container)
+-            return SandboxResult(exit_code=_TIMEOUT_EXIT_CODE, output=output, timed_out=True)
+         except Exception as e:
+-            # A non-timeout failure (daemon restart, connection drop, API error) is not a
+-            # timeout; kill the container and surface it as a sandbox failure rather than
+-            # mislabeling it.
++            if _is_read_timeout(e):
++                # A client-side read timeout means the command outran `timeout`; the container
++                # is still running, so kill it and report a timeout.
++                _logger.info("Sandbox command exceeded %.0fs timeout", timeout)
++                _kill_quietly(container)
++                return SandboxResult(
++                    exit_code=_TIMEOUT_EXIT_CODE, output=_logs(container), timed_out=True
++                )
++            # A genuine failure (daemon down, connection refused, API error) is not a timeout;
++            # kill the container and surface it as a sandbox failure rather than mislabeling it.
+             _kill_quietly(container)
+             raise SandboxUnavailableError(f"Sandbox execution failed while waiting: {e}") from e
+         return SandboxResult(exit_code=outcome.get("StatusCode", 0), output=_logs(container))
+@@ -248,6 +262,19 @@ def run_in_sandbox(
+         _remove_quietly(container)
+ 
+ 
++def _is_read_timeout(exc: Exception) -> bool:
++    """Whether ``exc`` from ``container.wait(timeout=)`` is a client-side read timeout.
++
++    docker-py maps the deadline being exceeded to a requests ``ReadTimeout``, or — on the Unix-
++    socket transport — a ``ConnectionError`` wrapping urllib3's ``ReadTimeoutError``; both carry
++    "read timed out" in their message. This distinguishes those from genuine daemon errors
++    (e.g. connection refused) so a timeout is not misreported as a sandbox failure.
++    """
++    if isinstance(exc, requests.exceptions.ReadTimeout):
++        return True
++    return isinstance(exc, requests.exceptions.ConnectionError) and "timed out" in str(exc).lower()
++
++
+ def _logs(container) -> str:
+     try:
+         return container.logs().decode("utf-8", errors="replace")
+@@ -262,8 +289,54 @@ def _kill_quietly(container) -> None:
+         pass
+ 
+ 
+-def _remove_quietly(container) -> None:
++def _remove_quietly(container) -> bool:
+     try:
+         container.remove(force=True)
++        return True
+     except Exception:
+-        pass
++        return False
++
++
++def reap_orphaned_sandbox_containers() -> int:
++    """Remove sandbox containers left over from a *previous* server generation.
++
++    Sandbox containers are tied to an in-process stream/wait; once the server that started them
++    exits they are orphaned with no way to reattach. On startup they are force-removed by label,
++    but only those whose boot-id label differs from this server's boot id — so a sibling worker's
++    just-launched container (same boot id) is never removed. If this server has no boot id (e.g.
++    it was not started through the normal server entry point), reaping is skipped entirely rather
++    than risk removing a live container. Best-effort: returns the number removed, never raises.
++    """
++    current_boot = _MLFLOW_SERVER_BOOT_ID.get()
++    if not current_boot:
++        return 0
++    try:
++        client = _get_client()
++    except SandboxUnavailableError:
++        return 0
++    try:
++        containers = client.containers.list(all=True, filters={"label": SANDBOX_CONTAINER_LABEL})
++    except Exception as e:
++        _logger.debug("Could not list sandbox containers to reap: %s", e)
++        return 0
++    removed = 0
++    failed = 0
++    for container in containers:
++        if (container.labels or {}).get(SANDBOX_BOOT_LABEL) == current_boot:
++            continue  # belongs to this server generation; may be actively serving a turn
++        # A different boot id alone does not prove the container is orphaned: two servers can share
++        # one Docker daemon, and a rolling restart overlaps generations. So never force-remove a
++        # *running* container (it may be a live turn owned by a concurrent server) — reap only ones
++        # that have already stopped. A truly orphaned container that is still running is left for a
++        # later startup to reap once it exits, rather than risk killing another server's live turn.
++        if getattr(container, "status", None) == "running":
++            continue
++        if _remove_quietly(container):
++            removed += 1
++        else:
++            failed += 1
++    if removed:
++        _logger.info("Removed %d orphaned sandbox container(s) on startup.", removed)
++    if failed:
++        _logger.debug("%d orphaned sandbox container(s) could not be removed on startup.", failed)
++    return removed
+diff --git a/mlflow/server/sandbox/streaming.py b/mlflow/server/sandbox/streaming.py
+index 0dda909ed2817..45512cc38e390 100644
+--- a/mlflow/server/sandbox/streaming.py
++++ b/mlflow/server/sandbox/streaming.py
+@@ -40,6 +40,7 @@
+     _WORKSPACE_MOUNT,
+     SandboxUnavailableError,
+     _get_client,
++    sandbox_container_labels,
+ )
+ 
+ _logger = logging.getLogger(__name__)
+@@ -342,6 +343,7 @@ def start_sandbox_process(
+             image,
+             command=command,
+             detach=True,
++            labels=sandbox_container_labels(),
+             network_mode="bridge",
+             extra_hosts={"host.docker.internal": "host-gateway"},
+             mem_limit=_MEMORY_LIMIT,
+diff --git a/tests/server/assistant/test_session.py b/tests/server/assistant/test_session.py
+index 478a19a6d298d..3da332bd41caa 100644
+--- a/tests/server/assistant/test_session.py
++++ b/tests/server/assistant/test_session.py
+@@ -1,5 +1,6 @@
+ import os
+ import shutil
++import time
+ import uuid
+ from unittest import mock
+ 
+@@ -274,3 +275,66 @@ def test_get_session_sandbox_home_tightens_preexisting_dir(monkeypatch, tmp_path
+     home = session_module.get_session_sandbox_home(sid)
+ 
+     assert (home.stat().st_mode & 0o777) == 0o700
++
++
++def test_reap_stale_sandbox_homes(monkeypatch, tmp_path):
++    import mlflow.server.assistant.session as session_module
++
++    monkeypatch.setattr(session_module, "SESSION_DIR", tmp_path)
++    base = tmp_path / "sandbox-home"
++    old = base / "old-session"
++    fresh = base / "fresh-session"
++    old.mkdir(parents=True)
++    fresh.mkdir(parents=True)
++    # Age the "old" directory well past the cutoff.
++    old_time = time.time() - 48 * 60 * 60
++    os.utime(old, (old_time, old_time))
++
++    removed = session_module.reap_stale_sandbox_homes(max_age_seconds=24 * 60 * 60)
++
++    assert removed == 1
++    assert not old.exists()
++    assert fresh.exists()
++
++
++def test_reap_stale_sandbox_homes_clears_provider_session_id(monkeypatch, tmp_path):
++    import mlflow.server.assistant.session as session_module
++
++    monkeypatch.setattr(session_module, "SESSION_DIR", tmp_path)
++    # A session whose CLI HOME is about to be reaped still has a persisted provider session id.
++    session = session_module.SessionManager.create()
++    session.provider_session_id = "cli-thread-123"
++    session_module.SessionManager.save(_VALID_SID, session)
++
++    old = tmp_path / "sandbox-home" / _VALID_SID
++    old.mkdir(parents=True)
++    old_time = time.time() - 48 * 60 * 60
++    os.utime(old, (old_time, old_time))
++
++    assert session_module.reap_stale_sandbox_homes(max_age_seconds=24 * 60 * 60) == 1
++    # The stored provider session id is cleared so the next turn starts a fresh CLI session
++    # instead of --resume-ing state whose HOME was deleted.
++    assert session_module.SessionManager.load(_VALID_SID).provider_session_id is None
++
++
++def test_reap_stale_sandbox_homes_survives_unreadable_session_file(monkeypatch, tmp_path):
++    import mlflow.server.assistant.session as session_module
++
++    monkeypatch.setattr(session_module, "SESSION_DIR", tmp_path)
++    # A corrupt session file must not abort the sweep: the stale HOME is still reaped.
++    (tmp_path / f"{_VALID_SID}.json").write_text("{ not valid json")
++
++    old = tmp_path / "sandbox-home" / _VALID_SID
++    old.mkdir(parents=True)
++    old_time = time.time() - 48 * 60 * 60
++    os.utime(old, (old_time, old_time))
++
++    assert session_module.reap_stale_sandbox_homes(max_age_seconds=24 * 60 * 60) == 1
++    assert not old.exists()
++
++
++def test_reap_stale_sandbox_homes_no_base_dir(monkeypatch, tmp_path):
++    import mlflow.server.assistant.session as session_module
++
++    monkeypatch.setattr(session_module, "SESSION_DIR", tmp_path / "nonexistent")
++    assert session_module.reap_stale_sandbox_homes() == 0
+diff --git a/tests/server/sandbox/test_container.py b/tests/server/sandbox/test_container.py
+index f865e1b4b77df..d4246e87f7066 100644
+--- a/tests/server/sandbox/test_container.py
++++ b/tests/server/sandbox/test_container.py
+@@ -142,6 +142,21 @@ def test_run_in_sandbox_timeout_kills_container():
+     container.remove.assert_called_once()
+ 
+ 
++def test_run_in_sandbox_timeout_surfaced_as_connection_error():
++    # On the Unix-socket transport, docker-py surfaces a wait() read timeout as a
++    # ConnectionError wrapping urllib3's ReadTimeoutError ("Read timed out"), not ReadTimeout.
++    client, container = _mock_client()
++    container.wait.side_effect = requests.exceptions.ConnectionError(
++        "UnixHTTPConnectionPool(host='localhost', port=None): Read timed out."
++    )
++    with mock.patch("docker.from_env", return_value=client):
++        result = run_in_sandbox(["sleep", "1000"], timeout=0.1)
++
++    assert result.timed_out is True
++    assert result.exit_code == container_mod._TIMEOUT_EXIT_CODE
++    container.kill.assert_called_once()
++
++
+ def test_run_in_sandbox_non_timeout_wait_error_raises_unavailable():
+     # A non-timeout failure from wait() must not be reported as a timeout: it surfaces as a
+     # distinct sandbox failure, and the container is still cleaned up.
+@@ -206,3 +221,98 @@ def test_run_in_sandbox_image_build_failure_raises_unavailable():
+     with mock.patch("docker.from_env", return_value=client):
+         with pytest.raises(SandboxUnavailableError, match="Failed to prepare sandbox image"):
+             run_in_sandbox(["echo", "hi"])
++
++
++def test_run_in_sandbox_labels_container(monkeypatch):
++    monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "boot-xyz")
++    client, _ = _mock_client()
++    with mock.patch("docker.from_env", return_value=client):
++        run_in_sandbox(["echo", "hi"])
++    _, kwargs = client.containers.run.call_args
++    assert kwargs["labels"] == {
++        container_mod.SANDBOX_CONTAINER_LABEL: "1",
++        container_mod.SANDBOX_BOOT_LABEL: "boot-xyz",
++    }
++
++
++def test_reap_removes_previous_generation_only(monkeypatch):
++    from mlflow.server.sandbox import reap_orphaned_sandbox_containers
++
++    monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "current-boot")
++    old = mock.MagicMock()
++    old.labels = {container_mod.SANDBOX_BOOT_LABEL: "old-boot"}
++    old.status = "exited"
++    mine = mock.MagicMock()
++    mine.labels = {container_mod.SANDBOX_BOOT_LABEL: "current-boot"}
++    mine.status = "running"
++    client = mock.MagicMock()
++    client.containers.list.return_value = [old, mine]
++    with mock.patch("docker.from_env", return_value=client):
++        removed = reap_orphaned_sandbox_containers()
++
++    # Only the previous generation's stopped container is removed; the current one is left running.
++    assert removed == 1
++    old.remove.assert_called_once_with(force=True)
++    mine.remove.assert_not_called()
++    _, kwargs = client.containers.list.call_args
++    assert kwargs["filters"] == {"label": container_mod.SANDBOX_CONTAINER_LABEL}
++
++
++def test_reap_skips_running_container_from_other_generation(monkeypatch):
++    from mlflow.server.sandbox import reap_orphaned_sandbox_containers
++
++    # A different boot id does not prove a container is orphaned (a concurrent server sharing the
++    # daemon), so a still-running one is left alone rather than force-killed mid-turn.
++    monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "current-boot")
++    other_running = mock.MagicMock()
++    other_running.labels = {container_mod.SANDBOX_BOOT_LABEL: "other-boot"}
++    other_running.status = "running"
++    client = mock.MagicMock()
++    client.containers.list.return_value = [other_running]
++    with mock.patch("docker.from_env", return_value=client):
++        assert reap_orphaned_sandbox_containers() == 0
++    other_running.remove.assert_not_called()
++
++
++def test_reap_skips_when_no_boot_id(monkeypatch):
++    from mlflow.server.sandbox import reap_orphaned_sandbox_containers
++
++    monkeypatch.delenv("_MLFLOW_SERVER_BOOT_ID", raising=False)
++    client = mock.MagicMock()
++    with mock.patch("docker.from_env", return_value=client):
++        assert reap_orphaned_sandbox_containers() == 0
++    # Without a boot id we cannot distinguish generations, so we never even list containers.
++    client.containers.list.assert_not_called()
++
++
++def test_reap_counts_only_successful_removes(monkeypatch):
++    from mlflow.server.sandbox import reap_orphaned_sandbox_containers
++
++    monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "current-boot")
++    ok = mock.MagicMock()
++    ok.labels = {container_mod.SANDBOX_BOOT_LABEL: "old-boot"}
++    fails = mock.MagicMock()
++    fails.labels = {container_mod.SANDBOX_BOOT_LABEL: "old-boot"}
++    fails.remove.side_effect = Exception("cannot remove")
++    client = mock.MagicMock()
++    client.containers.list.return_value = [ok, fails]
++    with mock.patch("docker.from_env", return_value=client):
++        assert reap_orphaned_sandbox_containers() == 1
++
++
++def test_reap_docker_unavailable_returns_zero(monkeypatch):
++    from mlflow.server.sandbox import reap_orphaned_sandbox_containers
++
++    monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "current-boot")
++    with mock.patch("docker.from_env", side_effect=Exception("no daemon")):
++        assert reap_orphaned_sandbox_containers() == 0
++
++
++def test_reap_list_error_returns_zero(monkeypatch):
++    from mlflow.server.sandbox import reap_orphaned_sandbox_containers
++
++    monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "current-boot")
++    client = mock.MagicMock()
++    client.containers.list.side_effect = Exception("api error")
++    with mock.patch("docker.from_env", return_value=client):
++        assert reap_orphaned_sandbox_containers() == 0
+diff --git a/tests/server/sandbox/test_streaming.py b/tests/server/sandbox/test_streaming.py
+index 4d9c7e08233cb..6f1b6572932cd 100644
+--- a/tests/server/sandbox/test_streaming.py
++++ b/tests/server/sandbox/test_streaming.py
+@@ -246,3 +246,13 @@ def test_no_idle_timeout_when_disabled():
+         lines = _run(_collect(proc.iter_stdout_lines()))
+     assert lines == [b"a", b"b"]
+     assert proc.timed_out is False
++
++
++def test_start_sandbox_process_labels_container():
++    from mlflow.server.sandbox.container import SANDBOX_CONTAINER_LABEL
++
++    client, _ = _streaming_container([])
++    with mock.patch("docker.from_env", return_value=client):
++        start_sandbox_process(["claude", "-p"])
++    _, kwargs = client.containers.run.call_args
++    assert kwargs["labels"] == {SANDBOX_CONTAINER_LABEL: "1"}
+diff --git a/tests/server/test_fastapi_lifespan.py b/tests/server/test_fastapi_lifespan.py
+new file mode 100644
+index 0000000000000..f27f898e99970
+--- /dev/null
++++ b/tests/server/test_fastapi_lifespan.py
+@@ -0,0 +1,88 @@
++from unittest import mock
++
++import pytest
++
++from mlflow.server import fastapi_app
++
++
++@pytest.mark.asyncio
++async def test_lifespan_reaps_containers_when_docker_present():
++    with (
++        mock.patch("mlflow.server.fastapi_app.shutil.which", return_value="/usr/bin/docker"),
++        mock.patch("mlflow.server.fastapi_app.assistant_sandbox_enabled", return_value=True),
++        mock.patch("mlflow.server.sandbox.reap_orphaned_sandbox_containers") as reap_containers,
++        mock.patch("mlflow.server.assistant.session.reap_stale_sandbox_homes") as reap_homes,
++    ):
++        async with fastapi_app._lifespan(mock.MagicMock()):
++            pass
++
++    reap_containers.assert_called_once()
++    reap_homes.assert_called_once()
++
++
++@pytest.mark.asyncio
++async def test_lifespan_skips_container_reap_without_docker_but_still_reaps_homes():
++    # Container reaping needs a docker executable; home reaping is unconditional (cheap no-op when
++    # nothing was ever sandboxed).
++    with (
++        mock.patch("mlflow.server.fastapi_app.shutil.which", return_value=None),
++        mock.patch("mlflow.server.fastapi_app.assistant_sandbox_enabled", return_value=False),
++        mock.patch("mlflow.server.sandbox.reap_orphaned_sandbox_containers") as reap_containers,
++        mock.patch("mlflow.server.assistant.session.reap_stale_sandbox_homes") as reap_homes,
++    ):
++        async with fastapi_app._lifespan(mock.MagicMock()):
++            pass
++
++    reap_containers.assert_not_called()
++    reap_homes.assert_called_once()
++
++
++@pytest.mark.asyncio
++async def test_lifespan_reaps_containers_even_when_sandbox_disabled_in_this_process():
++    # Crash-recovery: a server restarted with the sandbox off must still reap a container the
++    # previous generation left running, as long as docker is present.
++    with (
++        mock.patch("mlflow.server.fastapi_app.shutil.which", return_value="/usr/bin/docker"),
++        mock.patch("mlflow.server.fastapi_app.assistant_sandbox_enabled", return_value=False),
++        mock.patch("mlflow.server.sandbox.reap_orphaned_sandbox_containers") as reap_containers,
++        mock.patch("mlflow.server.assistant.session.reap_stale_sandbox_homes"),
++    ):
++        async with fastapi_app._lifespan(mock.MagicMock()):
++            pass
++
++    reap_containers.assert_called_once()
++
++
++@pytest.mark.asyncio
++async def test_lifespan_container_reap_error_does_not_skip_home_reap():
++    # Separate error boundaries: a container-reap failure must not skip home reaping.
++    with (
++        mock.patch("mlflow.server.fastapi_app.shutil.which", return_value="/usr/bin/docker"),
++        mock.patch("mlflow.server.fastapi_app.assistant_sandbox_enabled", return_value=True),
++        mock.patch(
++            "mlflow.server.sandbox.reap_orphaned_sandbox_containers",
++            side_effect=Exception("boom"),
++        ),
++        mock.patch("mlflow.server.assistant.session.reap_stale_sandbox_homes") as reap_homes,
++    ):
++        async with fastapi_app._lifespan(mock.MagicMock()):
++            pass
++
++    reap_homes.assert_called_once()
++
++
++@pytest.mark.asyncio
++async def test_lifespan_warns_when_remote_but_not_sandboxed(monkeypatch, caplog):
++    monkeypatch.setenv("MLFLOW_ENABLE_REMOTE_ASSISTANT", "true")
++    with (
++        mock.patch("mlflow.server.fastapi_app.shutil.which", return_value=None),
++        mock.patch("mlflow.server.fastapi_app.assistant_sandbox_enabled", return_value=False),
++        mock.patch("mlflow.server.assistant.session.reap_stale_sandbox_homes"),
++    ):
++        with caplog.at_level("WARNING"):
++            async with fastapi_app._lifespan(mock.MagicMock()):
++                pass
++
++    assert any(
++        "remote mode but the Docker sandbox is not active" in r.message for r in caplog.records
++    )
+diff --git a/tests/server/test_init.py b/tests/server/test_init.py
+index fb3b5ce911529..7d1d18d81e439 100644
+--- a/tests/server/test_init.py
++++ b/tests/server/test_init.py
+@@ -8,7 +8,7 @@
+ import pytest
+ 
+ from mlflow import server
+-from mlflow.environment_variables import _MLFLOW_SGI_NAME
++from mlflow.environment_variables import _MLFLOW_SERVER_BOOT_ID, _MLFLOW_SGI_NAME
+ from mlflow.exceptions import MlflowException
+ from mlflow.utils import find_free_port
+ from mlflow.utils.os import is_windows
+@@ -240,14 +240,16 @@ def test_run_server_with_uvicorn(mock_exec_cmd, monkeypatch):
+         "4",
+         "mlflow.server.fastapi_app:app",
+     ]
+-    mock_exec_cmd.assert_called_once_with(
+-        expected_command,
+-        extra_env={
+-            _MLFLOW_SGI_NAME.name: "uvicorn",
+-        },
+-        capture_output=False,
+-        synchronous=False,
+-    )
++    mock_exec_cmd.assert_called_once()
++    call = mock_exec_cmd.call_args
++    assert call.args[0] == expected_command
++    assert call.kwargs["capture_output"] is False
++    assert call.kwargs["synchronous"] is False
++    extra_env = call.kwargs["extra_env"]
++    assert extra_env[_MLFLOW_SGI_NAME.name] == "uvicorn"
++    # Each server generation is stamped with a boot id (used to reap orphaned sandbox containers
++    # left by a previous generation); its value is a random per-boot uuid.
++    assert extra_env[_MLFLOW_SERVER_BOOT_ID.name]
+ 
+ 
+ @pytest.mark.parametrize(

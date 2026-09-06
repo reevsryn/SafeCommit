@@ -1,0 +1,658 @@
+diff --git a/mlflow/agent/hint.py b/mlflow/agent/hint.py
+index 602e13f5b43ec..1aae56eb43420 100644
+--- a/mlflow/agent/hint.py
++++ b/mlflow/agent/hint.py
+@@ -1,4 +1,4 @@
+-"""An agent-directed pointer to the MLflow tracing skill.
++"""Agent-directed pointers to the bundled MLflow skills.
+ 
+ Emitted on ``import mlflow`` when a coding agent is driving. Whether the skill
+ is already installed is deliberately not probed: skills end up in too many
+@@ -14,6 +14,8 @@
+ import logging
+ import os
+ import sys
++import threading
++from functools import lru_cache
+ from importlib import resources
+ from pathlib import Path
+ 
+@@ -61,6 +63,12 @@
+ # Lives in https://github.com/mlflow/skills and is installed by `mlflow agent setup`.
+ TRACING_SKILL = "instrumenting-with-mlflow-tracing"
+ 
++# All hints in this module are process-local. An agent only needs to see a
++# particular problem once to change course; repeating it on every span or row
++# makes the useful message indistinguishable from ordinary logs.
++_EMITTED_HINTS: set[str] = set()
++_EMITTED_HINTS_LOCK = threading.Lock()
++
+ # Points at the copy shipped inside this MLflow install: no network, and the
+ # revision always matches the installed code.
+ #
+@@ -93,6 +101,7 @@ def _bundled_skill_manifest() -> Path | None:
+         return None
+ 
+ 
++@lru_cache(maxsize=1)
+ def _is_agent_driving() -> bool:
+     """Whether a coding agent is running this process."""
+     if any(os.environ.get(marker) for marker in _AGENT_ENV_MARKERS):
+@@ -115,3 +124,83 @@ def maybe_hint_tracing_skill() -> None:
+     if (path := _bundled_skill_manifest()) is None:
+         return
+     _logger.info(_HINT.format(skill=TRACING_SKILL, path=path))
++
++
++def _claim_agent_hint(issue_id: str) -> Path | None:
++    """Claim an agent hint once per process and return the bundled skills path."""
++    try:
++        if issue_id in _EMITTED_HINTS or MLFLOW_DISABLE_AGENT_HINT.get() or not _is_agent_driving():
++            return None
++
++        skills = resources.files("mlflow.assistant.skills")
++        readme = skills.joinpath("README.md")
++        if not readme.is_file():
++            return None
++        skills_path = Path(str(readme)).parent
++
++        # Resource discovery above can overlap across threads, so repeat the
++        # membership check while atomically claiming this issue. Do not hold
++        # the lock while invoking user-configurable logging handlers.
++        with _EMITTED_HINTS_LOCK:
++            if issue_id in _EMITTED_HINTS:
++                return None
++            _EMITTED_HINTS.add(issue_id)
++        return skills_path
++    except Exception:
++        return None
++
++
++def maybe_warn_agent(issue_id: str, issue: str) -> None:
++    """Warn a coding agent about an observed GenAI anti-pattern once per process."""
++    try:
++        if skills_path := _claim_agent_hint(issue_id):
++            _logger.warning(
++                "%s Review the MLflow skills bundled at %s before continuing. "
++                "Set MLFLOW_DISABLE_AGENT_HINT=1 to silence this.",
++                issue,
++                skills_path,
++            )
++    except Exception:
++        # User-configurable logging handlers must not affect MLflow behavior.
++        return
++
++
++def maybe_append_agent_hint(issue_id: str, message: str) -> str:
++    """Append the bundled-skills pointer to an existing message once for a coding agent."""
++    try:
++        if skills_path := _claim_agent_hint(issue_id):
++            return (
++                f"{message}\n\nReview the MLflow skills bundled at {skills_path} before "
++                "continuing. Set MLFLOW_DISABLE_AGENT_HINT=1 to silence this."
++            )
++    except Exception:
++        pass
++    return message
++
++
++def maybe_warn_local_tracking_for_databricks() -> None:
++    """Warn when a GenAI trace is going to local storage despite Databricks intent."""
++    try:
++        issue_id = "databricks-intent-with-local-tracking"
++        if issue_id in _EMITTED_HINTS or MLFLOW_DISABLE_AGENT_HINT.get() or not _is_agent_driving():
++            return
++
++        from mlflow import get_tracking_uri
++        from mlflow.utils.databricks_utils import is_in_databricks_runtime
++        from mlflow.utils.uri import is_local_uri
++
++        has_databricks_intent = (
++            is_in_databricks_runtime()
++            or bool(os.environ.get("DATABRICKS_HOST"))
++            or bool(os.environ.get("DATABRICKS_CONFIG_PROFILE"))
++        )
++        tracking_uri = get_tracking_uri()
++        if has_databricks_intent and is_local_uri(tracking_uri):
++            maybe_warn_agent(
++                issue_id,
++                f"A GenAI trace is being written to the local tracking URI {tracking_uri!r} even "
++                "though a Databricks environment or profile is configured.",
++            )
++    except Exception:
++        # This check is advisory and must never interfere with trace export.
++        return
+diff --git a/mlflow/entities/span.py b/mlflow/entities/span.py
+index 2b2bd485e4782..f3c22fb179672 100644
+--- a/mlflow/entities/span.py
++++ b/mlflow/entities/span.py
+@@ -1142,6 +1142,42 @@ def end(
+             if self.status.status_code != SpanStatusCode.ERROR:
+                 self.set_status(SpanStatus(SpanStatusCode.OK))
+ 
++            try:
++                # Tracking configuration applies to the whole trace regardless
++                # of this span's type or final status.
++                from mlflow.agent.hint import maybe_warn_local_tracking_for_databricks
++
++                maybe_warn_local_tracking_for_databricks()
++            except Exception:
++                # Agent hints are advisory and must never prevent span finalization.
++                pass
++
++            if self.status.status_code != SpanStatusCode.ERROR and self.span_type in (
++                SpanType.LLM,
++                SpanType.TOOL,
++                SpanType.RETRIEVER,
++            ):
++                try:
++                    # Import lazily: most MLflow users never create GenAI spans, and
++                    # agent hints must not add work to their span lifecycle.
++                    from mlflow.agent.hint import maybe_warn_agent
++
++                    if self.inputs is None:
++                        maybe_warn_agent(
++                            "genai-span-missing-inputs",
++                            f"The successful {self.span_type} span {self.name!r} has no recorded "
++                            "inputs.",
++                        )
++                    if self.outputs is None:
++                        maybe_warn_agent(
++                            "genai-span-missing-outputs",
++                            f"The successful {self.span_type} span {self.name!r} has no recorded "
++                            "outputs.",
++                        )
++                except Exception:
++                    # Agent hints are advisory and must never prevent span finalization.
++                    pass
++
+             if should_compute_cost_client_side():
+                 set_span_cost_attribute(self)
+ 
+diff --git a/mlflow/genai/scorers/aggregation.py b/mlflow/genai/scorers/aggregation.py
+index 54a9db2f2feb9..23da25521451e 100644
+--- a/mlflow/genai/scorers/aggregation.py
++++ b/mlflow/genai/scorers/aggregation.py
+@@ -83,6 +83,15 @@ def _cast_assessment_value_to_float(assessment: Feedback) -> float | None:
+         and CategoricalRating(assessment.value.lower()) != CategoricalRating.UNKNOWN
+     ):
+         return float(assessment.value.lower() == CategoricalRating.YES)
++    elif assessment.value is not None:
++        from mlflow.agent.hint import maybe_warn_agent
++
++        maybe_warn_agent(
++            "non-aggregatable-scorer-output",
++            f"Scorer {assessment.name!r} returned a value of type "
++            f"{type(assessment.value).__name__!r}, which is not included in aggregated metrics; "
++            "return a boolean, number, or 'yes'/'no' instead.",
++        )
+ 
+ 
+ def _compute_aggregations(
+diff --git a/mlflow/genai/utils/data_validation.py b/mlflow/genai/utils/data_validation.py
+index e8d8af912108c..abc26743b9750 100644
+--- a/mlflow/genai/utils/data_validation.py
++++ b/mlflow/genai/utils/data_validation.py
+@@ -46,7 +46,7 @@ def _validate_function_and_input_compatibility(
+     params = inspect.signature(predict_fn).parameters
+     if not params:
+         raise MlflowException.invalid_parameter_value(
+-            "`predict_fn` must accept at least one argument."
++            _append_predict_fn_hint("`predict_fn` must accept at least one argument.")
+         ) from e
+ 
+     # Check for *args-style parameters which aren't supported
+@@ -92,10 +92,12 @@ def predict_fn(param1, param2):
+ """
+ 
+     raise MlflowException.invalid_parameter_value(
+-        "The `predict_fn` has dynamic positional arguments (e.g. `*args`), "
+-        "so it cannot be used as a `predict_fn`. Please wrap it into another "
+-        "function that accepts explicit keyword arguments.\n"
+-        f"Example:\n\n{code_sample}\n"
++        _append_predict_fn_hint(
++            "The `predict_fn` has dynamic positional arguments (e.g. `*args`), "
++            "so it cannot be used as a `predict_fn`. Please wrap it into another "
++            "function that accepts explicit keyword arguments.\n"
++            f"Example:\n\n{code_sample}\n"
++        )
+     ) from e
+ 
+ 
+@@ -127,9 +129,11 @@ def _validate_input_keys_match_function_params(
+     ])
+ 
+     raise MlflowException.invalid_parameter_value(
+-        "The `inputs` column must be a dictionary with the parameter names of "
+-        f"the `predict_fn` as keys. It seems the specified keys do not match "
+-        f"with the `predict_fn`'s arguments. Correct example:\n\n{code_sample}"
++        _append_predict_fn_hint(
++            "The `inputs` column must be a dictionary with the parameter names of "
++            f"the `predict_fn` as keys. It seems the specified keys do not match "
++            f"with the `predict_fn`'s arguments. Correct example:\n\n{code_sample}"
++        )
+     ) from e
+ 
+ 
+@@ -146,3 +150,12 @@ def _has_required_keyword_arguments(params: inspect.Signature, required_args: li
+ 
+     # Required argument must be a subset of the function's arguments
+     return set(required_args) <= set(func_args)
++
++
++def _append_predict_fn_hint(message: str) -> str:
++    from mlflow.agent.hint import maybe_append_agent_hint
++
++    return maybe_append_agent_hint(
++        "genai-evaluate-predict-fn-signature-mismatch",
++        message,
++    )
+diff --git a/mlflow/models/evaluation/deprecated.py b/mlflow/models/evaluation/deprecated.py
+index 6029ff7fc0e74..7e8f5d22ed678 100644
+--- a/mlflow/models/evaluation/deprecated.py
++++ b/mlflow/models/evaluation/deprecated.py
+@@ -6,14 +6,28 @@
+ 
+ @functools.wraps(model_evaluate)
+ def evaluate(*args, **kwargs):
+-    warnings.warn(
++    model_type = kwargs.get("model_type")
++    warning_message = (
+         "The `mlflow.evaluate` API has been deprecated as of MLflow 3.0.0. "
+         "Please use these new alternatives:\n\n"
+         " - For traditional ML or deep learning models: Use `mlflow.models.evaluate`, "
+         "which maintains full compatibility with the original `mlflow.evaluate` API.\n\n"
+         " - For LLMs or GenAI applications: Use the new `mlflow.genai.evaluate` API, "
+         "which offers enhanced features specifically designed for evaluating "
+-        "LLMs and GenAI applications.\n",
+-        FutureWarning,
++        "LLMs and GenAI applications.\n"
+     )
++    if model_type in {
++        "question-answering",
++        "text-summarization",
++        "text",
++        "retriever",
++        "databricks-agent",
++    }:
++        from mlflow.agent.hint import maybe_append_agent_hint
++
++        warning_message = maybe_append_agent_hint(
++            "legacy-genai-evaluate",
++            warning_message,
++        )
++    warnings.warn(warning_message, FutureWarning)
+     return model_evaluate(*args, **kwargs)
+diff --git a/mlflow/utils/annotations.py b/mlflow/utils/annotations.py
+index aeeb4c6a53f35..fe1de9590de7c 100644
+--- a/mlflow/utils/annotations.py
++++ b/mlflow/utils/annotations.py
+@@ -192,7 +192,17 @@ def new_init(self, *args, **kwargs):
+ 
+             @wraps(obj)
+             def deprecated_func(*args, **kwargs):
+-                warnings.warn(notice, category=FutureWarning, stacklevel=2)
++                warning_message = notice
++                if (
++                    impact and "genai/eval-monitor/legacy-llm-evaluation" in impact
++                ) or alternative == "mlflow.genai.make_judge":
++                    from mlflow.agent.hint import maybe_append_agent_hint
++
++                    warning_message = maybe_append_agent_hint(
++                        "deprecated-genai-metric-or-judge",
++                        notice,
++                    )
++                warnings.warn(warning_message, category=FutureWarning, stacklevel=2)
+                 return obj(*args, **kwargs)
+ 
+             if obj.__doc__:
+diff --git a/tests/agent/test_hint.py b/tests/agent/test_hint.py
+index bbe3a69947bad..9cbe0f65099eb 100644
+--- a/tests/agent/test_hint.py
++++ b/tests/agent/test_hint.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import threading
+ from pathlib import Path
+ from unittest import mock
+ 
+@@ -22,6 +23,8 @@ def clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+     ):
+         monkeypatch.delenv(marker, raising=False)
+     monkeypatch.delenv("MLFLOW_DISABLE_AGENT_HINT", raising=False)
++    hint._EMITTED_HINTS.clear()
++    hint._is_agent_driving.cache_clear()
+ 
+     home = tmp_path / "home"
+     home.mkdir()
+@@ -36,10 +39,13 @@ def clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+ @pytest.fixture(autouse=True)
+ def bundled_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+     """Stand in for the skill copy that released MLflow packages ship."""
+-    manifest = tmp_path / "bundled" / hint.TRACING_SKILL / "SKILL.md"
++    skills = tmp_path / "bundled"
++    manifest = skills / hint.TRACING_SKILL / "SKILL.md"
+     manifest.parent.mkdir(parents=True)
+     manifest.write_text("---\nname: tracing\n---\n")
++    (skills / "README.md").write_text("# MLflow skills\n")
+     monkeypatch.setattr(hint, "_bundled_skill_manifest", lambda: manifest)
++    monkeypatch.setattr(hint.resources, "files", lambda _package: skills)
+     return manifest
+ 
+ 
+@@ -123,6 +129,7 @@ def test_hints_for_value_specific_markers(
+     assert hint_message() is not None
+     # A different value for the same variable is an ordinary human environment.
+     monkeypatch.setenv(name, "something-else")
++    hint._is_agent_driving.cache_clear()
+     assert hint_message() is None
+ 
+ 
+@@ -135,6 +142,7 @@ def test_tty_gated_markers_only_count_off_a_terminal(
+     assert hint_message() is not None
+     # The same variable in a human's terminal is not a detection.
+     monkeypatch.setattr(hint.sys.stdout, "isatty", lambda: True, raising=False)
++    hint._is_agent_driving.cache_clear()
+     assert hint_message() is None
+ 
+ 
+@@ -145,3 +153,112 @@ def test_detects_agents_absent_from_the_setup_registry(
+     assert "cursor" not in AGENTS
+     monkeypatch.setenv("CURSOR_AGENT", "1")
+     assert hint_message() is not None
++
++
++def test_antipattern_warning_names_issue_and_is_emitted_once(
++    clean_env: Path, monkeypatch: pytest.MonkeyPatch
++):
++    monkeypatch.setenv("CLAUDECODE", "1")
++
++    with mock.patch.object(hint._logger, "warning") as warning:
++        hint.maybe_warn_agent("missing-inputs", "A tool span has no inputs.")
++        hint.maybe_warn_agent("missing-inputs", "A different instance has no inputs.")
++
++    warning.assert_called_once()
++    assert warning.call_args.args[1] == "A tool span has no inputs."
++    assert "different instance" not in str(warning.call_args)
++
++
++def test_antipattern_warning_is_emitted_once_across_threads(
++    clean_env: Path, monkeypatch: pytest.MonkeyPatch, bundled_skill: Path
++):
++    monkeypatch.setenv("CLAUDECODE", "1")
++    barrier = threading.Barrier(2)
++
++    def find_skills(_package):
++        barrier.wait()
++        return bundled_skill.parent.parent
++
++    monkeypatch.setattr(hint.resources, "files", find_skills)
++    with mock.patch.object(hint._logger, "warning") as warning:
++        threads = [
++            threading.Thread(
++                target=hint.maybe_warn_agent,
++                args=("missing-inputs", "Missing."),
++                name=f"agent-hint-test-{index}",
++            )
++            for index in range(2)
++        ]
++        for thread in threads:
++            thread.start()
++        for thread in threads:
++            thread.join()
++
++    warning.assert_called_once()
++
++
++def test_antipattern_warning_is_silent_for_humans(clean_env: Path, caplog):
++    hint.maybe_warn_agent("missing-inputs", "A tool span has no inputs.")
++    assert not caplog.records
++
++
++def test_append_agent_hint_augments_existing_message_once(
++    clean_env: Path, monkeypatch: pytest.MonkeyPatch, bundled_skill: Path
++):
++    monkeypatch.setenv("CLAUDECODE", "1")
++
++    augmented = hint.maybe_append_agent_hint("deprecated-api", "Existing warning.")
++    repeated = hint.maybe_append_agent_hint("deprecated-api", "Existing warning.")
++
++    assert augmented.startswith("Existing warning.")
++    assert str(bundled_skill.parent.parent) in augmented
++    assert repeated == "Existing warning."
++
++
++def test_append_agent_hint_leaves_human_message_unchanged(clean_env: Path):
++    assert (
++        hint.maybe_append_agent_hint("deprecated-api", "Existing warning.") == "Existing warning."
++    )
++
++
++@pytest.mark.parametrize("intent_var", ["DATABRICKS_HOST", "DATABRICKS_CONFIG_PROFILE"])
++def test_local_tracking_warns_when_databricks_is_configured(
++    clean_env: Path, monkeypatch: pytest.MonkeyPatch, intent_var: str
++):
++    monkeypatch.setenv("CLAUDECODE", "1")
++    monkeypatch.setenv(intent_var, "configured")
++
++    with (
++        mock.patch("mlflow.get_tracking_uri", return_value="file:///tmp/mlruns"),
++        mock.patch("mlflow.agent.hint.maybe_warn_agent") as warn,
++    ):
++        hint.maybe_warn_local_tracking_for_databricks()
++
++    warn.assert_called_once_with(
++        "databricks-intent-with-local-tracking",
++        "A GenAI trace is being written to the local tracking URI 'file:///tmp/mlruns' even "
++        "though a Databricks environment or profile is configured.",
++    )
++
++
++def test_local_tracking_check_ignores_human_and_remote_tracking(
++    clean_env: Path, monkeypatch: pytest.MonkeyPatch
++):
++    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
++    with mock.patch("mlflow.agent.hint.maybe_warn_agent") as warn:
++        hint.maybe_warn_local_tracking_for_databricks()
++        monkeypatch.setenv("CLAUDECODE", "1")
++        hint._is_agent_driving.cache_clear()
++        with mock.patch("mlflow.get_tracking_uri", return_value="databricks"):
++            hint.maybe_warn_local_tracking_for_databricks()
++    warn.assert_not_called()
++
++
++def test_local_tracking_check_stops_after_warning(clean_env: Path, monkeypatch: pytest.MonkeyPatch):
++    monkeypatch.setenv("CLAUDECODE", "1")
++    hint._EMITTED_HINTS.add("databricks-intent-with-local-tracking")
++
++    with mock.patch("mlflow.get_tracking_uri") as get_tracking_uri:
++        hint.maybe_warn_local_tracking_for_databricks()
++
++    get_tracking_uri.assert_not_called()
+diff --git a/tests/evaluate/test_deprecated.py b/tests/evaluate/test_deprecated.py
+index 6a625652b6f95..e2d4c711c52eb 100644
+--- a/tests/evaluate/test_deprecated.py
++++ b/tests/evaluate/test_deprecated.py
+@@ -21,6 +21,22 @@ def test_global_evaluate_warn_in_tracking_uri(tracking_uri):
+             )
+ 
+ 
++def test_global_evaluate_hints_for_genai_model_type():
++    with (
++        patch(
++            "mlflow.agent.hint.maybe_append_agent_hint",
++            side_effect=lambda _issue_id, message: f"{message}\nAgent skill hint.",
++        ) as append_hint,
++        # Patch the implementation because this test only covers dispatch from
++        # the deprecated public entry point.
++        patch("mlflow.models.evaluation.deprecated.model_evaluate"),
++        pytest.warns(FutureWarning, match="(?s)deprecated.*Agent skill hint"),
++    ):
++        mlflow.evaluate(data=_TEST_DATA, model_type="question-answering")
++
++    append_hint.assert_called_once()
++
++
+ @contextmanager
+ def no_future_warning():
+     with warnings.catch_warnings():
+diff --git a/tests/genai/scorers/test_aggregation.py b/tests/genai/scorers/test_aggregation.py
+index 25d1a36062505..8353a5fc151c9 100644
+--- a/tests/genai/scorers/test_aggregation.py
++++ b/tests/genai/scorers/test_aggregation.py
+@@ -1,3 +1,5 @@
++from unittest import mock
++
+ import pytest
+ 
+ from mlflow.entities.assessment import Feedback
+@@ -118,3 +120,17 @@ def test_compute_aggregated_metrics_with_namespace():
+ def test_cast_numeric_values(value, expected_float):
+     assessment = Feedback(name="test", value=value)
+     assert _cast_assessment_value_to_float(assessment) == expected_float
++
++
++@pytest.mark.parametrize("value", ["pass", ["good", "safe"], {"rating": "good"}])
++def test_non_aggregatable_output_warns_agent(value):
++    assessment = Feedback(name="quality", value=value)
++
++    with mock.patch("mlflow.agent.hint.maybe_warn_agent") as warn:
++        assert _cast_assessment_value_to_float(assessment) is None
++
++    warn.assert_called_once_with(
++        "non-aggregatable-scorer-output",
++        f"Scorer 'quality' returned a value of type {type(value).__name__!r}, which is not "
++        "included in aggregated metrics; return a boolean, number, or 'yes'/'no' instead.",
++    )
+diff --git a/tests/genai/utils/test_data_validation.py b/tests/genai/utils/test_data_validation.py
+index b160366565c09..60e1f993ef45b 100644
+--- a/tests/genai/utils/test_data_validation.py
++++ b/tests/genai/utils/test_data_validation.py
+@@ -1,3 +1,5 @@
++from unittest import mock
++
+ import pytest
+ 
+ import mlflow
+@@ -158,6 +160,25 @@ def fn(role: str, content: str):
+     assert _extract_code_example(e.value) == code_example
+ 
+ 
++def test_predict_fn_signature_mismatch_appends_agent_hint_to_exception():
++    def fn(question: str):
++        return "response"
++
++    with (
++        mock.patch(
++            "mlflow.agent.hint.maybe_append_agent_hint",
++            side_effect=lambda _issue_id, message: f"{message}\nAgent skill hint.",
++        ) as append_hint,
++        pytest.raises(MlflowException, match="(?s)parameter names.*Agent skill hint"),
++    ):
++        check_model_prediction(fn, {"query": "What is MLflow?"})
++
++    append_hint.assert_called_once_with(
++        "genai-evaluate-predict-fn-signature-mismatch",
++        mock.ANY,
++    )
++
++
+ def test_check_model_prediction_unmatched_keys_with_many_args():
+     def fn(param1, param2, param3, param4, param5):
+         return "response"
+diff --git a/tests/tracing/test_fluent.py b/tests/tracing/test_fluent.py
+index a689e6cd0de35..65844bce3997a 100644
+--- a/tests/tracing/test_fluent.py
++++ b/tests/tracing/test_fluent.py
+@@ -822,6 +822,50 @@ def square(self, t):
+     assert child_span_2.start_time_ns <= child_span_2.end_time_ns - 0.1 * 1e6
+ 
+ 
++def test_successful_genai_span_without_inputs_or_outputs_warns_agent(async_logging_enabled):
++    with mock.patch("mlflow.agent.hint.maybe_warn_agent") as warn:
++        with mlflow.start_span(name="empty_tool", span_type=SpanType.TOOL):
++            pass
++
++    assert warn.call_args_list == [
++        mock.call(
++            "genai-span-missing-inputs",
++            "The successful TOOL span 'empty_tool' has no recorded inputs.",
++        ),
++        mock.call(
++            "genai-span-missing-outputs",
++            "The successful TOOL span 'empty_tool' has no recorded outputs.",
++        ),
++    ]
++
++
++def test_error_genai_span_without_outputs_does_not_warn_agent(async_logging_enabled):
++    with mock.patch("mlflow.agent.hint.maybe_warn_agent") as warn:
++        with mlflow.start_span(name="failed_tool", span_type=SpanType.TOOL) as span:
++            span.set_status(SpanStatusCode.ERROR)
++
++    warn.assert_not_called()
++
++
++def test_local_tracking_check_runs_independently_of_span_type_and_status(async_logging_enabled):
++    with mock.patch("mlflow.agent.hint.maybe_warn_local_tracking_for_databricks") as check:
++        with mlflow.start_span(name="failed_unknown") as span:
++            span.set_status(SpanStatusCode.ERROR)
++
++    check.assert_called_once()
++
++
++def test_agent_hint_failure_does_not_prevent_span_finalization(async_logging_enabled):
++    span = start_span_no_context(name="empty_tool", span_type=SpanType.TOOL)
++    with (
++        mock.patch("mlflow.agent.hint.maybe_warn_agent", side_effect=RuntimeError("hint failed")),
++        mock.patch.object(span._span, "end", wraps=span._span.end) as end,
++    ):
++        span.end()
++
++    end.assert_called_once()
++
++
+ @pytest.mark.skipif(
+     IS_TRACING_SDK_ONLY, reason="Skipping test because mlflow or mlflow-skinny is not installed."
+ )
+diff --git a/tests/utils/test_annotations.py b/tests/utils/test_annotations.py
+index 4fab48fce8531..25c390902b5c9 100644
+--- a/tests/utils/test_annotations.py
++++ b/tests/utils/test_annotations.py
+@@ -1,5 +1,6 @@
+ import re
+ from dataclasses import dataclass, fields
++from unittest import mock
+ 
+ import pytest
+ 
+@@ -124,6 +125,28 @@ def test_deprecated_function():
+     assert msg in docstring
+ 
+ 
++def test_deprecated_genai_api_warns_agent():
++    @deprecated(alternative="mlflow.genai.make_judge")
++    def legacy_judge():
++        return "judge"
++
++    with (
++        mock.patch(
++            "mlflow.agent.hint.maybe_append_agent_hint",
++            side_effect=lambda _issue_id, message: f"{message} Agent skill hint.",
++        ) as append_hint,
++        pytest.warns(FutureWarning, match="legacy_judge.*deprecated.*Agent skill hint"),
++    ):
++        assert legacy_judge() == "judge"
++
++    append_hint.assert_called_once_with(
++        "deprecated-genai-metric-or-judge",
++        "``tests.utils.test_annotations.test_deprecated_genai_api_warns_agent.<locals>."
++        "legacy_judge`` is deprecated. This method will be removed in a future release. "
++        "Use ``mlflow.genai.make_judge`` instead.",
++    )
++
++
+ def test_empty_docstring():
+     docstring = ""
+     expected_indent = ""

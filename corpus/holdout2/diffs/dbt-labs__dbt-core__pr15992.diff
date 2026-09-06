@@ -1,0 +1,126 @@
+diff --git a/.changes/unreleased/Features-20260819-101949.yaml b/.changes/unreleased/Features-20260819-101949.yaml
+new file mode 100644
+index 00000000000..c79b768661a
+--- /dev/null
++++ b/.changes/unreleased/Features-20260819-101949.yaml
+@@ -0,0 +1,6 @@
++kind: Features
++body: Add otel_trace_id() and otel_span_id() Jinja functions to correlate query comments and model SQL with OpenTelemetry trace/span ids
++time: 2026-08-19T10:19:49.385492+02:00
++custom:
++    Author: b-per
++    Issue: ""
+diff --git a/core/dbt/context/base.py b/core/dbt/context/base.py
+index d72cf412f16..5df4e2db216 100644
+--- a/core/dbt/context/base.py
++++ b/core/dbt/context/base.py
+@@ -11,6 +11,7 @@
+ # These modules are added to the context. Consider alternative
+ # approaches which will extend well to potentially many modules
+ import pytz
++from opentelemetry import trace
+ 
+ import dbt.deprecations as deprecations
+ import dbt.flags as flags_module
+@@ -657,6 +658,37 @@ def thread_id(self) -> str:
+         """thread_id outputs an ID for the current thread (useful for auditing)"""
+         return threading.current_thread().name
+ 
++    @contextmember()
++    @staticmethod
++    def otel_trace_id() -> str:
++        """otel_trace_id() outputs the OpenTelemetry trace id (32-char hex) of
++        whichever span is currently active, for correlating query comments and
++        model SQL with the run's OpenTelemetry traces (see
++        `--snowflake-projects-otel`). All spans emitted during a single dbt
++        invocation share one trace id, so the value is the same everywhere it
++        can be read live. It is a function, not a plain variable, because some
++        contexts (e.g. `query-comment`) are built once, before any span is
++        active; reading live rather than capturing at context-build time
++        avoids permanently freezing to the placeholder there. Renders as 32
++        zeros when OpenTelemetry instrumentation is disabled or no span is
++        active.
++        """
++        return format(trace.get_current_span().get_span_context().trace_id, "032x")
++
++    @contextmember()
++    @staticmethod
++    def otel_span_id() -> str:
++        """otel_span_id() outputs the OpenTelemetry span id (16-char hex) of
++        whichever span is currently active, for correlating query comments and
++        model SQL with the run's OpenTelemetry traces (see
++        `--snowflake-projects-otel`). Unlike `otel_trace_id()`, this must be
++        read live: pre-hooks, the main statement, and post-hooks each run in
++        their own span, so the value can change between calls within the same
++        model. Renders as 16 zeros when OpenTelemetry instrumentation is
++        disabled or no span is active.
++        """
++        return format(trace.get_current_span().get_span_context().span_id, "016x")
++
+     @contextproperty()
+     def modules(self) -> Dict[str, Any]:
+         """The `modules` variable in the Jinja context contains useful Python
+diff --git a/tests/unit/context/test_base.py b/tests/unit/context/test_base.py
+index 5a9e8538ea2..5664a003c08 100644
+--- a/tests/unit/context/test_base.py
++++ b/tests/unit/context/test_base.py
+@@ -1,6 +1,7 @@
+ import os
+ 
+ from jinja2.runtime import Undefined
++from opentelemetry import trace
+ 
+ from dbt.context.base import BaseContext
+ 
+@@ -52,3 +53,38 @@ def test_flags(self):
+         flags = BaseContext(cli_vars={}).flags
+         for expected_flag in expected_context_flags:
+             assert hasattr(flags, expected_flag.upper())
++
++
++class TestOtelIds:
++    def test_defaults_to_zero_when_no_span_is_active(self):
++        ctx = BaseContext(cli_vars={})
++        assert ctx.otel_trace_id() == "0" * 32
++        assert ctx.otel_span_id() == "0" * 16
++
++    def test_reads_ids_from_the_active_span(self, otel_spans):
++        ctx = BaseContext(cli_vars={})
++        tracer = trace.get_tracer(__name__)
++        with tracer.start_as_current_span("test-span") as span:
++            span_context = span.get_span_context()
++            assert ctx.otel_trace_id() == format(span_context.trace_id, "032x")
++            assert ctx.otel_span_id() == format(span_context.span_id, "016x")
++
++    def test_span_id_tracks_the_innermost_span_while_trace_id_stays_fixed(self, otel_spans):
++        # A pre/post-hook runs in its own nested span, distinct from the span
++        # the model's main statement executes under; otel_span_id() must
++        # follow whichever is currently active, while otel_trace_id() stays
++        # the same throughout, since every span in a run shares one trace.
++        ctx = BaseContext(cli_vars={})
++        tracer = trace.get_tracer(__name__)
++        with tracer.start_as_current_span("outer") as outer_span:
++            outer_trace_id = format(outer_span.get_span_context().trace_id, "032x")
++            outer_span_id = format(outer_span.get_span_context().span_id, "016x")
++            assert ctx.otel_span_id() == outer_span_id
++
++            with tracer.start_as_current_span("inner") as inner_span:
++                inner_span_id = format(inner_span.get_span_context().span_id, "016x")
++                assert inner_span_id != outer_span_id
++                assert ctx.otel_span_id() == inner_span_id
++                assert ctx.otel_trace_id() == outer_trace_id
++
++            assert ctx.otel_span_id() == outer_span_id
+diff --git a/tests/unit/context/test_context.py b/tests/unit/context/test_context.py
+index 23d73eab816..2c754f18a85 100644
+--- a/tests/unit/context/test_context.py
++++ b/tests/unit/context/test_context.py
+@@ -201,6 +201,8 @@ def assert_has_keys(required_keys: Set[str], maybe_keys: Set[str], ctx: Dict[str
+         "run_started_at",
+         "invocation_id",
+         "thread_id",
++        "otel_trace_id",
++        "otel_span_id",
+         "modules",
+         "flags",
+         "print",

@@ -1,0 +1,729 @@
+diff --git a/doc/source/cluster/kubernetes/examples/ray-sandboxing.md b/doc/source/cluster/kubernetes/examples/ray-sandboxing.md
+index ab66427736a..c3e96331e0c 100644
+--- a/doc/source/cluster/kubernetes/examples/ray-sandboxing.md
++++ b/doc/source/cluster/kubernetes/examples/ray-sandboxing.md
+@@ -146,6 +146,8 @@ res = ray.get(sb.exec.remote("python3 -c 'import urllib.request; urllib.request.
+ print(res.exit_code)  # Non-zero exit code
+ ```
+ 
++With `network="public"`, each sandbox gets internet egress from its own private network namespace, bridged by [pasta](https://passt.top): sandboxes can bind the same port concurrently without conflicting, and can't reach each other or the Pod's own services. They can still reach anything else the node can reach, including other Pods and internal cluster services, so keep `network="none"` for untrusted code. This mode needs the `pasta` binary on the worker's `$PATH` and `/dev/net/tun` available in the Ray container (present on standard GKE `containerd` node pools).
++
+ ---
+ 
+ ## (Optional) Step 5: Build a custom Ray image with pre-installed `runsc`
+@@ -161,11 +163,14 @@ FROM rayproject/ray:2.58.0-py312
+ 
+ USER root
+ 
+-# Install wget, download gVisor runsc, and install into system PATH
++# Install wget, download gVisor runsc and pasta (for network="public"),
++# and install both into the system PATH. passt.top static builds are
++# x86_64-only; on arm64 nodes install the distro's passt package instead.
+ RUN apt-get update && apt-get install -y --no-install-recommends wget && \
+     ARCH=$(uname -m) && \
+     wget "https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}/runsc" -O /usr/local/bin/runsc && \
+-    chmod a+rx /usr/local/bin/runsc && \
++    wget "https://passt.top/builds/latest/x86_64/pasta" -O /usr/local/bin/pasta && \
++    chmod a+rx /usr/local/bin/runsc /usr/local/bin/pasta && \
+     rm -rf /var/lib/apt/lists/*
+ 
+ USER ray
+diff --git a/doc/source/ray-core/sandboxes.md b/doc/source/ray-core/sandboxes.md
+index c2767115e89..a5b195345ba 100644
+--- a/doc/source/ray-core/sandboxes.md
++++ b/doc/source/ray-core/sandboxes.md
+@@ -37,8 +37,9 @@ Ray Sandboxes need the following on every Ray node that runs a sandbox:
+ * **Linux**: x86_64 or arm64.
+ * **gVisor (`runsc`)**: Install the `runsc` binary on worker nodes and make it reachable from the system `$PATH`.
+ * **Ray**: version 2.58.0 or later, which includes the `ray.experimental.sandbox` package.
++* **pasta (`network="public"` only)**: The [passt](https://passt.top) package's `pasta` binary on the `$PATH`, plus `/dev/net/tun` in the worker's environment. pasta bridges each sandbox's private network namespace to the node.
+ 
+-To install `runsc` on a Linux worker node, see the [gVisor installation guide](https://gvisor.dev/docs/user_guide/install/).
++To install `runsc` on a Linux worker node, see the [gVisor installation guide](https://gvisor.dev/docs/user_guide/install/). `pasta` ships as the `passt` package on Debian 12+/Ubuntu 23.04+ and Fedora, or as a [static build](https://passt.top/builds/latest/) (x86_64 only; on arm64 use the distro package or build from source — passt has no build dependencies).
+ 
+ ## Usage patterns and examples
+ 
+@@ -272,10 +273,14 @@ Sandboxes support four network modes. The default is `none`, which follows the s
+ | Mode | Network access | `/etc/resolv.conf` | Security property |
+ | --- | --- | --- | --- |
+ | `none` *(default)* | None | untouched | No egress. This is the recommended setting for untrusted code. |
+-| `public` | Host egress | Generated from `dns` (default `8.8.8.8`, `1.1.1.1`), mounted read-only | Egress works, but the sandbox inherits nothing from the host's resolver configuration. No internal search domains, resolver addresses, or `ndots` options leak in, and the sandbox config stays portable across clusters. |
+-| `host` | Full host network identity | Host's own file, mounted read-only (`dns` overrides it) | Strictly more permissive than `public`. The sandbox can reach anything the node can reach, including internal networks and node-local services. |
++| `public` | Internet egress from a network namespace private to the sandbox, bridged by [pasta](https://passt.top) | Generated from `dns` (default `8.8.8.8`, `1.1.1.1`), mounted read-only | Ports and loopback are per-sandbox: a bind on `0.0.0.0` can't collide with, be reached by, or reach other sandboxes or node-local services, and there's no inbound path from the node or cluster. The sandbox inherits nothing from the host's resolver configuration. The sandbox can still reach any network address the node can reach, including other Ray nodes and internal services. Requires `pasta` on the node. |
++| `host` | Full host network identity | Host's own file, mounted read-only (`dns=` overrides it) | Strictly more permissive than `public`. The sandbox can reach anything the node can reach, including internal networks and node-local services. |
+ | `sandbox` | gVisor netstack | untouched | Requires `rootless=False`. runsc doesn't support the sandbox netstack in rootless mode. |
+ 
++:::{warning}
++`public` isolates sandboxes from each other and from the node's own services, not from the network the node sits on. pasta relays every outbound connection through the node, so a `public` sandbox can reach other Ray nodes, including the head node's GCS and dashboard ports, other Kubernetes Pods, and any internal service the node can reach. Use `network="none"` for untrusted code.
++:::
++
+ To give a sandbox internet access, use `network="public"`. Pair it with `DOCKER_DEFAULT_CAPABILITIES` so standard images behave the way they do under Docker, because `apt-get`, `tar` ownership restore, and similar operations all need those capabilities:
+ 
+ ```python
+@@ -361,6 +366,8 @@ For detailed signatures, parameters, and return types, see {ref}`ray-sandbox-ref
+ * **cgroup or permission errors**: In containerized environments such as Kubernetes without root permissions, keep the default `rootless=True`. Where cgroups are restricted, set `RAY_SANDBOX_IGNORE_CGROUPS=1`.
+ * **Node disk filling up with images**: The image cache is capped at half of its filesystem by default. Lower the cap with `RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES` (bytes) on worker nodes, or move the cache to a larger volume. Images that running sandboxes use are never evicted, so many concurrent sandboxes on distinct large images still need that much disk.
+ * **Image pull failures**: Verify that the node can reach the container registry, such as Docker Hub or GHCR, or pre-populate the image cache directory at `/tmp/ray/sandbox/images`. When many nodes pull large images at once, Docker Hub's anonymous rate limits are a likely cause; see [Route Docker Hub pulls through a mirror](#route-docker-hub-pulls-through-a-mirror).
++* **`pasta` not found for `network="public"`**: Install the passt package (or a [static build](https://passt.top/builds/latest/)) on worker nodes.
++* **`public` sandboxes fail to start with a tap or namespace error**: pasta needs `/dev/net/tun` in the worker's environment and a seccomp policy that allows unprivileged user+network namespace creation (`unshare -Un true` must succeed as the Ray user). The pasta error appears in the sandbox's `runsc.stderr.log` and in the creation error message.
+ 
+ ## Next steps
+ 
+diff --git a/python/ray/experimental/sandbox/backend/gvisor.py b/python/ray/experimental/sandbox/backend/gvisor.py
+index b30a146854a..c52eb10a48d 100644
+--- a/python/ray/experimental/sandbox/backend/gvisor.py
++++ b/python/ray/experimental/sandbox/backend/gvisor.py
+@@ -1,7 +1,9 @@
+ import json
+ import logging
+ import os
++import shlex
+ import shutil
++import signal
+ import subprocess
+ import time
+ import uuid
+@@ -31,6 +33,45 @@
+ # Directory to store sandbox states, container images and overlay filesystem.
+ _RAY_SANDBOX_DIR = "/tmp/ray/sandbox"
+ 
++# network="public" gives each sandbox a private user+network namespace pair
++# bridged by pasta (passt) user-mode networking, the rootless Podman shape:
++# a holder process (`unshare --user --map-root-user --net`) pins the
++# namespaces; pasta attaches to them from the pod side, so its uplink is the
++# pod's interface, and runs in the foreground inside the sandbox's process
++# group; runsc runs inside via nsenter as mapped root. runsc still gets
++# --network=host, but "host" is now private to the sandbox: binds cannot
++# collide with or be reached by the pod or other sandboxes, while egress
++# leaves through pasta's tap. Mount and pid namespaces stay shared, so the
++# bundle and runsc's control sockets under _RUNSC_ROOT keep working for
++# pod-side state/exec/kill/delete.
++#
++# pasta relays every outbound connection through the pod's own sockets, so
++# the sandbox can reach any address the pod can reach: other Ray nodes
++# (including the head node's GCS and dashboard), other pods, and internal
++# services. pasta has no destination filter; network="none" remains the
++# boundary for untrusted code.
++#
++# These flags are the isolation property; tests pin the exact list:
++#   --config-net  copy the pod interface's addressing/routes onto the tap.
++#   -t/-u none    never republish namespace binds on the pod.
++#   -T/-U none    no loopback splicing: pod-local services stay
++#                 unreachable from the sandbox's 127.0.0.1.
++#   --no-map-gw   don't remap gateway-addressed traffic to the pod loopback.
++#   -4            IPv4 only, matching the generated resolv.conf.
++_PASTA_FLAGS = [
++    "--config-net",
++    "-t",
++    "none",
++    "-u",
++    "none",
++    "-T",
++    "none",
++    "-U",
++    "none",
++    "--no-map-gw",
++    "-4",
++]
++
+ 
+ class GVisorSandboxBackend(BaseSandboxBackend):
+     """gVisor sandbox backend running a single persistent container instance per sandbox locally via runsc."""
+@@ -46,6 +87,16 @@ def create_sandbox(self, config: SandboxConfig) -> str:
+                 "gVisor executable 'runsc' not found in PATH. "
+                 "Please install gVisor (runsc) on the node."
+             )
++        if config.network == "public":
++            missing = [b for b in ("pasta", "nsenter") if not shutil.which(b)]
++            if missing:
++                raise SandboxCreationError(
++                    "network='public' isolates each sandbox in its own network "
++                    "namespace via pasta (passt), but "
++                    f"{', '.join(repr(b) for b in missing)} was not found in "
++                    "PATH. Install the passt package (and util-linux) on the "
++                    "node image."
++                )
+ 
+         sandbox_uuid = uuid.uuid4().hex[:12]
+         sandbox_id = f"ray-sandbox-{sandbox_uuid}"
+@@ -109,28 +160,25 @@ def create_sandbox(self, config: SandboxConfig) -> str:
+         except Exception:
+             self._image_manager.release_image(config.image, sandbox_id)
+             raise
+-        run_args = self._runsc_base_args(config)
+-        if config.network:
+-            # "public" = host egress + generated resolv.conf (handled in the
+-            # OCI bundle); runsc itself just sees host networking.
+-            runsc_network = "host" if config.network == "public" else config.network
+-            run_args.extend(["--network", runsc_network])
+         overlay_dir = os.path.join(root_dir, "overlay")
+         os.makedirs(overlay_dir, mode=0o777, exist_ok=True)
+-        run_args.append(f"--overlay2=root:dir={overlay_dir}")
+-        run_args.extend(["run", "--bundle", root_dir, sandbox_id])
++        run_args = self._build_run_command(config, root_dir, overlay_dir, sandbox_id)
+ 
+         stderr_log_path = os.path.join(root_dir, "runsc.stderr.log")
+         stderr_file = open(stderr_log_path, "w+", encoding="utf-8")
++        # start_new_session puts the namespace holder, pasta, and runsc run
++        # in one process group so cleanup can kill the whole tree; they share
++        # the stderr log so startup failures (missing /dev/net/tun, no
++        # uplink) surface through the SandboxCreationError path below.
+         proc = subprocess.Popen(
+             run_args,
+             stdin=subprocess.DEVNULL,
+             stdout=subprocess.DEVNULL,
+             stderr=stderr_file,
++            start_new_session=True,
+         )
+         start_time = time.time()
+         timeout = config.timeout_seconds
+-        state_args = self._runsc_base_args(config) + ["state", sandbox_id]
+ 
+         try:
+             while True:
+@@ -141,6 +189,7 @@ def create_sandbox(self, config: SandboxConfig) -> str:
+                         f"gVisor container failed to start: {stderr_str}"
+                     )
+ 
++                state_args = self._runsc_base_args(config) + ["state", sandbox_id]
+                 res = subprocess.run(state_args, capture_output=True, text=True)
+                 if res.returncode == 0:
+                     try:
+@@ -157,24 +206,22 @@ def create_sandbox(self, config: SandboxConfig) -> str:
+                             raise
+                         pass
+ 
++                # Check the deadline only after polling state, so a sandbox
++                # that reached 'running' just as the deadline passed is
++                # observed and kept rather than torn down unpolled.
+                 if time.time() - start_time > timeout:
+-                    proc.kill()
+-                    proc.communicate()
+                     raise SandboxTimeoutError(
+                         f"gVisor container '{sandbox_id}' failed to reach 'running' state within {timeout} seconds."
+                     )
+ 
+                 time.sleep(0.1)
+         except Exception:
+-            if proc and proc.poll() is None:
+-                proc.kill()
+-                try:
+-                    proc.communicate(timeout=2)
+-                except subprocess.TimeoutExpired:
+-                    pass
++            # Delete runsc's container state, then kill the whole group:
++            # under pasta, a bare proc.kill() would orphan the namespace
++            # holder and pasta.
++            self._delete_container_state(config, sandbox_id)
++            self._terminate_tree(proc)
+             stderr_file.close()
+-            del_args = self._runsc_base_args(config) + ["delete", sandbox_id]
+-            subprocess.run(del_args, capture_output=True)
+             shutil.rmtree(root_dir, ignore_errors=True)
+             # The sandbox never registered, so delete_sandbox will not run
+             # for it: release the image here to keep it evictable.
+@@ -186,6 +233,8 @@ def create_sandbox(self, config: SandboxConfig) -> str:
+             "workdir": workdir_path,
+             "cwd": container_cwd,
+             "config": config,
++            # The process group leader whose tree holds the sandbox and,
++            # for network="public", the namespace holder and pasta.
+             "proc": proc,
+             "stderr_file": stderr_file,
+             "status": SandboxStatus.RUNNING,
+@@ -208,12 +257,13 @@ def delete_sandbox(self, sandbox_id: str) -> None:
+             except subprocess.TimeoutExpired:
+                 pass
+ 
+-            if proc and proc.poll() is None:
+-                proc.terminate()
+-                try:
+-                    proc.communicate(timeout=2)
+-                except subprocess.TimeoutExpired:
+-                    proc.kill()
++            self._delete_container_state(config, sandbox_id)
++
++            # Always take the whole group: after `runsc run` exits, the
++            # namespace holder and pasta (network="public") are still alive
++            # in it.
++            if proc:
++                self._terminate_tree(proc)
+ 
+             if stderr_file:
+                 try:
+@@ -221,10 +271,6 @@ def delete_sandbox(self, sandbox_id: str) -> None:
+                 except Exception:
+                     pass
+ 
+-            del_args = self._runsc_base_args(config)
+-            del_args.extend(["delete", sandbox_id])
+-            subprocess.run(del_args, capture_output=True)
+-
+             shutil.rmtree(root_dir, ignore_errors=True)
+             # Only now is the overlay's lower layer unused.
+             self._image_manager.release_image(config.image, sandbox_id)
+@@ -371,6 +417,94 @@ def _runsc_base_args(self, config: SandboxConfig) -> List[str]:
+         args.extend(["--root", _RUNSC_ROOT])
+         return args
+ 
++    def _delete_container_state(self, config: SandboxConfig, sandbox_id: str) -> None:
++        """Best-effort ``runsc delete -force`` for teardown paths.
++
++        Bounded by a timeout: a wedged gVisor (the usual reason a create
++        timed out) must not block the process-group kill and pasta reap
++        that follow, which is what actually frees the sandbox.
++        """
++        del_args = self._runsc_base_args(config) + ["delete", "-force", sandbox_id]
++        try:
++            subprocess.run(del_args, capture_output=True, timeout=10)
++        except subprocess.TimeoutExpired:
++            pass
++
++    def _build_run_command(
++        self, config: SandboxConfig, root_dir: str, overlay_dir: str, sandbox_id: str
++    ) -> List[str]:
++        """Build the full `runsc run` argv, pasta-wrapped for network="public".
++
++        Pure argv construction (no filesystem side effects) so tests can
++        assert the exact command without runsc or pasta installed.
++        """
++        args = self._runsc_base_args(config)
++        use_pasta = config.network == "public"
++        if use_pasta and "--rootless" in args:
++            # runsc runs as mapped root inside the holder's user namespace;
++            # --rootless would nest a second user namespace whose
++            # /proc/<pid>/root magic links the gofer cannot dereference.
++            # Rootless mode also tolerates cgroup permission failures, so
++            # keep that behavior explicitly.
++            args = [a for a in args if a != "--rootless"]
++            if "--ignore-cgroups" not in args:
++                args.insert(1, "--ignore-cgroups")
++        if config.network:
++            # "public" = host egress + generated resolv.conf (handled in the
++            # OCI bundle); runsc itself just sees host networking — of the
++            # per-sandbox namespace when wrapped, of the worker otherwise.
++            runsc_network = "host" if config.network == "public" else config.network
++            args.extend(["--network", runsc_network])
++        args.append(f"--overlay2=root:dir={overlay_dir}")
++        args.extend(["run", "--bundle", root_dir, sandbox_id])
++        if use_pasta:
++            netns_pidfile = shlex.quote(os.path.join(root_dir, "netns.pid"))
++            pasta_pidfile = shlex.quote(os.path.join(root_dir, "pasta.pid"))
++            runsc = " ".join(shlex.quote(a) for a in args)
++            pasta = " ".join(["pasta", *_PASTA_FLAGS])
++            script = (
++                # The holder pins the namespaces for the sandbox's lifetime;
++                # --kill-child ties it to this script's process group.
++                "unshare --user --map-root-user --net --fork --kill-child "
++                f"bash -c 'echo $$ > {netns_pidfile}; exec sleep infinity' & "
++                "HOLDER=$!; "
++                # Stop waiting as soon as the holder dies, and refuse an
++                # empty NSPID (which would resolve to /proc//ns/net).
++                f"for i in $(seq 1 100); do [ -s {netns_pidfile} ] && break; "
++                "kill -0 $HOLDER 2>/dev/null || break; sleep 0.1; done; "
++                f"NSPID=$(cat {netns_pidfile} 2>/dev/null); "
++                '[ -n "$NSPID" ] || { echo "netns holder failed to start" >&2; exit 1; }; '
++                # pasta attaches from the pod side and stays in the
++                # foreground, so it lives and dies with this process group.
++                # It writes --pid once initialised: that is the go signal.
++                f"{pasta} --foreground --pid {pasta_pidfile} "
++                "--netns /proc/$NSPID/ns/net --userns /proc/$NSPID/ns/user & "
++                "PASTA=$!; "
++                f"for i in $(seq 1 100); do [ -s {pasta_pidfile} ] && break; "
++                "kill -0 $PASTA 2>/dev/null || break; sleep 0.1; done; "
++                f'[ -s {pasta_pidfile} ] || {{ echo "pasta failed to start" >&2; exit 1; }}; '
++                f"exec nsenter --preserve-credentials -U -n -t $NSPID -- {runsc}"
++            )
++            return ["bash", "-c", script]
++        return args
++
++    def _terminate_tree(self, proc: subprocess.Popen) -> None:
++        """SIGKILL the sandbox process group and reap the Popen.
++
++        The run Popen is started with ``start_new_session=True``, so its pid
++        is the group id for the namespace holder, pasta, runsc run, and the
++        sandbox process.
++        """
++        try:
++            os.killpg(proc.pid, signal.SIGKILL)
++        except (ProcessLookupError, PermissionError):
++            if proc.poll() is None:
++                proc.kill()
++        try:
++            proc.communicate(timeout=2)
++        except (subprocess.TimeoutExpired, ValueError):
++            pass
++
+     def _resolve_path(self, root_dir: str, relative_or_abs_path: str) -> str:
+         clean_path = relative_or_abs_path.lstrip("/")
+         return os.path.join(root_dir, clean_path)
+diff --git a/python/ray/experimental/sandbox/config.py b/python/ray/experimental/sandbox/config.py
+index 42611300af0..871f8b9fa7a 100644
+--- a/python/ray/experimental/sandbox/config.py
++++ b/python/ray/experimental/sandbox/config.py
+@@ -2,8 +2,11 @@
+ from dataclasses import dataclass, field
+ from typing import Callable, Dict, List, Optional, Union
+ 
+-# Sandbox network modes. All but "public" map directly to runsc --network;
+-# "public" is host egress plus a generated, host-independent resolv.conf.
++# Sandbox network modes. "none", "host", and "sandbox" map directly to runsc
++# --network; "public" runs runsc with host networking inside a per-sandbox
++# network namespace bridged by pasta (internet egress only; ports and
++# loopback are private to the sandbox) plus a generated, host-independent
++# resolv.conf.
+ VALID_NETWORK_MODES = ("none", "public", "host", "sandbox")
+ 
+ # Default resolvers for network="public" (Google and Cloudflare public DNS).
+@@ -94,10 +97,18 @@ class SandboxConfig:
+         timeout_seconds: Timeout in seconds for sandbox creation.
+         rootless: If True, run gVisor in rootless mode (default: True).
+         network: Network mode (default: "none" — no network access).
+-            "public" (recommended for internet access) gives host egress with
+-            a generated /etc/resolv.conf from ``dns``, inheriting nothing
+-            from the host resolver. "host" gives full host network identity,
+-            including the host's resolv.conf and internal networks.
++            "public" (recommended for internet access) gives internet egress
++            from a network namespace private to the sandbox, bridged by
++            pasta: ports and loopback are per-sandbox, nothing in the
++            sandbox is reachable from the host or from other sandboxes, and
++            /etc/resolv.conf is generated from ``dns``, inheriting nothing
++            from the host resolver. The sandbox can still reach any network
++            address the node can reach, including other Ray nodes and
++            internal services, so use "none" for untrusted code. Requires
++            the ``pasta`` binary on the node. "host" gives full host network
++            identity — the host's resolv.conf, internal networks, and a
++            port space shared with the worker and every other host-mode
++            sandbox.
+             "sandbox" uses gVisor's netstack and requires ``rootless=False``.
+         dns: Nameserver IPs for a generated /etc/resolv.conf, mounted
+             read-only (like ``docker --dns``); useful when public DNS is
+diff --git a/python/ray/experimental/sandbox/tests/conftest.py b/python/ray/experimental/sandbox/tests/conftest.py
+index f52c7308b9c..52b65d53d01 100644
+--- a/python/ray/experimental/sandbox/tests/conftest.py
++++ b/python/ray/experimental/sandbox/tests/conftest.py
+@@ -8,6 +8,11 @@
+ 
+ from ray._private.test_utils import sandbox_test_enabled
+ 
++_RUNSC_URL = (
++    "https://storage.googleapis.com/gvisor/releases/release/latest/{arch}/runsc"
++)
++_PASTA_URL = "https://passt.top/builds/latest/x86_64/pasta"
++
+ 
+ def pytest_runtest_setup(item):
+     if not sandbox_test_enabled():
+@@ -15,26 +20,80 @@ def pytest_runtest_setup(item):
+     os.environ["RAY_SANDBOX_IGNORE_CGROUPS"] = "1"
+ 
+ 
++def _install_on_path(name: str, url: str) -> None:
++    """Fetch a static binary into a temp dir prepended to PATH, or skip."""
++    if shutil.which(name):
++        return
++    bin_dir = tempfile.mkdtemp()
++    os.chmod(bin_dir, 0o755)
++    binary = os.path.join(bin_dir, name)
++    try:
++        urllib.request.urlretrieve(url, binary)
++    except Exception as e:
++        pytest.skip(f"Failed to install {name} for sandbox tests: {e}")
++    os.chmod(binary, 0o755)
++    os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
++
++
+ @pytest.fixture(scope="session", autouse=True)
+ def ensure_runsc():
+     if not sandbox_test_enabled():
+         return
+-
+     os.environ["RAY_SANDBOX_IGNORE_CGROUPS"] = "1"
++    arch = "aarch64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64"
++    _install_on_path("runsc", _RUNSC_URL.format(arch=arch))
++
++
++def _public_netns_supported() -> bool:
++    """Whether this host can actually bring a network="public" sandbox up.
++
++    The path parks a sandbox's network+user namespaces in an
++    ``unshare --user --net`` holder and has pasta and a non-rootless runsc
++    re-enter them via ``nsenter -U -n``. Some sandboxed CI environments permit
++    a single unprivileged user namespace (enough for the rootless sandbox
++    tests) and even entering another process's, yet still forbid the *nested*
++    user namespace runsc opens when it drops the sandbox process to ``nobody``
++    -- which only surfaces once the sandbox boots, as ``Started as root, will
++    change to nobody. Couldn't open user namespace ...: Permission denied``. A
++    namespace-entry probe passes there and the tests then fail, so instead
++    bring a throwaway busybox sandbox all the way up and tear it down: only the
++    real path exercises that nested open. runsc and pasta must already be on
++    PATH.
++    """
++    from ray.experimental.sandbox.backend.gvisor import GVisorSandboxBackend
++    from ray.experimental.sandbox.config import GVisorSandboxConfig
++    from ray.experimental.sandbox.exceptions import SandboxError
++
++    backend = GVisorSandboxBackend()
++    try:
++        sandbox_id = backend.create_sandbox(
++            GVisorSandboxConfig(
++                image="busybox:latest", shell="/bin/sh", network="public"
++            )
++        )
++    except SandboxError:
++        return False
++    backend.delete_sandbox(sandbox_id)
++    return True
++
++
++@pytest.fixture(scope="session")
++def ensure_pasta(ensure_runsc):
++    """pasta plus a host that can actually run the network="public" path.
+ 
+-    if not shutil.which("runsc"):
+-        temp_bin = tempfile.mkdtemp()
+-        os.chmod(temp_bin, 0o755)
+-        runsc_path = os.path.join(temp_bin, "runsc")
+-        arch = (
+-            "aarch64"
+-            if platform.machine().lower() in ("aarch64", "arm64")
+-            else "x86_64"
++    Requested rather than autouse, so only the netns tests skip when no static
++    pasta build exists for the arch or the environment forbids the per-sandbox
++    user+network namespace the path relies on. pasta and runsc are installed
++    first because the support probe boots a real sandbox.
++    """
++    if not shutil.which("pasta") and platform.machine().lower() not in (
++        "x86_64",
++        "amd64",
++    ):
++        pytest.skip("no static pasta build for this arch; install passt")
++    _install_on_path("pasta", _PASTA_URL)
++    if not _public_netns_supported():
++        pytest.skip(
++            'network="public" needs a per-sandbox user+network namespace this '
++            "environment forbids (nested user namespace denied at sandbox boot)"
+         )
+-        url = f"https://storage.googleapis.com/gvisor/releases/release/latest/{arch}/runsc"
+-        try:
+-            urllib.request.urlretrieve(url, runsc_path)
+-            os.chmod(runsc_path, 0o755)
+-            os.environ["PATH"] = f"{temp_bin}:{os.environ.get('PATH', '')}"
+-        except Exception as e:
+-            pytest.skip(f"Failed to install runsc for sandbox tests: {e}")
+diff --git a/python/ray/experimental/sandbox/tests/test_gvisor_backend.py b/python/ray/experimental/sandbox/tests/test_gvisor_backend.py
+index 1dd13e35407..8913749d30d 100644
+--- a/python/ray/experimental/sandbox/tests/test_gvisor_backend.py
++++ b/python/ray/experimental/sandbox/tests/test_gvisor_backend.py
+@@ -1,5 +1,7 @@
+ import os
++import socket
+ import sys
++from pathlib import Path
+ 
+ import pytest
+ 
+@@ -306,5 +308,203 @@ def test_image_workdir_sets_cwd_without_becoming_writable():
+         runtime.delete(instance_id)
+ 
+ 
++def _public_config() -> GVisorSandboxConfig:
++    return GVisorSandboxConfig(
++        image="busybox:latest", shell="/bin/sh", network="public"
++    )
++
++
++def _run_argv(network: str, rootless: bool = True, **backend_kwargs) -> list:
++    """`_build_run_command` over fixed paths — pure argv, no side effects."""
++    backend = GVisorSandboxBackend(**backend_kwargs)
++    cfg = GVisorSandboxConfig(
++        image="busybox:latest", network=network, rootless=rootless
++    )
++    return backend._build_run_command(cfg, "/tmp/rd", "/tmp/rd/overlay", "sb-1")
++
++
++def _host_ip() -> str:
++    """The worker's primary IPv4, which pasta copies onto each sandbox's tap."""
++    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
++        sock.connect(("8.8.8.8", 80))
++        return sock.getsockname()[0]
++
++
++def _pasta_pids() -> set:
++    """PIDs of running pasta processes."""
++    pids = set()
++    for entry in Path("/proc").iterdir():
++        if not entry.name.isdigit():
++            continue
++        try:
++            argv0 = (entry / "cmdline").read_bytes().split(b"\0", 1)[0]
++        except OSError:
++            continue
++        if os.path.basename(argv0) == b"pasta":
++            pids.add(entry.name)
++    return pids
++
++
++def test_build_run_command_public_wraps_with_pasta():
++    """The pasta flags are the isolation property and the chain's shape is the
++    topology, so pin both: holder namespaces first, pasta attached from the pod
++    side in the foreground, runsc entered as mapped root (never --rootless)."""
++    cmd = _run_argv("public")
++    assert cmd[:2] == ["bash", "-c"]
++    script = cmd[2]
++
++    assert script.startswith(
++        "unshare --user --map-root-user --net --fork --kill-child "
++    )
++    assert script.endswith("run --bundle /tmp/rd sb-1")
++    for fragment in (
++        "/tmp/rd/netns.pid",
++        # pasta stays in the sandbox's process group (--foreground) and its
++        # pidfile, written once initialised, gates the runsc start.
++        "pasta --config-net -t none -u none -T none -U none --no-map-gw -4 "
++        "--foreground --pid /tmp/rd/pasta.pid "
++        "--netns /proc/$NSPID/ns/net --userns /proc/$NSPID/ns/user &",
++        "kill -0 $PASTA",
++        "[ -s /tmp/rd/pasta.pid ] ||",
++        # The holder wait fast-fails if the holder dies and refuses an
++        # empty NSPID (which would resolve to /proc//ns/net).
++        "kill -0 $HOLDER",
++        '[ -n "$NSPID" ]',
++        "exec nsenter --preserve-credentials -U -n -t $NSPID -- runsc",
++        "--network host",
++        "--overlay2=root:dir=/tmp/rd/overlay",
++    ):
++        assert fragment in script, fragment
++    assert "--rootless" not in script
++
++
++def test_build_run_command_public_keeps_rootless_cgroup_tolerance(monkeypatch):
++    """Dropping --rootless must not make runsc start configuring cgroups: the
++    wrapper forces --ignore-cgroups for rootless configs, and only for them."""
++    monkeypatch.delenv("RAY_SANDBOX_IGNORE_CGROUPS", raising=False)
++
++    script = _run_argv("public")[2]
++    assert "--ignore-cgroups" in script
++    assert "--rootless" not in script
++
++    privileged = _run_argv("public", rootless=False)[2]
++    assert "--ignore-cgroups" not in privileged
++
++    assert "--ignore-cgroups" not in _run_argv("none")
++
++
++@pytest.mark.parametrize(
++    "network,rootless", [("none", True), ("host", True), ("sandbox", False)]
++)
++def test_build_run_command_other_modes_unwrapped(network, rootless):
++    """Every mode but "public" keeps today's bare runsc invocation."""
++    cmd = _run_argv(network, rootless=rootless)
++    assert cmd[0] == "runsc"
++    assert "pasta" not in cmd
++    assert cmd[cmd.index("--network") + 1] == network
++    assert cmd[-4:] == ["run", "--bundle", "/tmp/rd", "sb-1"]
++
++
++def test_create_sandbox_requires_pasta(monkeypatch):
++    """A missing pasta fails fast — before the image pull — with remediation."""
++
++    class _NoPullImageManager:
++        def pull_image(self, *args, **kwargs):
++            raise AssertionError("image pull must not run when pasta is missing")
++
++    monkeypatch.setattr(
++        "ray.experimental.sandbox.backend.gvisor.shutil.which",
++        lambda name: None if name == "pasta" else f"/usr/bin/{name}",
++    )
++    backend = GVisorSandboxBackend(image_manager=_NoPullImageManager())
++    with pytest.raises(SandboxCreationError) as err:
++        backend.create_sandbox(_public_config())
++    assert all(hint in str(err.value) for hint in ("pasta", "passt"))
++
++
++def test_netns_concurrent_same_port_bind_and_isolation(ensure_pasta):
++    """Two "public" sandboxes both bind 0.0.0.0:2222 (the terminal-bench QEMU
++    hostfwd contract): each reaches its own listener, the bind never surfaces in
++    the worker's namespace, and neither sandbox can reach the other's."""
++    backend = GVisorSandboxBackend()
++    sb1, sb2 = (backend.create_sandbox(_public_config()) for _ in range(2))
++    tokens = {sb1: "SB1-TOKEN", sb2: "SB2-TOKEN"}
++    try:
++        for sb, token in tokens.items():
++            # /tmp stays a writable tmpfs on the readonly rootfs.
++            backend.write_file(sb, "/tmp/www/token", token)
++            # busybox httpd daemonizes; sharing one netns, the second bind
++            # would fail with EADDRINUSE.
++            res = backend.exec_command(sb, "httpd -p 2222 -h /tmp/www", timeout=30)
++            assert res.exit_code == 0, res.stderr
++
++        for sb, token in tokens.items():
++            res = backend.exec_command(
++                sb, "wget -q -T 5 -O - http://127.0.0.1:2222/token", timeout=30
++            )
++            assert res.exit_code == 0, res.stderr
++            assert token in res.stdout
++
++        # The worker's own namespace must see nothing on 2222.
++        host_ip = _host_ip()
++        for target in ("127.0.0.1", host_ip):
++            with pytest.raises(OSError):
++                socket.create_connection((target, 2222), timeout=3).close()
++
++        # No address names one sandbox from another: pasta --config-net gives
++        # every sandbox the worker's own IP, so from sb2 that IP is sb2 itself.
++        res = backend.exec_command(
++            sb2, f"wget -q -T 3 -O - http://{host_ip}:2222/token", timeout=30
++        )
++        assert tokens[sb1] not in res.stdout
++        assert res.exit_code != 0 or tokens[sb2] in res.stdout
++    finally:
++        for sb in (sb1, sb2):
++            backend.delete_sandbox(sb)
++
++
++def test_netns_egress_and_dns(ensure_pasta):
++    """Egress and the generated resolv.conf work from inside the netns."""
++    backend = GVisorSandboxBackend()
++    sb = backend.create_sandbox(_public_config())
++    try:
++        res = backend.exec_command(
++            sb, "wget -q -T 15 -O - http://example.com", timeout=60
++        )
++        assert res.exit_code == 0, res.stderr
++        assert "Example" in res.stdout
++    finally:
++        backend.delete_sandbox(sb)
++
++
++def test_netns_teardown_reaps_pasta(ensure_pasta):
++    """delete_sandbox ends the pasta process tree and removes all state."""
++    before = _pasta_pids()
++    backend = GVisorSandboxBackend()
++    sb = backend.create_sandbox(_public_config())
++    meta = backend._sandbox_metadata[sb]
++    assert meta["proc"].poll() is None
++    assert _pasta_pids() > before
++
++    backend.delete_sandbox(sb)
++    assert meta["proc"].poll() is not None
++    assert _pasta_pids() == before
++    assert not os.path.exists(meta["root_dir"])
++    assert sb not in backend._sandbox_metadata
++
++
++def test_netns_create_failure_leaves_no_pasta(ensure_pasta):
++    """A failed create (bad image) leaves no pasta process behind."""
++    before = _pasta_pids()
++    backend = GVisorSandboxBackend()
++    with pytest.raises(SandboxCreationError):
++        backend.create_sandbox(
++            GVisorSandboxConfig(
++                image="nonexistent_invalid_image_12345:latest", network="public"
++            )
++        )
++    assert _pasta_pids() == before
++
++
+ if __name__ == "__main__":
+     sys.exit(pytest.main(["-v", __file__]))

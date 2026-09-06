@@ -1,0 +1,1066 @@
+diff --git a/mlflow/environment_variables.py b/mlflow/environment_variables.py
+index 4d1ef3ed79bf5..4cfa35532c147 100644
+--- a/mlflow/environment_variables.py
++++ b/mlflow/environment_variables.py
+@@ -115,6 +115,10 @@ def get(self):
+ #: (default: ``False``)
+ MLFLOW_ENABLE_WORKSPACES = _BooleanEnvironmentVariable("MLFLOW_ENABLE_WORKSPACES", False)
+ 
++#: Enables AI Gateway endpoints and UI.
++#: (default: ``True``)
++MLFLOW_ENABLE_AI_GATEWAY = _BooleanEnvironmentVariable("MLFLOW_ENABLE_AI_GATEWAY", True)
++
+ #: **Experimental** — subject to change or removal in a future release.
+ #: Controls whether the MLflow Assistant API is reachable from non-localhost clients. When true,
+ #: the server runs the work the assistant would otherwise run on the host — the ``Bash`` tool and
+diff --git a/mlflow/gateway/constants.py b/mlflow/gateway/constants.py
+index 1df51d788bfe9..f2863acde6347 100644
+--- a/mlflow/gateway/constants.py
++++ b/mlflow/gateway/constants.py
+@@ -48,3 +48,7 @@ class GatewayCaller(str, Enum):
+ # translations prior to sending a request payload to their chat endpoints.
+ # to reduce the need to case-match, supported model prefixes are lowercase.
+ MLFLOW_AI_GATEWAY_MOSAICML_CHAT_SUPPORTED_MODEL_PREFIXES = ["llama2"]
++
++GATEWAY_DISABLED_MESSAGE = (
++    "The AI Gateway feature is disabled. Set MLFLOW_ENABLE_AI_GATEWAY=true to enable it."
++)
+diff --git a/mlflow/server/gateway_api.py b/mlflow/server/gateway_api.py
+index 2b984ef224494..e37ccf69bf9ac 100644
+--- a/mlflow/server/gateway_api.py
++++ b/mlflow/server/gateway_api.py
+@@ -15,11 +15,14 @@
+ from collections.abc import AsyncIterable, Callable
+ from typing import Any
+ 
+-from fastapi import APIRouter, HTTPException, Request
++from fastapi import APIRouter, Depends, HTTPException, Request
+ from fastapi.responses import StreamingResponse
+ 
+ from mlflow.entities.gateway_endpoint import GatewayModelLinkageType
+-from mlflow.environment_variables import MLFLOW_GATEWAY_MAX_DECOMPRESSED_REQUEST_SIZE
++from mlflow.environment_variables import (
++    MLFLOW_ENABLE_AI_GATEWAY,
++    MLFLOW_GATEWAY_MAX_DECOMPRESSED_REQUEST_SIZE,
++)
+ from mlflow.exceptions import MlflowException
+ from mlflow.gateway.budget import check_budget_limit, make_budget_on_complete
+ from mlflow.gateway.config import (
+@@ -39,7 +42,11 @@
+     _AuthConfigKey,
+     _OpenAICompatibleConfig,
+ )
+-from mlflow.gateway.constants import MLFLOW_GATEWAY_CALLER_HEADER, GatewayCaller
++from mlflow.gateway.constants import (
++    GATEWAY_DISABLED_MESSAGE,
++    MLFLOW_GATEWAY_CALLER_HEADER,
++    GatewayCaller,
++)
+ from mlflow.gateway.guardrail_utils import (
+     extract_auth_headers,
+     load_guardrails,
+@@ -89,7 +96,17 @@
+ 
+ _logger = logging.getLogger(__name__)
+ 
+-gateway_router = APIRouter(prefix="/gateway", tags=["gateway"])
++
++async def _ensure_gateway_enabled():
++    if not MLFLOW_ENABLE_AI_GATEWAY.get():
++        raise HTTPException(status_code=501, detail=GATEWAY_DISABLED_MESSAGE)
++
++
++gateway_router = APIRouter(
++    prefix="/gateway",
++    tags=["gateway"],
++    dependencies=[Depends(_ensure_gateway_enabled)],
++)
+ 
+ 
+ def _decompress_zstd(raw_body: bytes) -> bytes:
+diff --git a/mlflow/server/handlers.py b/mlflow/server/handlers.py
+index 1f33eae92e1e7..2efb6cd8235c2 100644
+--- a/mlflow/server/handlers.py
++++ b/mlflow/server/handlers.py
+@@ -78,6 +78,7 @@
+ from mlflow.environment_variables import (
+     MLFLOW_CREATE_MODEL_VERSION_SOURCE_VALIDATION_REGEX,
+     MLFLOW_DEPLOYMENTS_TARGET,
++    MLFLOW_ENABLE_AI_GATEWAY,
+     MLFLOW_ENABLE_WORKSPACES,
+     MLFLOW_PRESIGNED_DOWNLOAD_URL_TTL_SECONDS,
+ )
+@@ -93,6 +94,7 @@
+ )
+ from mlflow.gateway.budget import maybe_refresh_budget_policies
+ from mlflow.gateway.budget_tracker import get_budget_tracker
++from mlflow.gateway.constants import GATEWAY_DISABLED_MESSAGE
+ from mlflow.gateway.utils import is_valid_endpoint_name
+ from mlflow.genai.label_schemas.label_schemas import LabelSchemaType, _input_from_proto
+ from mlflow.genai.review_queues import ReviewItemType, ReviewQueueType, ReviewStatus
+@@ -107,6 +109,7 @@
+     INTERNAL_ERROR,
+     INVALID_PARAMETER_VALUE,
+     INVALID_STATE,
++    NOT_IMPLEMENTED,
+     RESOURCE_DOES_NOT_EXIST,
+ )
+ from mlflow.protos.issues_pb2 import (
+@@ -387,6 +390,7 @@
+     get_provider_config_response,
+ )
+ from mlflow.utils.server_info import (
++    SERVER_INFO_FEATURES_ENABLED,
+     SERVER_INFO_MULTIPART_DOWNLOADS_ENABLED,
+     SERVER_INFO_MULTIPART_UPLOADS_ENABLED,
+     SERVER_INFO_STORE_TYPE,
+@@ -1346,6 +1350,16 @@ def wrapper(*args, **kwargs):
+     return wrapper
+ 
+ 
++def _disable_if_gateway_disabled(func):
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if not MLFLOW_ENABLE_AI_GATEWAY.get():
++            raise MlflowException(GATEWAY_DISABLED_MESSAGE, NOT_IMPLEMENTED)
++        return func(*args, **kwargs)
++
++    return wrapper
++
++
+ def _disable_if_workspaces_disabled(func):
+     @wraps(func)
+     def wrapper(*args, **kwargs):
+@@ -5928,6 +5942,7 @@ def _upsert_online_scoring_config():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _create_gateway_secret():
+     request_message = _get_request_message(
+         CreateGatewaySecret(),
+@@ -5955,6 +5970,7 @@ def _create_gateway_secret():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _get_gateway_secret_info():
+     request_message = _get_request_message(
+         GetGatewaySecretInfo(),
+@@ -5970,6 +5986,7 @@ def _get_gateway_secret_info():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _update_gateway_secret():
+     request_message = _get_request_message(
+         UpdateGatewaySecret(),
+@@ -5997,6 +6014,7 @@ def _update_gateway_secret():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _delete_gateway_secret():
+     request_message = _get_request_message(
+         DeleteGatewaySecret(),
+@@ -6011,6 +6029,7 @@ def _delete_gateway_secret():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_gateway_secrets():
+     request_message = _get_request_message(
+         ListGatewaySecretInfos(),
+@@ -6053,6 +6072,7 @@ def _assert_linkage_type_specified(model_config, index: int | None = None) -> No
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _create_gateway_endpoint():
+     request_message = _get_request_message(
+         CreateGatewayEndpoint(),
+@@ -6113,6 +6133,7 @@ def _create_gateway_endpoint():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _get_gateway_endpoint():
+     request_message = _get_request_message(
+         GetGatewayEndpoint(),
+@@ -6132,6 +6153,7 @@ def _get_gateway_endpoint():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _update_gateway_endpoint():
+     request_message = _get_request_message(
+         UpdateGatewayEndpoint(),
+@@ -6197,6 +6219,7 @@ def _update_gateway_endpoint():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _delete_gateway_endpoint():
+     request_message = _get_request_message(
+         DeleteGatewayEndpoint(),
+@@ -6211,6 +6234,7 @@ def _delete_gateway_endpoint():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_gateway_endpoints():
+     request_message = _get_request_message(
+         ListGatewayEndpoints(),
+@@ -6233,6 +6257,7 @@ def _list_gateway_endpoints():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _create_gateway_model_definition():
+     request_message = _get_request_message(
+         CreateGatewayModelDefinition(),
+@@ -6258,6 +6283,7 @@ def _create_gateway_model_definition():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _get_gateway_model_definition():
+     request_message = _get_request_message(
+         GetGatewayModelDefinition(),
+@@ -6275,6 +6301,7 @@ def _get_gateway_model_definition():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_gateway_model_definitions():
+     request_message = _get_request_message(
+         ListGatewayModelDefinitions(),
+@@ -6294,6 +6321,7 @@ def _list_gateway_model_definitions():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _update_gateway_model_definition():
+     request_message = _get_request_message(
+         UpdateGatewayModelDefinition(),
+@@ -6321,6 +6349,7 @@ def _update_gateway_model_definition():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _delete_gateway_model_definition():
+     request_message = _get_request_message(
+         DeleteGatewayModelDefinition(),
+@@ -6340,6 +6369,7 @@ def _delete_gateway_model_definition():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _attach_model_to_gateway_endpoint():
+     request_message = _get_request_message(
+         AttachModelToGatewayEndpoint(),
+@@ -6366,6 +6396,7 @@ def _attach_model_to_gateway_endpoint():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _detach_model_from_gateway_endpoint():
+     request_message = _get_request_message(
+         DetachModelFromGatewayEndpoint(),
+@@ -6389,6 +6420,7 @@ def _detach_model_from_gateway_endpoint():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _create_gateway_endpoint_binding():
+     request_message = _get_request_message(
+         CreateGatewayEndpointBinding(),
+@@ -6412,6 +6444,7 @@ def _create_gateway_endpoint_binding():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _delete_gateway_endpoint_binding():
+     request_message = _get_request_message(
+         DeleteGatewayEndpointBinding(),
+@@ -6432,6 +6465,7 @@ def _delete_gateway_endpoint_binding():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_gateway_endpoint_bindings():
+     request_message = _get_request_message(
+         ListGatewayEndpointBindings(),
+@@ -6453,6 +6487,7 @@ def _list_gateway_endpoint_bindings():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _set_gateway_endpoint_tag():
+     request_message = _get_request_message(
+         SetGatewayEndpointTag(),
+@@ -6472,6 +6507,7 @@ def _set_gateway_endpoint_tag():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _delete_gateway_endpoint_tag():
+     request_message = _get_request_message(
+         DeleteGatewayEndpointTag(),
+@@ -6518,6 +6554,7 @@ def _validate_budget_target_scope(target_scope, target_value):
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _create_budget_policy():
+     request_message = _get_request_message(
+         CreateGatewayBudgetPolicy(),
+@@ -6582,6 +6619,7 @@ def _create_budget_policy():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _get_budget_policy():
+     request_message = _get_request_message(
+         GetGatewayBudgetPolicy(),
+@@ -6599,6 +6637,7 @@ def _get_budget_policy():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _update_budget_policy():
+     request_message = _get_request_message(
+         UpdateGatewayBudgetPolicy(),
+@@ -6685,6 +6724,7 @@ def _update_budget_policy():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _delete_budget_policy():
+     request_message = _get_request_message(
+         DeleteGatewayBudgetPolicy(),
+@@ -6702,6 +6742,7 @@ def _delete_budget_policy():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_budget_policies():
+     request_message = _get_request_message(
+         ListGatewayBudgetPolicies(),
+@@ -6737,6 +6778,7 @@ def _get_request_workspace_for_budget_windows():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_budget_windows():
+     _get_request_message(ListGatewayBudgetWindows())
+     workspace = _get_request_workspace_for_budget_windows()
+@@ -6766,6 +6808,7 @@ def _list_budget_windows():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _create_gateway_guardrail():
+     request_message = _get_request_message(
+         CreateGatewayGuardrail(),
+@@ -6808,6 +6851,7 @@ def _create_gateway_guardrail():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _get_gateway_guardrail():
+     request_message = _get_request_message(
+         GetGatewayGuardrail(),
+@@ -6823,6 +6867,7 @@ def _get_gateway_guardrail():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _delete_gateway_guardrail():
+     request_message = _get_request_message(
+         DeleteGatewayGuardrail(),
+@@ -6834,6 +6879,7 @@ def _delete_gateway_guardrail():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_gateway_guardrails():
+     request_message = _get_request_message(
+         ListGatewayGuardrails(),
+@@ -6855,6 +6901,7 @@ def _list_gateway_guardrails():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _add_guardrail_to_endpoint():
+     request_message = _get_request_message(
+         AddGuardrailToEndpoint(),
+@@ -6879,6 +6926,7 @@ def _add_guardrail_to_endpoint():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _remove_guardrail_from_endpoint():
+     request_message = _get_request_message(
+         RemoveGuardrailFromEndpoint(),
+@@ -6896,6 +6944,7 @@ def _remove_guardrail_from_endpoint():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_endpoint_guardrail_configs():
+     request_message = _get_request_message(
+         ListEndpointGuardrailConfigs(),
+@@ -6910,6 +6959,7 @@ def _list_endpoint_guardrail_configs():
+ 
+ 
+ @catch_mlflow_exception
++@_disable_if_gateway_disabled
+ def _update_endpoint_guardrail_config():
+     request_message = _get_request_message(
+         UpdateEndpointGuardrailConfig(),
+@@ -6978,11 +7028,15 @@ def _get_server_info():
+         SERVER_INFO_TRACE_ARCHIVAL_ENABLED: trace_archival_enabled,
+         SERVER_INFO_MULTIPART_UPLOADS_ENABLED: multipart_uploads_enabled,
+         SERVER_INFO_MULTIPART_DOWNLOADS_ENABLED: multipart_downloads_enabled,
++        SERVER_INFO_FEATURES_ENABLED: {
++            "gateway": MLFLOW_ENABLE_AI_GATEWAY.get(),
++        },
+     })
+ 
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_supported_providers():
+     try:
+         providers = get_all_providers()
+@@ -6993,6 +7047,7 @@ def _list_supported_providers():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _list_supported_models():
+     try:
+         provider_filter = request.args.get("provider")
+@@ -7004,6 +7059,7 @@ def _list_supported_models():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _get_provider_config():
+     try:
+         provider = request.args.get("provider")
+@@ -7015,6 +7071,7 @@ def _get_provider_config():
+ 
+ @catch_mlflow_exception
+ @_disable_if_artifacts_only
++@_disable_if_gateway_disabled
+ def _get_secrets_config():
+     using_default_passphrase = not os.environ.get(CRYPTO_KEK_PASSPHRASE_ENV_VAR)
+     return jsonify({
+diff --git a/mlflow/server/js/src/MlflowRouter.tsx b/mlflow/server/js/src/MlflowRouter.tsx
+index 3bac9f3169104..ea16a1f6e1f24 100644
+--- a/mlflow/server/js/src/MlflowRouter.tsx
++++ b/mlflow/server/js/src/MlflowRouter.tsx
+@@ -18,7 +18,11 @@ import {
+ import { useWorkflowType, WorkflowType, WorkflowTypeProvider } from './common/contexts/WorkflowTypeContext';
+ import { MlflowSidebarContext } from './common/contexts/MlflowSidebarContext';
+ import { shouldEnableWorkflowBasedNavigation } from './common/utils/FeatureUtils';
+-import { useWorkspacesEnabled } from './experiment-tracking/hooks/useServerInfo';
++import {
++  SERVER_FEATURE_KEYS,
++  useFeatureEnabled,
++  useWorkspacesEnabled,
++} from './experiment-tracking/hooks/useServerInfo';
+ 
+ // Route definition imports:
+ import { getRouteDefs as getExperimentTrackingRouteDefs } from './experiment-tracking/route-defs';
+@@ -229,6 +233,8 @@ const WorkspaceAwareRootRoute = ({ workspacesEnabled }: { workspacesEnabled: boo
+ export const MlflowRouter = () => {
+   // eslint-disable-next-line react-hooks/rules-of-hooks
+   const { workspacesEnabled, loading: featuresLoading } = useWorkspacesEnabled();
++  // eslint-disable-next-line react-hooks/rules-of-hooks
++  const gatewayEnabled = useFeatureEnabled(SERVER_FEATURE_KEYS.GATEWAY);
+ 
+   // Routes are the same regardless of workspace mode - workspace context comes from query param
+   // eslint-disable-next-line react-hooks/rules-of-hooks
+@@ -236,13 +242,13 @@ export const MlflowRouter = () => {
+     () => [
+       ...getExperimentTrackingRouteDefs(),
+       ...getModelRegistryRouteDefs(),
+-      ...getGatewayRouteDefs(),
++      ...(gatewayEnabled ? getGatewayRouteDefs() : []),
+       ...getMCPRegistryRouteDefs(),
+       ...getAccountRouteDefs(),
+       ...getAdminRouteDefs(),
+       ...getCommonRouteDefs(),
+     ],
+-    [],
++    [gatewayEnabled],
+   );
+ 
+   // eslint-disable-next-line react-hooks/rules-of-hooks
+diff --git a/mlflow/server/js/src/common/components/MlflowSidebar.tsx b/mlflow/server/js/src/common/components/MlflowSidebar.tsx
+index 8c265277a5f55..000c96bd4fec3 100644
+--- a/mlflow/server/js/src/common/components/MlflowSidebar.tsx
++++ b/mlflow/server/js/src/common/components/MlflowSidebar.tsx
+@@ -33,6 +33,7 @@ import { GatewayLabel, GatewayNewTag } from './GatewayNewTag';
+ import { FormattedMessage } from 'react-intl';
+ import { useWorkflowType, WorkflowType } from '../contexts/WorkflowTypeContext';
+ import { shouldEnableWorkflowBasedNavigation, shouldEnableWorkspaces } from '../utils/FeatureUtils';
++import { SERVER_FEATURE_KEYS, useFeatureEnabled } from '../../experiment-tracking/hooks/useServerInfo';
+ import { extractWorkspaceFromSearchParams, useActiveWorkspace } from '../../workspaces/utils/WorkspaceUtils';
+ import { SETTINGS_RETURN_TO_PARAM, SETTINGS_SECTION_GENERAL } from '../../settings/settingsSectionConstants';
+ import { getSidebarItemStyles, MlflowSidebarLink } from './MlflowSidebarLink';
+@@ -98,6 +99,7 @@ export function MlflowSidebar({
+   const [searchParams] = useSearchParams();
+   const { theme } = useDesignSystemTheme();
+   const enableWorkflowBasedNavigation = shouldEnableWorkflowBasedNavigation();
++  const gatewayEnabled = useFeatureEnabled(SERVER_FEATURE_KEYS.GATEWAY);
+   // WorkflowType context is always available, but UI is guarded by feature flag
+   const { workflowType, setWorkflowType } = useWorkflowType();
+   const { experimentId } = useParams();
+@@ -233,7 +235,7 @@ export function MlflowSidebar({
+             },
+           ]
+         : []),
+-      ...(shouldShowGenAIFeatures(enableWorkflowBasedNavigation, workflowType)
++      ...(shouldShowGenAIFeatures(enableWorkflowBasedNavigation, workflowType) && gatewayEnabled
+         ? [
+             {
+               key: 'gateway',
+@@ -263,6 +265,7 @@ export function MlflowSidebar({
+       workflowType,
+       clearLastSelectedExperiment,
+       enableWorkflowBasedNavigation,
++      gatewayEnabled,
+       location,
+       showSidebar,
+     ],
+diff --git a/mlflow/server/js/src/common/utils/FeatureUtils.ts b/mlflow/server/js/src/common/utils/FeatureUtils.ts
+index 49d32f5e113bf..c3ea69e92073d 100644
+--- a/mlflow/server/js/src/common/utils/FeatureUtils.ts
++++ b/mlflow/server/js/src/common/utils/FeatureUtils.ts
+@@ -3,7 +3,11 @@
+  * In the OSS version, you can override them in local development by manually changing the return values.
+  */
+ 
+-import { getWorkspacesEnabledSync } from '../../experiment-tracking/hooks/useServerInfo';
++import {
++  getFeatureEnabledSync,
++  getWorkspacesEnabledSync,
++  SERVER_FEATURE_KEYS,
++} from '../../experiment-tracking/hooks/useServerInfo';
+ 
+ // Returns the current workspaces enabled state from the cached server features.
+ // This is synchronous and returns the cached value (false if not yet loaded).
+@@ -49,13 +53,6 @@ export const shouldEnableGraphQLRunDetailsPage = () => true;
+ export const shouldEnableGraphQLSampledMetrics = () => false;
+ export const shouldEnableGraphQLModelVersionsForRunDetails = () => false;
+ 
+-/**
+- * Feature flag to enable Scorers UI tab in experiment page
+- */
+-export const enableScorersUI = () => {
+-  return true;
+-};
+-
+ /**
+  * Determines if the new GenAI experiment creation modal with table prefix onboarding is enabled.
+  * When enabled, the observatory shows a create modal with UC storage selection and table prefix,
+@@ -234,9 +231,11 @@ export const isScorerModelSelectionEnabled = () => {
+ 
+ /**
+  * Determines if issue detection feature is enabled in the traces table toolbar.
++ * Issue detection currently uses AI Gateway endpoints and stored secrets, so it is hidden with
++ * Gateway until those dependencies are decoupled.
+  */
+ export const shouldEnableIssueDetection = () => {
+-  return true;
++  return getFeatureEnabledSync(SERVER_FEATURE_KEYS.GATEWAY);
+ };
+ 
+ /**
+diff --git a/mlflow/server/js/src/experiment-tracking/hooks/useServerInfo.test.tsx b/mlflow/server/js/src/experiment-tracking/hooks/useServerInfo.test.tsx
+index 63c5d0b61dca2..1fc4eb8ebb0e2 100644
+--- a/mlflow/server/js/src/experiment-tracking/hooks/useServerInfo.test.tsx
++++ b/mlflow/server/js/src/experiment-tracking/hooks/useServerInfo.test.tsx
+@@ -8,10 +8,13 @@ import {
+   useIsFileStore,
+   useTraceArchivalEnabled,
+   useMultipartDownloadsEnabled,
++  useFeatureEnabled,
+   useWorkspacesEnabled,
++  getFeatureEnabledSync,
+   getWorkspacesEnabledSync,
+   getMultipartDownloadsEnabledSync,
+   resetServerInfoCache,
++  SERVER_FEATURE_KEYS,
+   ServerInfoProvider,
+ } from './useServerInfo';
+ import { QueryClient, QueryClientProvider } from '@mlflow/mlflow/src/common/utils/reactQueryHooks';
+@@ -256,6 +259,11 @@ const MultipartDownloadsTestComponent = () => {
+   return <span data-testid="multipart-downloads-enabled">{multipartDownloadsEnabled ? 'true' : 'false'}</span>;
+ };
+ 
++const GatewayFeatureTestComponent = ({ defaultValue = true }: { defaultValue?: boolean }) => {
++  const gatewayEnabled = useFeatureEnabled(SERVER_FEATURE_KEYS.GATEWAY, defaultValue);
++  return <span data-testid="gateway-enabled">{gatewayEnabled ? 'true' : 'false'}</span>;
++};
++
+ // Helper to create a fresh QueryClient for each test
+ const createTestQueryClient = () =>
+   new QueryClient({
+@@ -422,3 +430,65 @@ describe('getMultipartDownloadsEnabledSync', () => {
+     });
+   });
+ });
++
++describe('useFeatureEnabled and getFeatureEnabledSync', () => {
++  const server = setupServer();
++  let queryClient: QueryClient;
++
++  beforeEach(() => {
++    queryClient = createTestQueryClient();
++  });
++
++  afterEach(() => {
++    resetServerInfoCache();
++    queryClient.clear();
++  });
++
++  test('updates React consumers and the synchronous cache when server-info loads', async () => {
++    server.use(
++      rest.get('/ajax-api/3.0/mlflow/server-info', (_req, res, ctx) => {
++        return res(
++          ctx.json({
++            store_type: 'SqlStore',
++            workspaces_enabled: false,
++            trace_archival_enabled: false,
++            multipart_uploads_enabled: false,
++            multipart_downloads_enabled: false,
++            features_enabled: { gateway: false },
++          }),
++        );
++      }),
++    );
++
++    renderWithProviders(<GatewayFeatureTestComponent />, queryClient);
++
++    await waitFor(() => {
++      expect(screen.getByTestId('gateway-enabled').textContent).toBe('false');
++    });
++    expect(getFeatureEnabledSync(SERVER_FEATURE_KEYS.GATEWAY)).toBe(false);
++  });
++
++  test('uses the provided default when an older server omits the feature map', async () => {
++    server.use(
++      rest.get('/ajax-api/3.0/mlflow/server-info', (_req, res, ctx) => {
++        return res(
++          ctx.json({
++            store_type: 'SqlStore',
++            workspaces_enabled: false,
++            trace_archival_enabled: false,
++            multipart_uploads_enabled: false,
++            multipart_downloads_enabled: false,
++          }),
++        );
++      }),
++    );
++
++    renderWithProviders(<GatewayFeatureTestComponent defaultValue={false} />, queryClient);
++
++    await waitFor(() => {
++      expect(queryClient.getQueryState(['serverInfo'])?.status).toBe('success');
++    });
++    expect(screen.getByTestId('gateway-enabled').textContent).toBe('false');
++    expect(getFeatureEnabledSync(SERVER_FEATURE_KEYS.GATEWAY, false)).toBe(false);
++  });
++});
+diff --git a/mlflow/server/js/src/experiment-tracking/hooks/useServerInfo.tsx b/mlflow/server/js/src/experiment-tracking/hooks/useServerInfo.tsx
+index 7efe5cd497ad6..f7295b681efa5 100644
+--- a/mlflow/server/js/src/experiment-tracking/hooks/useServerInfo.tsx
++++ b/mlflow/server/js/src/experiment-tracking/hooks/useServerInfo.tsx
+@@ -12,8 +12,19 @@ interface ServerInfoResponse {
+   trace_archival_enabled: boolean;
+   multipart_uploads_enabled: boolean;
+   multipart_downloads_enabled: boolean;
++  features_enabled?: Record<FeatureKey, boolean>;
+ }
+ 
++/**
++ * Valid keys for the `features_enabled` map in server-info.
++ * Add new entries here when introducing a new runtime feature toggle.
++ */
++export const SERVER_FEATURE_KEYS = {
++  GATEWAY: 'gateway',
++} as const;
++
++export type FeatureKey = (typeof SERVER_FEATURE_KEYS)[keyof typeof SERVER_FEATURE_KEYS];
++
+ // Default response when the API call fails (e.g., older server without this endpoint)
+ const DEFAULT_RESPONSE: ServerInfoResponse = {
+   store_type: '',
+@@ -124,6 +135,24 @@ export const getMultipartDownloadsEnabledSync = (): boolean => {
+   return cachedData?.multipart_downloads_enabled ?? false;
+ };
+ 
++/**
++ * Subscribes React components to a server feature value and re-renders when server-info loads.
++ * Prefer this hook in React render paths.
++ */
++export const useFeatureEnabled = (key: FeatureKey, defaultValue = true): boolean => {
++  const { data } = useServerInfo();
++  return data?.features_enabled?.[key] ?? defaultValue;
++};
++
++/**
++ * Reads a server feature from the current cache without subscribing to updates.
++ * Use this accessor only where React hooks are unavailable.
++ */
++export const getFeatureEnabledSync = (key: FeatureKey, defaultValue = true): boolean => {
++  const cachedData = queryClientRef?.getQueryData<ServerInfoResponse>([SERVER_INFO_QUERY_KEY]);
++  return cachedData?.features_enabled?.[key] ?? defaultValue;
++};
++
+ // For testing purposes - allows resetting the cached state
+ export const resetServerInfoCache = (): void => {
+   queryClientRef?.removeQueries({ queryKey: [SERVER_INFO_QUERY_KEY] });
+diff --git a/mlflow/server/js/src/experiment-tracking/pages/experiment-page-tabs/side-nav/constants.test.tsx b/mlflow/server/js/src/experiment-tracking/pages/experiment-page-tabs/side-nav/constants.test.tsx
+new file mode 100644
+index 0000000000000..2e4d1a14c2184
+--- /dev/null
++++ b/mlflow/server/js/src/experiment-tracking/pages/experiment-page-tabs/side-nav/constants.test.tsx
+@@ -0,0 +1,43 @@
++import { expect, test } from '@jest/globals';
++import { renderHook, waitFor } from '@testing-library/react';
++import { rest } from 'msw';
++import type { ReactNode } from 'react';
++import { QueryClient, QueryClientProvider } from '@mlflow/mlflow/src/common/utils/reactQueryHooks';
++import { setupServer } from '../../../../common/utils/setup-msw';
++import { ExperimentKind, ExperimentPageTabName } from '../../../constants';
++import { useExperimentPageSideNavConfig } from './constants';
++
++const server = setupServer();
++
++test('updates Gateway-dependent navigation after server-info loads', async () => {
++  server.use(
++    rest.get('/ajax-api/3.0/mlflow/server-info', (_req, res, ctx) => {
++      return res(
++        ctx.json({
++          store_type: 'SqlStore',
++          workspaces_enabled: false,
++          trace_archival_enabled: false,
++          multipart_uploads_enabled: false,
++          multipart_downloads_enabled: false,
++          features_enabled: { gateway: false },
++        }),
++      );
++    }),
++  );
++  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
++  const wrapper = ({ children }: { children: ReactNode }) => (
++    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
++  );
++
++  const { result } = renderHook(
++    () => useExperimentPageSideNavConfig({ experimentKind: ExperimentKind.GENAI_DEVELOPMENT }),
++    { wrapper },
++  );
++
++  await waitFor(() => {
++    expect(
++      result.current['prompts-versions']?.some(({ tabName }) => tabName === ExperimentPageTabName.Playground),
++    ).toBe(false);
++  });
++  expect(result.current.evaluation?.some(({ tabName }) => tabName === ExperimentPageTabName.Judges)).toBe(false);
++});
+diff --git a/mlflow/server/js/src/experiment-tracking/pages/experiment-page-tabs/side-nav/constants.tsx b/mlflow/server/js/src/experiment-tracking/pages/experiment-page-tabs/side-nav/constants.tsx
+index 0d9c7824112e5..e096f316be9e9 100644
+--- a/mlflow/server/js/src/experiment-tracking/pages/experiment-page-tabs/side-nav/constants.tsx
++++ b/mlflow/server/js/src/experiment-tracking/pages/experiment-page-tabs/side-nav/constants.tsx
+@@ -15,7 +15,8 @@ import {
+   UserGroupIcon,
+ } from '@databricks/design-system';
+ import { FormattedMessage } from 'react-intl';
+-import { enableScorersUI, shouldEnableExperimentOverviewTab } from '@mlflow/mlflow/src/common/utils/FeatureUtils';
++import { shouldEnableExperimentOverviewTab } from '@mlflow/mlflow/src/common/utils/FeatureUtils';
++import { SERVER_FEATURE_KEYS, useFeatureEnabled } from '../../../hooks/useServerInfo';
+ 
+ export const FULL_WIDTH_CLASS_NAME = 'mlflow-experiment-page-side-nav-full';
+ export const COLLAPSED_CLASS_NAME = 'mlflow-experiment-page-side-nav-collapsed';
+@@ -206,6 +207,8 @@ export const useExperimentPageSideNavConfig = ({
+   hasTrainingRuns?: boolean;
+   hasV4Location?: boolean;
+ }): ExperimentPageSideNavConfig => {
++  const gatewayEnabled = useFeatureEnabled(SERVER_FEATURE_KEYS.GATEWAY);
++
+   if (
+     experimentKind === ExperimentKind.GENAI_DEVELOPMENT ||
+     experimentKind === ExperimentKind.GENAI_DEVELOPMENT_INFERRED
+@@ -244,7 +247,13 @@ export const useExperimentPageSideNavConfig = ({
+           : []),
+       ],
+       ...ExperimentPageSideNavGenAIConfig,
+-      evaluation: enableScorersUI()
++      'prompts-versions': gatewayEnabled
++        ? ExperimentPageSideNavGenAIConfig['prompts-versions']
++        : ExperimentPageSideNavGenAIConfig['prompts-versions'].filter(
++            ({ tabName }) => tabName !== ExperimentPageTabName.Playground,
++          ),
++      // Scorers remain coupled to Gateway until those dependencies are decoupled.
++      evaluation: gatewayEnabled
+         ? [
+             {
+               label: (
+diff --git a/mlflow/server/js/src/experiment-tracking/pages/experiment-scorers/ExperimentScorersPage.tsx b/mlflow/server/js/src/experiment-tracking/pages/experiment-scorers/ExperimentScorersPage.tsx
+index f0cdbfb10b4ce..e6c9bcd5aa632 100644
+--- a/mlflow/server/js/src/experiment-tracking/pages/experiment-scorers/ExperimentScorersPage.tsx
++++ b/mlflow/server/js/src/experiment-tracking/pages/experiment-scorers/ExperimentScorersPage.tsx
+@@ -4,8 +4,8 @@ import { FormattedMessage, useIntl } from 'react-intl';
+ import { ErrorBoundary } from 'react-error-boundary';
+ import ExperimentScorersContentContainer from './ExperimentScorersContentContainer';
+ import { useParams } from '../../../common/utils/RoutingUtils';
+-import { enableScorersUI } from '../../../common/utils/FeatureUtils';
+ import { isExperimentEvalResultsMonitoringUIEnabled } from '../../../common/utils/FeatureUtils';
++import { SERVER_FEATURE_KEYS, useFeatureEnabled } from '../../hooks/useServerInfo';
+ import { usePrefetchTraces } from './useEvaluateTraces';
+ import { DEFAULT_TRACE_COUNT } from './constants';
+ import { useSqlWarehouseContextSafe } from '../experiment-page-tabs/SqlWarehouseContext';
+@@ -56,7 +56,7 @@ const ExperimentScorersPage: React.FC<ExperimentScorersPageProps> = () => {
+   const { theme } = useDesignSystemTheme();
+   const intl = useIntl();
+   const { experimentId } = useParams();
+-  const isFeatureEnabled = enableScorersUI();
++  const isFeatureEnabled = useFeatureEnabled(SERVER_FEATURE_KEYS.GATEWAY);
+ 
+   const { warehouseId: selectedWarehouseId, traceSearchLocations = [] } = useSqlWarehouseContextSafe() ?? {};
+ 
+diff --git a/mlflow/server/js/src/home/components/features/FeaturesSection.tsx b/mlflow/server/js/src/home/components/features/FeaturesSection.tsx
+index 9160e3437b748..68eccc818ef53 100644
+--- a/mlflow/server/js/src/home/components/features/FeaturesSection.tsx
++++ b/mlflow/server/js/src/home/components/features/FeaturesSection.tsx
+@@ -4,12 +4,14 @@ import { featureDefinitions } from './feature-definitions';
+ import { LaunchDemoCard } from './LaunchDemoCard';
+ import { FeatureCard } from './FeatureCard';
+ import { useLocalStorage } from '@databricks/web-shared/hooks';
++import { SERVER_FEATURE_KEYS, useFeatureEnabled } from '../../../experiment-tracking/hooks/useServerInfo';
+ 
+ const COLLAPSED_KEY = 'mlflow.home.getting-started.collapsed';
+ const COLLAPSED_KEY_VERSION = 1;
+ 
+ export const FeaturesSection = () => {
+   const { theme } = useDesignSystemTheme();
++  const gatewayEnabled = useFeatureEnabled(SERVER_FEATURE_KEYS.GATEWAY);
+ 
+   const [isCollapsed, setIsCollapsed] = useLocalStorage({
+     key: COLLAPSED_KEY,
+@@ -60,9 +62,11 @@ export const FeaturesSection = () => {
+               },
+             }}
+           >
+-            {featureDefinitions.map((feature) => (
+-              <FeatureCard key={feature.id} feature={feature} componentId={feature.componentId} />
+-            ))}
++            {featureDefinitions
++              .filter((feature) => feature.id !== 'ai-gateway' || gatewayEnabled)
++              .map((feature) => (
++                <FeatureCard key={feature.id} feature={feature} componentId={feature.componentId} />
++              ))}
+           </div>
+         </div>
+       )}
+diff --git a/mlflow/utils/server_info.py b/mlflow/utils/server_info.py
+index c3054840f3405..daaa03b32f7c5 100644
+--- a/mlflow/utils/server_info.py
++++ b/mlflow/utils/server_info.py
+@@ -16,6 +16,7 @@
+ SERVER_INFO_TRACE_ARCHIVAL_ENABLED = "trace_archival_enabled"
+ SERVER_INFO_MULTIPART_UPLOADS_ENABLED = "multipart_uploads_enabled"
+ SERVER_INFO_MULTIPART_DOWNLOADS_ENABLED = "multipart_downloads_enabled"
++SERVER_INFO_FEATURES_ENABLED = "features_enabled"
+ 
+ _SERVER_INFO_CACHE_MAXSIZE = 16
+ _SERVER_INFO_CACHE_TTL_SECONDS = 60.0
+diff --git a/tests/gateway/test_gateway_app.py b/tests/gateway/test_gateway_app.py
+index f95324b83179b..6b4f35759c7d7 100644
+--- a/tests/gateway/test_gateway_app.py
++++ b/tests/gateway/test_gateway_app.py
+@@ -90,6 +90,17 @@ def test_health(client: TestClient):
+     assert response.json() == {"status": "OK"}
+ 
+ 
++def test_runtime_feature_toggle_does_not_disable_legacy_standalone_app(
++    client: TestClient, monkeypatch
++):
++    monkeypatch.setenv("MLFLOW_ENABLE_AI_GATEWAY", "false")
++
++    response = client.get("/health")
++
++    assert response.status_code == 200
++    assert response.json() == {"status": "OK"}
++
++
+ def test_favicon(client: TestClient):
+     response = client.get("/favicon.ico")
+     assert response.status_code == 200
+diff --git a/tests/server/test_gateway_disable.py b/tests/server/test_gateway_disable.py
+new file mode 100644
+index 0000000000000..93e72490a9566
+--- /dev/null
++++ b/tests/server/test_gateway_disable.py
+@@ -0,0 +1,153 @@
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++
++from mlflow.gateway.constants import GATEWAY_DISABLED_MESSAGE
++from mlflow.server.gateway_api import gateway_router
++
++
++def test_gateway_endpoints_return_501_when_disabled(monkeypatch):
++    monkeypatch.setenv("MLFLOW_ENABLE_AI_GATEWAY", "false")
++
++    app = FastAPI()
++    app.include_router(gateway_router)
++    client = TestClient(app)
++
++    response = client.post(
++        "/gateway/test-endpoint/mlflow/invocations",
++        json={"messages": [{"role": "user", "content": "Hello"}]},
++    )
++    assert response.status_code == 501
++    assert response.json()["detail"] == GATEWAY_DISABLED_MESSAGE
++
++    response = client.post(
++        "/gateway/mlflow/v1/chat/completions",
++        json={"model": "test", "messages": [{"role": "user", "content": "Hello"}]},
++    )
++    assert response.status_code == 501
++    assert response.json()["detail"] == GATEWAY_DISABLED_MESSAGE
++
++    response = client.post(
++        "/gateway/openai/v1/chat/completions",
++        json={"model": "test", "messages": [{"role": "user", "content": "Hello"}]},
++    )
++    assert response.status_code == 501
++    assert response.json()["detail"] == GATEWAY_DISABLED_MESSAGE
++
++    response = client.post(
++        "/gateway/openai/v1/embeddings",
++        json={"model": "test", "input": "Hello"},
++    )
++    assert response.status_code == 501
++    assert response.json()["detail"] == GATEWAY_DISABLED_MESSAGE
++
++    response = client.post(
++        "/gateway/anthropic/v1/messages",
++        json={"model": "test", "messages": [{"role": "user", "content": "Hello"}]},
++    )
++    assert response.status_code == 501
++    assert response.json()["detail"] == GATEWAY_DISABLED_MESSAGE
++
++
++def test_gateway_endpoints_pass_through_when_enabled():
++    app = FastAPI()
++    app.include_router(gateway_router)
++    client = TestClient(app, raise_server_exceptions=False)
++
++    response = client.post(
++        "/gateway/test-endpoint/mlflow/invocations",
++        json={"messages": [{"role": "user", "content": "Hello"}]},
++    )
++    assert response.status_code != 501
++
++
++@pytest.mark.parametrize(
++    "handler_name",
++    [
++        "_create_gateway_secret",
++        "_get_gateway_secret_info",
++        "_update_gateway_secret",
++        "_delete_gateway_secret",
++        "_list_gateway_secrets",
++        "_create_gateway_endpoint",
++        "_get_gateway_endpoint",
++        "_update_gateway_endpoint",
++        "_delete_gateway_endpoint",
++        "_list_gateway_endpoints",
++        "_create_gateway_model_definition",
++        "_get_gateway_model_definition",
++        "_update_gateway_model_definition",
++        "_delete_gateway_model_definition",
++        "_list_gateway_model_definitions",
++        "_attach_model_to_gateway_endpoint",
++        "_detach_model_from_gateway_endpoint",
++        "_create_gateway_endpoint_binding",
++        "_delete_gateway_endpoint_binding",
++        "_list_gateway_endpoint_bindings",
++        "_set_gateway_endpoint_tag",
++        "_delete_gateway_endpoint_tag",
++        "_create_budget_policy",
++        "_get_budget_policy",
++        "_update_budget_policy",
++        "_delete_budget_policy",
++        "_list_budget_policies",
++        "_list_budget_windows",
++        "_create_gateway_guardrail",
++        "_get_gateway_guardrail",
++        "_delete_gateway_guardrail",
++        "_list_gateway_guardrails",
++        "_add_guardrail_to_endpoint",
++        "_remove_guardrail_from_endpoint",
++        "_list_endpoint_guardrail_configs",
++        "_update_endpoint_guardrail_config",
++        "_list_supported_providers",
++        "_list_supported_models",
++        "_get_provider_config",
++        "_get_secrets_config",
++    ],
++)
++def test_flask_gateway_handlers_return_501_when_disabled(monkeypatch, handler_name):
++    monkeypatch.setenv("MLFLOW_ENABLE_AI_GATEWAY", "false")
++
++    from flask import Flask
++
++    from mlflow.server import handlers
++
++    handler = getattr(handlers, handler_name)
++    flask_app = Flask(__name__)
++
++    with flask_app.app_context():
++        response = handler()
++        assert response.status_code == 501
++        assert response.get_json()["error_code"] == "NOT_IMPLEMENTED"
++        assert response.get_json()["message"] == GATEWAY_DISABLED_MESSAGE
++
++
++def test_server_info_includes_features_enabled(monkeypatch):
++    monkeypatch.setenv("MLFLOW_ENABLE_AI_GATEWAY", "false")
++
++    from flask import Flask
++
++    from mlflow.server.handlers import _get_server_info
++
++    flask_app = Flask(__name__)
++
++    with flask_app.app_context():
++        response = _get_server_info()
++        data = response.get_json()
++        assert "features_enabled" in data
++        assert data["features_enabled"]["gateway"] is False
++
++
++def test_server_info_gateway_enabled_by_default():
++    from flask import Flask
++
++    from mlflow.server.handlers import _get_server_info
++
++    flask_app = Flask(__name__)
++
++    with flask_app.app_context():
++        response = _get_server_info()
++        data = response.get_json()
++        assert "features_enabled" in data
++        assert data["features_enabled"]["gateway"] is True

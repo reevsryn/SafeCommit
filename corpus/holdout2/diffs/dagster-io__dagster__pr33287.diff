@@ -1,0 +1,1323 @@
+diff --git a/docs/docs/integrations/libraries/hightouch/index.md b/docs/docs/integrations/libraries/hightouch/index.md
+new file mode 100644
+index 0000000000000..e22e96754506e
+--- /dev/null
++++ b/docs/docs/integrations/libraries/hightouch/index.md
+@@ -0,0 +1,61 @@
++---
++title: Dagster & Hightouch
++sidebar_label: Hightouch
++description: Integrate with Hightouch to trigger and monitor syncs.
++tags: [dagster-supported, reverse-etl]
++source: https://github.com/dagster-io/dagster/tree/master/python_modules/libraries/dagster-hightouch
++pypi: https://pypi.org/project/dagster-hightouch/
++sidebar_custom_props:
++  logo: images/integrations/hightouch.svg
++partnerlink: https://hightouch.com
++canonicalUrl: '/integrations/libraries/hightouch'
++slug: '/integrations/libraries/hightouch'
++---
++
++The Hightouch integration allows data engineers to trigger and monitor syncs from their data warehouse to various SaaS destinations using the `ConfigurableHightouchResource` and the modern `HightouchSyncComponent`.
++
++## Installation
++
++<PackageInstallInstructions packageName="dagster-hightouch" />
++
++## Examples
++
++### Using the Hightouch Sync Component (Modern)
++
++The `HightouchSyncComponent` allows you to define Hightouch syncs as Dagster assets declaratively. This is the recommended approach for modern Dagster projects.
++
++```python
++import dagster as dg
++from dagster_hightouch import HightouchSyncComponent
++
++# Components are typically loaded from YAML, but can be used in Python definitions
++hightouch_sync = HightouchSyncComponent(
++    sync_id="my-hightouch-sync-id",
++    asset={"key": ["hightouch", "marketing_sync"]}
++)
++
++defs = dg.Definitions(
++    assets=[hightouch_sync.build_defs(None)]
++)
++```
++
++For job-based workflows, the `ConfigurableHightouchResource` can be used with the `hightouch_sync_op` to trigger syncs within a job.
++
++```python
++import dagster as dg
++from dagster_hightouch import ConfigurableHightouchResource, hightouch_sync_op
++
++@dg.job(
++    resource_defs={
++        "hightouch": ConfigurableHightouchResource(
++            api_key=dg.EnvVar("HIGHTOUCH_API_KEY")
++        )
++    }
++)
++def sync_job():
++    hightouch_sync_op()
++```
++
++## About Hightouch
++
++[Hightouch](https://hightouch.com/) is a leading Reverse ETL platform that syncs data from your data warehouse to the operational tools your business teams use every day, such as Salesforce, HubSpot, and Marketo. By integrating Hightouch with Dagster, you can ensure that your downstream SaaS tools are always populated with the freshest data from your pipelines.
+diff --git a/docs/docs/integrations/libraries/hightouch/reference.md b/docs/docs/integrations/libraries/hightouch/reference.md
+new file mode 100644
+index 0000000000000..e65d82afa1740
+--- /dev/null
++++ b/docs/docs/integrations/libraries/hightouch/reference.md
+@@ -0,0 +1,39 @@
++---
++title: dagster-hightouch integration reference
++description: API reference for the Dagster Hightouch integration.
++sidebar_position: 500
++---
++
++# dagster-hightouch API reference
++
++## Components
++
++The `HightouchSyncComponent` is the modern, declarative way to define Hightouch syncs as Dagster assets.
++
++::: ddoc:dagster_hightouch.components.HightouchSyncComponent
++
++## Resources
++
++### Configurable Resource (Modern)
++
++This is the recommended resource for modern Dagster projects using pythonic configuration.
++
++::: ddoc:dagster_hightouch.resources.ConfigurableHightouchResource
++
++### Legacy Resource
++
++Included for backward compatibility with older Dagster versions.
++
++::: ddoc:dagster_hightouch.resources.HightouchResource
++
++## Ops
++
++The `hightouch_sync_op` allows triggering Hightouch syncs within a Dagster job.
++
++::: ddoc:dagster_hightouch.ops.hightouch_sync_op
++
++## Types
++
++These types define the output schema and metadata returned by Hightouch sync operations.
++
++::: ddoc:dagster_hightouch.types.HightouchOutput
+diff --git a/python_modules/libraries/dagster-hightouch/LICENSE b/python_modules/libraries/dagster-hightouch/LICENSE
+new file mode 100644
+index 0000000000000..82b6b68d6ad4d
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/LICENSE
+@@ -0,0 +1,201 @@
++                                 Apache License
++                           Version 2.0, January 2004
++                        http://www.apache.org/licenses/
++
++   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
++
++   1. Definitions.
++
++      "License" shall mean the terms and conditions for use, reproduction,
++      and distribution as defined by Sections 1 through 9 of this document.
++
++      "Licensor" shall mean the copyright owner or entity authorized by
++      the copyright owner that is granting the License.
++
++      "Legal Entity" shall mean the union of the acting entity and all
++      other entities that control, are controlled by, or are under common
++      control with that entity. For the purposes of this definition,
++      "control" means (i) the power, direct or indirect, to cause the
++      direction or management of such entity, whether by contract or
++      otherwise, or (ii) ownership of fifty percent (50%) or more of the
++      outstanding shares, or (iii) beneficial ownership of such entity.
++
++      "You" (or "Your") shall mean an individual or Legal Entity
++      exercising permissions granted by this License.
++
++      "Source" form shall mean the preferred form for making modifications,
++      including but not limited to software source code, documentation
++      source, and configuration files.
++
++      "Object" form shall mean any form resulting from mechanical
++      transformation or translation of a Source form, including but
++      not limited to compiled object code, generated documentation,
++      and conversions to other media types.
++
++      "Work" shall mean the work of authorship, whether in Source or
++      Object form, made available under the License, as indicated by a
++      copyright notice that is included in or attached to the work
++      (an example is provided in the Appendix below).
++
++      "Derivative Works" shall mean any work, whether in Source or Object
++      form, that is based on (or derived from) the Work and for which the
++      editorial revisions, annotations, elaborations, or other modifications
++      represent, as a whole, an original work of authorship. For the purposes
++      of this License, Derivative Works shall not include works that remain
++      separable from, or merely link (or bind by name) to the interfaces of,
++      the Work and Derivative Works thereof.
++
++      "Contribution" shall mean any work of authorship, including
++      the original version of the Work and any modifications or additions
++      to that Work or Derivative Works thereof, that is intentionally
++      submitted to Licensor for inclusion in the Work by the copyright owner
++      or by an individual or Legal Entity authorized to submit on behalf of
++      the copyright owner. For the purposes of this definition, "submitted"
++      means any form of electronic, verbal, or written communication sent
++      to the Licensor or its representatives, including but not limited to
++      communication on electronic mailing lists, source code control systems,
++      and issue tracking systems that are managed by, or on behalf of, the
++      Licensor for the purpose of discussing and improving the Work, but
++      excluding communication that is conspicuously marked or otherwise
++      designated in writing by the copyright owner as "Not a Contribution."
++
++      "Contributor" shall mean Licensor and any individual or Legal Entity
++      on behalf of whom a Contribution has been received by Licensor and
++      subsequently incorporated within the Work.
++
++   2. Grant of Copyright License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      copyright license to reproduce, prepare Derivative Works of,
++      publicly display, publicly perform, sublicense, and distribute the
++      Work and such Derivative Works in Source or Object form.
++
++   3. Grant of Patent License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      (except as stated in this section) patent license to make, have made,
++      use, offer to sell, sell, import, and otherwise transfer the Work,
++      where such license applies only to those patent claims licensable
++      by such Contributor that are necessarily infringed by their
++      Contribution(s) alone or by combination of their Contribution(s)
++      with the Work to which such Contribution(s) was submitted. If You
++      institute patent litigation against any entity (including a
++      cross-claim or counterclaim in a lawsuit) alleging that the Work
++      or a Contribution incorporated within the Work constitutes direct
++      or contributory patent infringement, then any patent licenses
++      granted to You under this License for that Work shall terminate
++      as of the date such litigation is filed.
++
++   4. Redistribution. You may reproduce and distribute copies of the
++      Work or Derivative Works thereof in any medium, with or without
++      modifications, and in Source or Object form, provided that You
++      meet the following conditions:
++
++      (a) You must give any other recipients of the Work or
++          Derivative Works a copy of this License; and
++
++      (b) You must cause any modified files to carry prominent notices
++          stating that You changed the files; and
++
++      (c) You must retain, in the Source form of any Derivative Works
++          that You distribute, all copyright, patent, trademark, and
++          attribution notices from the Source form of the Work,
++          excluding those notices that do not pertain to any part of
++          the Derivative Works; and
++
++      (d) If the Work includes a "NOTICE" text file as part of its
++          distribution, then any Derivative Works that You distribute must
++          include a readable copy of the attribution notices contained
++          within such NOTICE file, excluding those notices that do not
++          pertain to any part of the Derivative Works, in at least one
++          of the following places: within a NOTICE text file distributed
++          as part of the Derivative Works; within the Source form or
++          documentation, if provided along with the Derivative Works; or,
++          within a display generated by the Derivative Works, if and
++          wherever such third-party notices normally appear. The contents
++          of the NOTICE file are for informational purposes only and
++          do not modify the License. You may add Your own attribution
++          notices within Derivative Works that You distribute, alongside
++          or as an addendum to the NOTICE text from the Work, provided
++          that such additional attribution notices cannot be construed
++          as modifying the License.
++
++      You may add Your own copyright statement to Your modifications and
++      may provide additional or different license terms and conditions
++      for use, reproduction, or distribution of Your modifications, or
++      for any such Derivative Works as a whole, provided Your use,
++      reproduction, and distribution of the Work otherwise complies with
++      the conditions stated in this License.
++
++   5. Submission of Contributions. Unless You explicitly state otherwise,
++      any Contribution intentionally submitted for inclusion in the Work
++      by You to the Licensor shall be under the terms and conditions of
++      this License, without any additional terms or conditions.
++      Notwithstanding the above, nothing herein shall supersede or modify
++      the terms of any separate license agreement you may have executed
++      with Licensor regarding such Contributions.
++
++   6. Trademarks. This License does not grant permission to use the trade
++      names, trademarks, service marks, or product names of the Licensor,
++      except as required for reasonable and customary use in describing the
++      origin of the Work and reproducing the content of the NOTICE file.
++
++   7. Disclaimer of Warranty. Unless required by applicable law or
++      agreed to in writing, Licensor provides the Work (and each
++      Contributor provides its Contributions) on an "AS IS" BASIS,
++      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++      implied, including, without limitation, any warranties or conditions
++      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
++      PARTICULAR PURPOSE. You are solely responsible for determining the
++      appropriateness of using or redistributing the Work and assume any
++      risks associated with Your exercise of permissions under this License.
++
++   8. Limitation of Liability. In no event and under no legal theory,
++      whether in tort (including negligence), contract, or otherwise,
++      unless required by applicable law (such as deliberate and grossly
++      negligent acts) or agreed to in writing, shall any Contributor be
++      liable to You for damages, including any direct, indirect, special,
++      incidental, or consequential damages of any character arising as a
++      result of this License or out of the use or inability to use the
++      Work (including but not limited to damages for loss of goodwill,
++      work stoppage, computer failure or malfunction, or any and all
++      other commercial damages or losses), even if such Contributor
++      has been advised of the possibility of such damages.
++
++   9. Accepting Warranty or Additional Liability. While redistributing
++      the Work or Derivative Works thereof, You may choose to offer,
++      and charge a fee for, acceptance of support, warranty, indemnity,
++      or other liability obligations and/or rights consistent with this
++      License. However, in accepting such obligations, You may act only
++      on Your own behalf and on Your sole responsibility, not on behalf
++      of any other Contributor, and only if You agree to indemnify,
++      defend, and hold each Contributor harmless for any liability
++      incurred by, or claims asserted against, such Contributor by reason
++      of your accepting any such warranty or additional liability.
++
++   END OF TERMS AND CONDITIONS
++
++   APPENDIX: How to apply the Apache License to your work.
++
++      To apply the Apache License to your work, attach the following
++      boilerplate notice, with the fields enclosed by brackets "{}"
++      replaced with your own identifying information. (Don't include
++      the brackets!)  The text should be enclosed in the appropriate
++      comment syntax for the file format. We also recommend that a
++      file or class name and description of purpose be included on the
++      same "printed page" as the copyright notice for easier
++      identification within third-party archives.
++
++   Copyright 2025 Dagster Labs, Inc.
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++       http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
+diff --git a/python_modules/libraries/dagster-hightouch/MANIFEST.in b/python_modules/libraries/dagster-hightouch/MANIFEST.in
+new file mode 100644
+index 0000000000000..c036ee2e42db9
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/MANIFEST.in
+@@ -0,0 +1,5 @@
++include README.md
++include LICENSE
++include dagster_hightouch/py.typed
++exclude Makefile
++prune dagster_hightouch_tests
+diff --git a/python_modules/libraries/dagster-hightouch/Makefile b/python_modules/libraries/dagster-hightouch/Makefile
+new file mode 100644
+index 0000000000000..93a527b73d1e3
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/Makefile
+@@ -0,0 +1,14 @@
++install:
++	uv sync
++build:
++	uv build
++
++test:
++	uv run pytest
++
++ruff:
++	uv run ruff check --fix
++	uv run ruff format
++
++check:
++	uv run pyright
+diff --git a/python_modules/libraries/dagster-hightouch/README.md b/python_modules/libraries/dagster-hightouch/README.md
+new file mode 100644
+index 0000000000000..eae3ddb4ea855
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/README.md
+@@ -0,0 +1,77 @@
++## dagster-hightouch
++
++A Dagster library for triggering syncs in Hightouch.
++
++### Installation
++
++To install the library, use pip alongside your existing Dagster environment.
++
++```bash
++pip install dagster-hightouch
++```
++
++### Configuration
++
++First, you'll need to specify your [Hightouch API](https://hightouch.com/docs/developer-tools/api-guide/) key as a resource.
++
++```python
++# resources.py
++from dagster_hightouch.resources import ht_resource as hightouch_resource
++
++ht_resource = hightouch_resource.configured(
++    {"api_key": "555555-4444-3333-2222-1111111111"},
++)
++```
++
++### Ops
++
++The `hightouch_sync_op` will call the Hightouch API to trigger
++a sync and monitor it until it completes.
++
++```python
++from dagster import ScheduleDefinition, get_dagster_logger, job
++from dagster_hightouch.ops import hightouch_sync_op
++from .resources import ht_resource
++
++# Sync IDs are set as constants. You can also use
++# the sync slug, read the documentation for other
++# options.
++
++HT_WS = "23620"
++HT_ORG = "39619"
++
++# We define two configured sync ops
++run_ht_sync_workspaces = hightouch_sync_op.configured(
++    {"sync_id": HT_WS}, name="hightouch_sfdc_workspaces"
++)
++run_ht_sync_orgs = hightouch_sync_op.configured(
++    {"sync_id": HT_ORG}, name="hightouch_sfdc_organizations"
++)
++
++# And create a job with the defined resources, specifying the dependencies.
++@job(
++    resource_defs={
++        "hightouch": ht_resource,
++    }
++)
++def ht_sfdc_job():
++
++    ht_orgs = run_ht_sync_orgs(start_after=ht_contacts)
++    run_ht_sync_workspaces(start_after=ht_orgs)
++
++# And we schedule it to run every 30 mins.
++every_30_schedule = ScheduleDefinition(job=ht_sfdc_job, cron_schedule="*/30 * * * *")
++```
++
++### Components (Modern)
++
++You can now use Hightouch as a Dagster Component. This allows you to define syncs in YAML.
++
++```yaml
++# code/component.yaml
++type: HightouchSyncComponent
++attributes:
++  sync_id: "12345"
++  asset:
++    key: ["hightouch", "my_sync_asset"]
++```
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch/__init__.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch/__init__.py
+new file mode 100644
+index 0000000000000..98f05745f5756
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch/__init__.py
+@@ -0,0 +1,17 @@
++from dagster._core.libraries import DagsterLibraryRegistry
++from .resources import ConfigurableHightouchResource, HightouchResource
++from .ops import hightouch_sync_op
++from .component import HightouchSyncComponent
++
++__version__ = "0.1.8"
++
++DagsterLibraryRegistry.register(
++    "dagster-hightouch", __version__, is_dagster_package=True
++)
++
++__all__ = [
++    "ConfigurableHightouchResource",
++    "HightouchResource",
++    "hightouch_sync_op",
++    "HightouchSyncComponent",
++]
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch/component.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch/component.py
+new file mode 100644
+index 0000000000000..c66168e5e8648
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch/component.py
+@@ -0,0 +1,96 @@
++import os
++from collections.abc import Mapping
++from typing import Any
++
++import dagster as dg
++from dagster.components import (
++    Component,
++    Model,
++    Resolvable,
++    ResolvedAssetSpec,
++    ComponentLoadContext,
++)
++from pydantic import Field
++
++from .resources import ConfigurableHightouchResource
++
++
++class HightouchSyncComponent(Component, Resolvable, Model):
++    """
++    Represents a Hightouch sync as a Dagster asset.
++
++    This component allows you to trigger a Hightouch sync and monitor its completion
++    as part of your Dagster asset graph. When materialized, it calls the Hightouch API,
++    polls for completion, and reports metadata such as rows processed and sync status.
++
++    Attributes:
++        sync_id (str): The ID of the Hightouch sync. Can be a literal string or
++            an environment variable (e.g., "$HIGHTOUCH_SYNC_ID").
++        asset (ResolvedAssetSpec): The specification of the asset that this
++            sync produces.
++
++    Example:
++        .. code-block:: yaml
++
++            type: HightouchSyncComponent
++            attributes:
++              sync_id: "12345"
++              asset:
++                key: ["marketing", "salesforce_sync"]
++    """
++
++    asset: ResolvedAssetSpec
++    sync_id: str = Field(
++        description="The ID of the Hightouch sync, or an environment variable starting with $"
++    )
++
++    @classmethod
++    def get_additional_scope(cls) -> Mapping[str, Any]:
++        return {}
++
++    def build_defs(self, context: ComponentLoadContext) -> dg.Definitions:
++        # Create a unique function name based on the asset key to avoid conflicts when multiple Hightouch components are loaded
++        actual_sync_id = self.sync_id
++        if actual_sync_id.startswith("$"):
++            env_var_name = actual_sync_id[1:]
++            actual_sync_id = os.getenv(env_var_name)
++            if not actual_sync_id:
++                raise ValueError(f"Environment variable '{env_var_name}' not found.")
++        asset_key_str = "_".join(self.asset.key.path)
++        function_name = f"hightouch_sync_{asset_key_str}"
++
++        @dg.multi_asset(
++            name=function_name,
++            specs=[self.asset],
++        )
++        def _assets(hightouch: ConfigurableHightouchResource):
++            result = hightouch.sync_and_poll(actual_sync_id)
++
++            # Summing all failed rows (adds, changes, removes) for accurate reporting
++            failed_rows = result.sync_run_details.get("failedRows", {})
++            total_failed = sum(
++                failed_rows.get(k, 0)
++                for k in ["addedCount", "changedCount", "removedCount"]
++            )
++
++            yield dg.MaterializeResult(
++                asset_key=self.asset.key,
++                metadata={
++                    "sync_details": dg.MetadataValue.json(result.sync_details),
++                    "sync_run_details": dg.MetadataValue.json(result.sync_run_details),
++                    "total_failed_rows": total_failed,
++                    "failed_adds": failed_rows.get("addedCount", 0),
++                    "failed_changes": failed_rows.get("changedCount", 0),
++                    "failed_removes": failed_rows.get("removedCount", 0),
++                    "destination_details": dg.MetadataValue.json(
++                        result.destination_details
++                    ),
++                    "query_size": result.sync_run_details.get("querySize"),
++                    "completion_ratio": result.sync_run_details.get("completionRatio"),
++                    "failed_rows": result.sync_run_details.get("failedRows", {}).get(
++                        "addedCount", 0
++                    ),
++                },
++            )
++
++        return dg.Definitions(assets=[_assets])
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch/ops.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch/ops.py
+new file mode 100644
+index 0000000000000..e712a845dd511
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch/ops.py
+@@ -0,0 +1,78 @@
++from dagster import AssetMaterialization, Field, In, Noneable, Nothing, Out, Output, op
++from dagster_hightouch.utils import (
++    generate_metadata_from_parsed_run,
++    parse_sync_run_details,
++)
++
++from .resources import DEFAULT_POLL_INTERVAL, HightouchOutput
++
++
++@op(
++    required_resource_keys={"hightouch"},
++    ins={"start_after": In(Nothing)},
++    out=Out(
++        HightouchOutput,
++        description="Parsed json dictionary representing the details of the Hightouch "
++        "sync after the sync successfully completes.",
++    ),
++    config_schema={
++        "sync_id": Field(
++            str, is_required=True, description="The Sync ID that this op will trigger."
++        ),
++        "poll_interval": Field(
++            float,
++            default_value=DEFAULT_POLL_INTERVAL,
++            description="The time (in seconds) that will be waited between successive "
++            "polls.",
++        ),
++        "fail_on_warning": Field(
++            bool,
++            default_value=False,
++            description="Whether to consider warnings a failure or success for an op.",
++        ),
++        "poll_timeout": Field(
++            Noneable(float),
++            default_value=None,
++            description="The maximum time that will waited before this operation is "
++            "timed out. By default, this will never time out.",
++        ),
++    },
++    tags={"kind": "hightouch"},
++)
++def hightouch_sync_op(context):
++    """
++    Executes a Hightouch sync for a given ``sync_id``, and polls until that sync
++    completes, raising an error if it is unsuccessful. It outputs a HightouchOutput
++    which contains the details of the Hightouch connector after the sync run
++    successfully completes.
++    """
++
++    hightouch_output: HightouchOutput = context.resources.hightouch.sync_and_poll(
++        sync_id=context.op_config["sync_id"],
++        fail_on_warning=context.op_config["fail_on_warning"],
++        poll_interval=context.op_config["poll_interval"],
++        poll_timeout=context.op_config["poll_timeout"],
++    )
++    destination_type = hightouch_output.destination_details.get("type")
++    destination_slug = hightouch_output.destination_details.get("slug")
++    sync_object = hightouch_output.sync_details.get("configuration", dict()).get(
++        "object"
++    )
++    if sync_object:
++        asset_name = ["hightouch", destination_type, destination_slug, sync_object]
++    else:
++        # Not all sync configs have a sync configuration object. Until we have a
++        # generic way of fetching more details about the sync config, we omit them
++        # for now.
++        asset_name = ["hightouch", destination_type, destination_slug]
++
++    context.log_event(
++        AssetMaterialization(
++            asset_name,
++            description="Hightouch Sync Run Details",
++            metadata=generate_metadata_from_parsed_run(
++                parse_sync_run_details(hightouch_output.sync_run_details)
++            ),
++        )
++    )
++    yield Output(hightouch_output)
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch/py.typed b/python_modules/libraries/dagster-hightouch/dagster_hightouch/py.typed
+new file mode 100644
+index 0000000000000..e69de29bb2d1d
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch/resources.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch/resources.py
+new file mode 100644
+index 0000000000000..362ab00a28591
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch/resources.py
+@@ -0,0 +1,335 @@
++import datetime
++import logging
++import time
++from typing import Any, Optional
++from urllib.parse import urljoin
++
++import requests
++
++from dagster import (
++    Failure,
++    Field,
++    StringSource,
++    get_dagster_logger,
++    resource,
++    ConfigurableResource,
++)
++
++import dagster_hightouch
++from . import utils
++from .types import HightouchOutput
++
++HIGHTOUCH_API_BASE = "https://api.hightouch.io/api/v1/"
++DEFAULT_POLL_INTERVAL = 3
++TERMINAL_STATUSES = ["cancelled", "failed", "success", "warning", "interrupted"]
++PENDING_STATUSES = [
++    "queued",
++    "querying",
++    "processing",
++    "reporting",
++    "pending",
++]
++SUCCESS = "success"
++WARNING = "warning"
++
++
++class HightouchResource:
++    """
++    Client for the Hightouch REST API.
++
++    This class provides methods to interface with Hightouch endpoints,
++    primarily for triggering syncs and polling for their status.
++
++    Note: For modern Dagster pipelines, use :class:`ConfigurableHightouchResource`.
++    """
++
++    def __init__(
++        self,
++        api_key: str,
++        log: logging.Logger = get_dagster_logger(),
++        request_max_retries: int = 3,
++        request_retry_delay: float = 0.25,
++    ):
++        self._log = log
++        self._api_key = api_key
++        self._request_max_retries = request_max_retries
++        self._request_retry_delay = request_retry_delay
++
++    @property
++    def api_base_url(self) -> str:
++        return HIGHTOUCH_API_BASE
++
++    def make_request(
++        self, method: str, endpoint: str, params: dict[str, Any] | None = None
++    ):
++        """Creates and sends a request to the desired Hightouch API endpoint
++
++        Args:
++            method (str): The http method use for this request (e.g. "GET", "POST").
++            endpoint (str): The Hightouch API endpoint to send this request to.
++            params (Optional(dict): Query parameters to pass to the API endpoint
++
++        Returns:
++            Dict[str, Any]: Parsed json data from the response to this request
++        """
++
++        user_agent = f"HightouchDagsterOp/{dagster_hightouch.__version__}"
++        headers = {"Authorization": f"Bearer {self._api_key}", "User-Agent": user_agent}
++
++        num_retries = 0
++        while True:
++            try:
++                response = requests.request(
++                    method=method,
++                    url=urljoin(self.api_base_url, endpoint),
++                    headers=headers,
++                    params=params,
++                )
++                response.raise_for_status()
++                resp_dict = response.json()
++                return resp_dict["data"] if "data" in resp_dict else resp_dict
++            except requests.RequestException as e:
++                self._log.error("Request to Hightouch API failed: %s", e)
++                if num_retries == self._request_max_retries:
++                    break
++                num_retries += 1
++                time.sleep(self._request_retry_delay)
++
++        raise Failure("Exceeded max number of retries.")
++
++    def get_sync_run_details(
++        self, sync_id: str, sync_request_id: str
++    ) -> list[dict[str, Any]]:
++        """Get details about a given sync run from the Hightouch API.
++
++        Args:
++            sync_id (str): The Hightouch Sync ID.
++            sync_request_id (str): The Hightouch Sync Request ID.
++
++        Returns:
++            Dict[str, Any]: Parsed json data from the response
++        """
++        params = {"runId": sync_request_id}
++        return self.make_request(
++            method="GET", endpoint=f"syncs/{sync_id}/runs", params=params
++        )
++
++    def get_destination_details(self, destination_id: str) -> dict[str, Any]:
++        """Get details about a destination from the Hightouch API.
++
++        Args:
++            destination_id (str): The Hightouch Destination ID
++
++        Returns:
++            Dict[str, Any]: Parsed json data from the response
++        """
++        return self.make_request(
++            method="GET", endpoint=f"destinations/{destination_id}"
++        )
++
++    def get_sync_details(self, sync_id: str) -> dict[str, Any]:
++        """Get details about a given sync from the Hightouch API.
++
++        Args:
++            sync_id (str): The Hightouch Sync ID.
++
++        Returns:
++            Dict[str, Any]: Parsed json data from the response
++        """
++        return self.make_request(method="GET", endpoint=f"syncs/{sync_id}")
++
++    def start_sync(self, sync_id: str) -> str:
++        """Trigger a sync and initiate a sync run
++
++        Args:
++            sync_id (str): The Hightouch Sync ID.
++
++        Returns:
++            str: The sync request ID created by the Hightouch API.
++        """
++        return self.make_request(method="POST", endpoint=f"syncs/{sync_id}/trigger")[
++            "id"
++        ]
++
++    def poll_sync(
++        self,
++        sync_id: str,
++        sync_request_id: str,
++        fail_on_warning: bool = False,
++        poll_interval: float = DEFAULT_POLL_INTERVAL,
++        poll_timeout: float | None = None,
++    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
++        """Poll for the completion of a sync
++
++        Args:
++            sync_id (str): The Hightouch Sync ID
++            sync_request_id (str): The Hightouch Sync Request ID to poll against.
++            fail_on_warning (bool): Whether a warning is considered a failure for this sync.
++            poll_interval (float): The time in seconds that will be waited between succcessive polls
++            poll_timeout (float): The maximum time that will be waited before this operation
++                times out.
++
++        Returns:
++            Dict[str, Any]: Parsed json output from the API
++        """
++        poll_start = datetime.datetime.now()
++        while True:
++            sync_run_details = self.get_sync_run_details(sync_id, sync_request_id)[0]
++
++            self._log.debug(sync_run_details)
++            run = utils.parse_sync_run_details(sync_run_details)
++            self._log.info(
++                f"Polling Hightouch Sync {sync_id}. Current status: {run.status}. "
++                f"{100 * run.completion_ratio}% completed."
++            )
++
++            if run.status in TERMINAL_STATUSES:
++                self._log.info(f"Sync request status: {run.status}. Polling complete")
++                if run.error:
++                    self._log.info("Sync Request Error: %s", run.error)
++
++                if run.status == SUCCESS:
++                    break
++                if run.status == WARNING and not fail_on_warning:
++                    break
++                raise Failure(
++                    f"Sync {sync_id} for request: {sync_request_id} failed with status: "
++                    f"{run.status} and error:  {run.error}"
++                )
++            if run.status not in PENDING_STATUSES:
++                self._log.warning(
++                    "Unexpected status: %s returned for sync %s and request %s. Will try "
++                    "again, but if you see this error, please let someone at Hightouch know.",
++                    run.status,
++                    sync_id,
++                    sync_request_id,
++                )
++            if (
++                poll_timeout
++                and datetime.datetime.now()
++                > poll_start + datetime.timedelta(seconds=poll_timeout)
++            ):
++                raise Failure(
++                    f"Sync {sync_id} for request: {sync_request_id}' time out after "
++                    f"{datetime.datetime.now() - poll_start}. Last status was {run.status}."
++                )
++
++            time.sleep(poll_interval)
++        sync_details = self.get_sync_details(sync_id)
++        destination_details = self.get_destination_details(
++            sync_details["destinationId"]
++        )
++
++        return (sync_details, sync_run_details, destination_details)
++
++    def sync_and_poll(
++        self,
++        sync_id: str,
++        fail_on_warning: bool = False,
++        poll_interval: float = DEFAULT_POLL_INTERVAL,
++        poll_timeout: float | None = None,
++    ) -> HightouchOutput:
++        """
++        Initialize a sync run for the given sync id, and polls until it completes
++
++        Args:
++            sync_id (str): The Hightouch Sync ID
++            sync_request_id (str): The Hightouch Sync Request ID to poll against.
++            fail_on_warning (bool): Whether a warning is considered a failure for this sync.
++            poll_interval (float): The time in seconds that will be waited between succcessive polls
++            poll_timeout (float): The maximum time that will be waited before this operation
++                times out.
++        Returns:
++            :py:class:`~HightouchOutput`:
++                Object containing details about the Hightouch sync run
++        """
++        sync_request_id = self.start_sync(sync_id)
++        sync_details, sync_run_details, destination_details = self.poll_sync(
++            sync_id,
++            sync_request_id,
++            fail_on_warning=fail_on_warning,
++            poll_interval=poll_interval,
++            poll_timeout=poll_timeout,
++        )
++
++        return HightouchOutput(sync_details, sync_run_details, destination_details)
++
++
++@resource(
++    config_schema={
++        "api_key": Field(
++            StringSource,
++            is_required=True,
++            description="Hightouch API Key. You can find this on the Hightouch settings page",
++        ),
++        "request_max_retries": Field(
++            int,
++            default_value=3,
++            description="The maximum times requests to Hightouch the API should be retried "
++            "before failing.",
++        ),
++        "request_retry_delay": Field(
++            float,
++            default_value=0.25,
++            description="Time (in seconds) to wait between each request retry.",
++        ),
++    },
++    description="This resource helps manage Fivetran connectors",
++)
++def ht_resource(context) -> HightouchResource:
++    """
++    This resource allows users to programatically interface with the Hightouch REST API to triggers
++    syncs and monitor their progress.
++    """
++    return HightouchResource(
++        api_key=context.resource_config["api_key"],
++        log=context.log,
++        request_max_retries=context.resource_config["request_max_retries"],
++        request_retry_delay=context.resource_config["request_retry_delay"],
++    )
++
++
++class ConfigurableHightouchResource(ConfigurableResource):
++    """
++    A resource for connecting to the Hightouch API using pythonic configuration.
++
++    This resource is the recommended way to manage Hightouch connections in
++    modern Dagster (1.0+).
++
++    Attributes:
++        api_key (str): Your Hightouch API key.
++        request_max_retries (int): Maximum number of retries for API requests. Defaults to 3.
++        request_retry_delay (float): Delay between retries in seconds. Defaults to 0.25.
++    """
++
++    api_key: str
++    request_max_retries: int = 3
++    request_retry_delay: float = 0.25
++    fail_on_warning: bool = False
++    poll_interval: float = DEFAULT_POLL_INTERVAL
++    poll_timeout: Optional[float] = None
++
++    def sync_and_poll(
++        self,
++        sync_id: str,
++        fail_on_warning: Optional[bool] = None,
++        poll_interval: Optional[float] = None,
++        poll_timeout: Optional[float] = None,
++    ) -> HightouchOutput:
++        inner_resource = HightouchResource(
++            api_key=self.api_key,
++            request_max_retries=self.request_max_retries,
++            request_retry_delay=self.request_retry_delay,
++        )
++        return inner_resource.sync_and_poll(
++            sync_id=sync_id,
++            fail_on_warning=fail_on_warning
++            if fail_on_warning is not None
++            else self.fail_on_warning,
++            poll_interval=poll_interval
++            if poll_interval is not None
++            else self.poll_interval,
++            poll_timeout=poll_timeout
++            if poll_timeout is not None
++            else self.poll_timeout,
++        )
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch/types.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch/types.py
+new file mode 100644
+index 0000000000000..f71571c727612
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch/types.py
+@@ -0,0 +1,48 @@
++from collections import namedtuple
++from typing import Any, NamedTuple
++
++
++class HightouchOutput(
++    NamedTuple(
++        "_HightouchOutput",
++        [
++            ("sync_details", dict[str, Any]),
++            ("sync_run_details", dict[str, Any]),
++            ("destination_details", dict[str, Any]),
++        ],
++    )
++):
++    """
++    Contains recorded information about the state of a Hightouch sync after a sync completes.
++    Attributes:
++        sync_details (Dict[str, Any]):
++            https://hightouch.io/docs/api-reference/#operation/GetSync
++        sync_run_details (Dict[str, Any]):
++            https://hightouch.io/docs/api-reference/#operation/ListSyncRuns
++        destination_details (Dict[str, Any]):
++            https://hightouch.io/docs/api-reference/#operation/GetDestination
++    """
++
++
++SyncRunParsedOutput = namedtuple(
++    "_SyncRunParsedOutput",
++    [
++        "created_at",
++        "started_at",
++        "finished_at",
++        "elapsed_seconds",
++        "planned_add",
++        "planned_change",
++        "planned_remove",
++        "successful_add",
++        "successful_change",
++        "successful_remove",
++        "failed_add",
++        "failed_change",
++        "failed_remove",
++        "query_size",
++        "status",
++        "completion_ratio",
++        "error",
++    ],
++)
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch/utils.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch/utils.py
+new file mode 100644
+index 0000000000000..6b99f36c8fb38
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch/utils.py
+@@ -0,0 +1,73 @@
++from dateutil import parser
++
++from .types import SyncRunParsedOutput
++
++
++def parse_sync_run_details(sync_run_details) -> SyncRunParsedOutput:
++    created_at = None
++    started_at = None
++    finished_at = None
++    elapsed_seconds = None
++
++    if sync_run_details.get("createdAt"):
++        created_at = parser.parse(sync_run_details["createdAt"])
++    if sync_run_details.get("startedAt"):
++        started_at = parser.parse(sync_run_details["startedAt"])
++    if sync_run_details.get("finishedAt"):
++        finished_at = parser.parse(sync_run_details["finishedAt"])
++
++    if finished_at and started_at:
++        elapsed_seconds = (finished_at - started_at).seconds
++
++    planned_add = sync_run_details["plannedRows"].get("addedCount")
++    planned_change = sync_run_details["plannedRows"].get("changedCount")
++    planned_remove = sync_run_details["plannedRows"].get("removedCount")
++
++    successful_add = sync_run_details["successfulRows"].get("addedCount")
++    successful_change = sync_run_details["successfulRows"].get("changedCount")
++    successful_remove = sync_run_details["successfulRows"].get("removedCount")
++
++    failed_add = sync_run_details["failedRows"].get("addedCount")
++    failed_change = sync_run_details["failedRows"].get("changedCount")
++    failed_remove = sync_run_details["failedRows"].get("removedCount")
++
++    query_size = sync_run_details.get("querySize")
++    status = sync_run_details.get("status")
++    completion_ratio = float(sync_run_details.get("completionRatio", 0))
++    error = sync_run_details.get("error")
++
++    return SyncRunParsedOutput(
++        created_at=created_at,
++        started_at=started_at,
++        finished_at=finished_at,
++        elapsed_seconds=elapsed_seconds,
++        planned_add=planned_add,
++        planned_change=planned_change,
++        planned_remove=planned_remove,
++        successful_add=successful_add,
++        successful_change=successful_change,
++        successful_remove=successful_remove,
++        failed_add=failed_add,
++        failed_change=failed_change,
++        failed_remove=failed_remove,
++        query_size=query_size,
++        status=status,
++        completion_ratio=completion_ratio,
++        error=error,
++    )
++
++
++def generate_metadata_from_parsed_run(parsed_output: SyncRunParsedOutput):
++    return {
++        "elapsed_seconds": parsed_output.elapsed_seconds or 0,
++        "planned_add": parsed_output.planned_add,
++        "planned_change": parsed_output.planned_change,
++        "planned_remove": parsed_output.planned_remove,
++        "successful_add": parsed_output.successful_add,
++        "successful_change": parsed_output.successful_change,
++        "successful_remove": parsed_output.successful_remove,
++        "failed_add": parsed_output.failed_add,
++        "failed_change": parsed_output.failed_change,
++        "failed_remove": parsed_output.failed_remove,
++        "query_size": parsed_output.query_size,
++    }
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch/version.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch/version.py
+new file mode 100644
+index 0000000000000..fe3fd8a8248b6
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch/version.py
+@@ -0,0 +1 @@
++__version__ = "1!0+dev"
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch_tests/test_component.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch_tests/test_component.py
+new file mode 100644
+index 0000000000000..5ddd48030a075
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch_tests/test_component.py
+@@ -0,0 +1,78 @@
++from unittest.mock import MagicMock, patch
++import dagster as dg
++from dagster_hightouch import HightouchSyncComponent, ConfigurableHightouchResource
++from dagster_hightouch.types import HightouchOutput
++from typing import cast, Sequence
++
++
++def test_hightouch_component_load():
++    asset_key_str = "test_hightouch_asset"
++    component = HightouchSyncComponent(
++        sync_id="123", asset=dg.AssetSpec(key=asset_key_str)
++    )
++
++    defs = dg.Definitions.merge(
++        component.build_defs(MagicMock()),
++        dg.Definitions(resources={"hightouch": dg.ResourceDefinition.mock_resource()}),
++    )
++
++    assets_def = defs.get_assets_def(asset_key_str)
++    assert assets_def
++    assert dg.AssetKey([asset_key_str]) in assets_def.keys
++
++
++def test_component_definition():
++    component = HightouchSyncComponent(
++        sync_id="test_id", asset=dg.AssetSpec(key=["hightouch", "my_sync"])
++    )
++
++    defs = dg.Definitions.merge(
++        component.build_defs(MagicMock()),
++        dg.Definitions(resources={"hightouch": dg.ResourceDefinition.mock_resource()}),
++    )
++
++    assert isinstance(defs, dg.Definitions)
++    assert len(list(defs.get_all_asset_specs())) == 1
++
++
++def test_component_execution():
++    mock_output = HightouchOutput(
++        sync_details={
++            "destinationId": "dest1",
++            "configuration": {"object": "test_obj"},
++        },
++        sync_run_details={
++            "status": "success",
++            "failedRows": {"addedCount": 5, "changedCount": 2, "removedCount": 1},
++            "querySize": 100,
++            "completionRatio": 1.0,
++        },
++        destination_details={"type": "salesforce", "slug": "sf-slug"},
++    )
++
++    resource_instance = ConfigurableHightouchResource(api_key="test-key")
++
++    component = HightouchSyncComponent(
++        sync_id="123", asset=dg.AssetSpec(key="test_asset")
++    )
++    defs = component.build_defs(MagicMock())
++
++    with patch.object(
++        ConfigurableHightouchResource, "sync_and_poll", return_value=mock_output
++    ) as mock_method:
++        result = dg.materialize(
++            assets=cast(Sequence[dg.AssetsDefinition], list(defs.assets or [])),
++            resources={"hightouch": resource_instance},
++        )
++
++        assert result.success
++
++        node_name = "hightouch_sync_test_asset"
++        materializations = result.asset_materializations_for_node(node_name)
++
++        metadata = materializations[0].metadata
++
++        assert metadata["total_failed_rows"].value == 8
++        assert metadata["failed_adds"].value == 5
++
++        mock_method.assert_called_once_with("123")
+diff --git a/python_modules/libraries/dagster-hightouch/dagster_hightouch_tests/test_version.py b/python_modules/libraries/dagster-hightouch/dagster_hightouch_tests/test_version.py
+new file mode 100644
+index 0000000000000..c23b35bead5b7
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/dagster_hightouch_tests/test_version.py
+@@ -0,0 +1,7 @@
++from importlib.metadata import version
++
++import dagster_hightouch
++
++
++def test_version():
++    assert version("dagster-hightouch") == dagster_hightouch.__version__
+diff --git a/python_modules/libraries/dagster-hightouch/pyproject.toml b/python_modules/libraries/dagster-hightouch/pyproject.toml
+new file mode 100644
+index 0000000000000..9cbc36ba9200e
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/pyproject.toml
+@@ -0,0 +1,39 @@
++[project]
++name = "dagster-hightouch"
++description = "Dagster library for Hightouch"
++readme = "README.md"
++requires-python = ">=3.10"
++license = { text = "Apache-2.0" }
++dependencies = [
++    "dagster>=1.8.0",
++    "requests>=2.0",
++    "python-dateutil>=2.8.0",
++]
++dynamic = ["version"]
++
++[project.entry-points."dagster.components"]
++dagster_hightouch = "dagster_hightouch"
++
++[project.entry-points."dagster_dg_cli.plugin"]
++dagster_hightouch = "dagster_hightouch"
++
++[tool.uv]
++dev-dependencies = [
++    "pyright>=1.1.386",
++    "pytest",
++    "ruff==0.11.5",
++    "dagster-components",
++]
++
++[build-system]
++requires = ["setuptools>=42"]
++build-backend = "setuptools.build_meta"
++
++[tool.setuptools]
++packages = ["dagster_hightouch"]
++
++[tool.setuptools.dynamic]
++version = {attr = "dagster_hightouch.__version__"}
++
++[tool.ruff]
++required-version = "==0.11.5"
+\ No newline at end of file
+diff --git a/python_modules/libraries/dagster-hightouch/setup.py b/python_modules/libraries/dagster-hightouch/setup.py
+new file mode 100644
+index 0000000000000..881a01958038a
+--- /dev/null
++++ b/python_modules/libraries/dagster-hightouch/setup.py
+@@ -0,0 +1,48 @@
++from pathlib import Path
++from setuptools import find_packages, setup
++
++
++def get_version() -> str:
++    version: dict[str, str] = {}
++    with open(
++        Path(__file__).parent / "dagster_hightouch/version.py", encoding="utf8"
++    ) as fp:
++        exec(fp.read(), version)
++    return version["__version__"]
++
++
++ver = get_version()
++
++pin = "" if ver == "1!0+dev" else f"=={ver}"
++
++setup(
++    name="dagster-hightouch",
++    version=ver,
++    author="Dagster Labs",
++    author_email="hello@dagsterlabs.com",
++    license="Apache-2.0",
++    description="Package for integrating Hightouch with Dagster.",
++    url="https://github.com/dagster-io/dagster/tree/master/python_modules/libraries/dagster-hightouch",
++    classifiers=[
++        "Programming Language :: Python :: 3.10",
++        "Programming Language :: Python :: 3.11",
++        "Programming Language :: Python :: 3.12",
++        "Programming Language :: Python :: 3.13",
++        "License :: OSI Approved :: Apache Software License",
++        "Operating System :: OS Independent",
++    ],
++    packages=find_packages(exclude=["dagster_hightouch_tests*"]),
++    include_package_data=True,
++    python_requires=">=3.10,<3.14",
++    install_requires=[
++        f"dagster{pin}",
++        "requests",
++        "python-dateutil",
++    ],
++    entry_points={
++        "dagster_dg_cli.registry_modules": [
++            "dagster_hightouch = dagster_hightouch",
++        ],
++    },
++    zip_safe=False,
++)

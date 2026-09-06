@@ -1,0 +1,1548 @@
+diff --git a/sdks/python/apache_beam/io/fileio.py b/sdks/python/apache_beam/io/fileio.py
+index a333b7c89775..fcce83fa59ec 100644
+--- a/sdks/python/apache_beam/io/fileio.py
++++ b/sdks/python/apache_beam/io/fileio.py
+@@ -93,28 +93,35 @@
+ import random
+ import uuid
+ from collections import namedtuple
+-from functools import partial
+ from typing import Any
+ from typing import BinaryIO  # pylint: disable=unused-import
+ from typing import Callable
+ from typing import Iterable
++from typing import Optional
+ from typing import Union
+ 
+ import apache_beam as beam
++from apache_beam.coders.coders import VarIntCoder
+ from apache_beam.io import filesystem
+ from apache_beam.io import filesystems
+ from apache_beam.io.filesystem import BeamIOError
+ from apache_beam.io.filesystem import CompressionTypes
++from apache_beam.io.watch import PollFn
++from apache_beam.io.watch import PollResult
++from apache_beam.io.watch import TerminationCondition
++from apache_beam.io.watch import Watch
++from apache_beam.io.watch import never
+ from apache_beam.options.pipeline_options import GoogleCloudOptions
+ from apache_beam.options.value_provider import StaticValueProvider
+ from apache_beam.options.value_provider import ValueProvider
+ from apache_beam.transforms.periodicsequence import PeriodicImpulse
+-from apache_beam.transforms.userstate import CombiningValueStateSpec
+ from apache_beam.transforms.window import BoundedWindow
+ from apache_beam.transforms.window import FixedWindows
+ from apache_beam.transforms.window import GlobalWindow
+ from apache_beam.transforms.window import IntervalWindow
++from apache_beam.transforms.window import TimestampedValue
+ from apache_beam.utils.timestamp import MAX_TIMESTAMP
++from apache_beam.utils.timestamp import Duration
+ from apache_beam.utils.timestamp import Timestamp
+ 
+ __all__ = [
+@@ -251,6 +258,115 @@ def process(
+     yield ReadableFile(metadata, self._compression)
+ 
+ 
++class _PollClock(object):
++  """Shares one clock reading per poll round, so the start gate and the poll
++  budget judge the ``start_timestamp`` boundary consistently."""
++  def __init__(self):
++    self.last_poll_micros: Optional[int] = None
++
++
++class _WatchWindowTermination(TerminationCondition):
++  """Stops after the polls that fall in the ``[start, stop)`` window.
++
++  ``max_polls`` is the ``PeriodicImpulse`` tick count
++  ``ceil((stop - start) / interval)``; polls before ``start`` are waiting
++  rounds and do not consume the budget.
++  """
++  def __init__(self, clock: _PollClock, start_micros: int, max_polls: int):
++    self._clock = clock
++    self._start_micros = start_micros
++    self._max_polls = max_polls
++
++  def for_new_input(self, now, element):
++    return 0
++
++  def on_poll_complete(self, state):
++    poll_micros = self._clock.last_poll_micros
++    if poll_micros is not None and poll_micros >= self._start_micros:
++      return state + 1
++    return state
++
++  def can_stop_polling(self, now, state):
++    return state >= self._max_polls
++
++  def state_coder(self):
++    return VarIntCoder()
++
++
++def _ensure_mtime(metadata: filesystem.FileMetadata) -> float:
++  # A missing (zero) timestamp is rejected because every file would then carry
++  # the same one, and updates could never be told apart.
++  if not metadata.last_updated_in_seconds:
++    raise BeamIOError(
++        'MatchContinuously deduplicates by last-modified time, but %s reports '
++        'none.' % metadata.path)
++  return metadata.last_updated_in_seconds
++
++
++def _file_path_key(metadata: filesystem.FileMetadata) -> str:
++  return metadata.path
++
++
++def _file_path_and_mtime_key(
++    metadata: filesystem.FileMetadata) -> tuple[str, float]:
++  # Keying on the last-modified time makes a changed file look new again.
++  return metadata.path, _ensure_mtime(metadata)
++
++
++class _MatchContinuouslyPollFn(PollFn):
++  """Polls a file pattern, honoring empty-match rules.
++
++  A poll before ``start_timestamp`` emits nothing. Matches carry the poll time
++  as their event time, or their last-modified time under ``mtime_timestamps``,
++  where the watermark trails the newest last-modified time for as long as
++  polls keep turning up newer ones.
++  """
++  def __init__(
++      self,
++      empty_match_treatment,
++      start_timestamp,
++      clock=None,
++      mtime_timestamps=False):
++    self._empty_match_treatment = empty_match_treatment
++    self._start_micros = Timestamp.of(start_timestamp).micros
++    self._clock = clock if clock is not None else _PollClock()
++    self._mtime_timestamps = mtime_timestamps
++    # Greatest last-modified time handed out so far, to tell a poll that found
++    # something newer from one that only re-listed what was already there.
++    self._newest_mtime = None  # type: Optional[Timestamp]
++
++  def __call__(self, file_pattern: str) -> PollResult[filesystem.FileMetadata]:
++    now = Timestamp.now()
++    self._clock.last_poll_micros = now.micros
++    if now.micros < self._start_micros:
++      return PollResult.incomplete(())
++    match_result = filesystems.FileSystems.match([file_pattern])[0]
++    if (not match_result.metadata_list and
++        not EmptyMatchTreatment.allow_empty_match(file_pattern,
++                                                  self._empty_match_treatment)):
++      raise BeamIOError(
++          'Empty match for pattern %s. Disallowed.' % file_pattern)
++    if not self._mtime_timestamps:
++      return PollResult.incomplete(
++          match_result.metadata_list, timestamp=now).with_watermark(now)
++    outputs = [
++        TimestampedValue(metadata, Timestamp.of(_ensure_mtime(metadata)))
++        for metadata in match_result.metadata_list
++    ]
++    # A poll that turned up a newer last-modified time has just read the
++    # filesystem clock, so the watermark stops there, capped at the poll time.
++    # A poll that found nothing newer takes the poll time, so a quiet
++    # directory does not stall event-time windows.
++    newest = max((output.timestamp for output in outputs), default=None)
++    if newest is not None and (self._newest_mtime is None or
++                               newest > self._newest_mtime):
++      self._newest_mtime = newest
++      watermark = min(newest, now)
++    else:
++      watermark = now
++    return PollResult.incomplete(outputs).with_watermark(watermark)
++
++
+ class MatchContinuously(beam.PTransform):
+   """Checks for new files for a given pattern every interval.
+ 
+@@ -260,12 +376,16 @@ class MatchContinuously(beam.PTransform):
+   MatchContinuously is experimental.  No backwards-compatibility
+   guarantees.
+ 
+-  Matching continuously scales poorly, as it is stateful, and requires storing
+-  file ids in memory. In addition, because it is memory-only, if a pipeline is
+-  restarted, already processed files will be reprocessed. Consider an alternate
+-  technique, such as Pub/Sub Notifications
+-  (https://cloud.google.com/storage/docs/pubsub-notifications)
+-  when using GCS if possible.
++  Deduplication state is checkpointed, so a runner with checkpointing enabled
++  restores it after a restart and does not reprocess files. That state grows
++  with the number of files matched, unless ``timestamp_cursor`` bounds it. For
++  a growing directory on GCS, consider an alternate technique such as Pub/Sub
++  Notifications (https://cloud.google.com/storage/docs/pubsub-notifications).
++
++  A match carries the poll time as its event time, and the watermark follows
++  the poll time. Under ``timestamp_cursor`` a match carries its last-modified
++  time instead, and the watermark holds at the newest one matched, capped at
++  the poll time, until a poll turns up nothing newer and releases it.
+   """
+   def __init__(
+       self,
+@@ -276,7 +396,8 @@ def __init__(
+       stop_timestamp=MAX_TIMESTAMP,
+       match_updated_files=False,
+       apply_windowing=False,
+-      empty_match_treatment=EmptyMatchTreatment.ALLOW):
++      empty_match_treatment=EmptyMatchTreatment.ALLOW,
++      timestamp_cursor=False):
+     """Initializes a MatchContinuously transform.
+ 
+     Args:
+@@ -289,6 +410,12 @@ def __init__(
+         file with timestamp changes.
+       apply_windowing: Whether each element should be assigned to
+         individual window. If false, all elements will reside in global window.
++      timestamp_cursor: (When match_updated_files and has_deduplication are set
++        to True) bound the deduplication state by last-modified time. By
++        default, all file modification history is tracked. If set to true, file
++        modification history prior to the max(mtime of last poll result) are
++        dropped, for better performance. A file that appears with an older
++        last-modified time is then taken as already seen and skipped.
+     """
+ 
+     self.file_pattern = file_pattern
+@@ -299,44 +426,97 @@ def __init__(
+     self.match_upd = match_updated_files
+     self.apply_windowing = apply_windowing
+     self.empty_match_treatment = empty_match_treatment
+-    _LOGGER.warning(
+-        'Matching Continuously is stateful, and can scale poorly. '
+-        'Consider using Pub/Sub Notifications '
+-        '(https://cloud.google.com/storage/docs/pubsub-notifications) '
+-        'if possible')
++    self.timestamp_cursor = timestamp_cursor
++    if timestamp_cursor:
++      if not has_deduplication:
++        raise ValueError(
++            'MatchContinuously(timestamp_cursor=True) deduplicates, so it '
++            'requires has_deduplication=True.')
++      if not match_updated_files:
++        _LOGGER.warning(
++            'MatchContinuously(timestamp_cursor=True) implies '
++            'match_updated_files=True.')
++        self.match_upd = True
++    else:
++      _LOGGER.warning(
++          'Matching Continuously is stateful, and can scale poorly. '
++          'Consider using Pub/Sub Notifications '
++          '(https://cloud.google.com/storage/docs/pubsub-notifications) '
++          'if possible')
+ 
+   def expand(self, pbegin) -> beam.PCollection[filesystem.FileMetadata]:
+-    # invoke periodic impulse
+-    impulse = pbegin | PeriodicImpulse(
+-        start_timestamp=self.start_ts,
+-        stop_timestamp=self.stop_ts,
+-        fire_interval=self.interval)
+-
+-    # match file pattern periodically
+-    file_pattern = self.file_pattern
+-    match_files = (
+-        impulse
+-        | 'GetFilePattern' >> beam.Map(lambda x: file_pattern)
+-        | MatchAll(self.empty_match_treatment))
+-
+-    # apply deduplication strategy if required
++    if Duration.of(self.interval).micros <= 0:
++      raise ValueError('MatchContinuously interval must be positive.')
+     if self.has_deduplication:
+-      # Making a Key Value so each file has its own state.
+-      match_files = match_files | 'ToKV' >> beam.Map(lambda x: (x.path, x))
+-      if self.match_upd:
+-        match_files = match_files | 'RemoveOldAlreadyRead' >> beam.ParDo(
+-            _RemoveOldDuplicates())
+-      else:
+-        match_files = match_files | 'RemoveAlreadyRead' >> beam.ParDo(
+-            _RemoveDuplicates())
+-
+-    # apply windowing if required. Apply at last because deduplication relies on
+-    # the global window.
++      match_files = self._match_deduplicated(pbegin)
++    else:
++      match_files = self._match_all_each_poll(pbegin)
++
++    # Apply windowing last because dedup relies on the global window.
+     if self.apply_windowing:
+       match_files = match_files | beam.WindowInto(FixedWindows(self.interval))
+ 
+     return match_files
+ 
++  def _match_deduplicated(self,
++                          pbegin) -> beam.PCollection[filesystem.FileMetadata]:
++    # Watch emits each file once per dedup key: the path, joined by the mtime
++    # when matching updated files. stop_timestamp bounds the polls to
++    # [start, stop).
++    clock = _PollClock()
++    if self.stop_ts == MAX_TIMESTAMP:
++      termination = never()
++    else:
++      start_ts = Timestamp.of(self.start_ts)
++      stop_ts = Timestamp.of(self.stop_ts)
++      if stop_ts < start_ts:
++        raise ValueError(
++            'MatchContinuously stop_timestamp %s precedes start_timestamp %s' %
++            (stop_ts, start_ts))
++      interval_micros = Duration.of(self.interval).micros
++      span_micros = (stop_ts - start_ts).micros
++      # Ceiling division reproduces PeriodicImpulse's tick count; the window
++      # upper bound is exclusive.
++      max_polls = -(-span_micros // interval_micros)
++      if max_polls == 0:
++        # An empty [start, stop) window never ticks; the impulse path keeps
++        # the output empty without Watch's unconditional first poll.
++        return self._match_all_each_poll(pbegin)
++      termination = _WatchWindowTermination(clock, start_ts.micros, max_polls)
++    poll_fn = _MatchContinuouslyPollFn(
++        self.empty_match_treatment,
++        self.start_ts,
++        clock,
++        mtime_timestamps=self.timestamp_cursor)
++    # The key coder is inferred from the key function's return annotation.
++    watch = Watch(
++        poll_fn,
++        poll_interval=self.interval,
++        termination=termination,
++        output_key_fn=(
++            _file_path_and_mtime_key if self.match_upd else _file_path_key),
++        timestamp_cursor=self.timestamp_cursor)
++    # Watch emits (pattern, file) pairs; keep the FileMetadata output type so
++    # downstream transforms stay typed instead of falling back to Any.
++    return (
++        pbegin
++        | 'Impulse' >> beam.Create([self.file_pattern])
++        | 'Watch' >> watch
++        | 'DropPattern' >> beam.Map(lambda kv: kv[1]).with_output_types(
++            filesystem.FileMetadata))
++
++  def _match_all_each_poll(self,
++                           pbegin) -> beam.PCollection[filesystem.FileMetadata]:
++    # No deduplication: re-emit every match on each poll.
++    return (
++        pbegin
++        | PeriodicImpulse(
++            start_timestamp=self.start_ts,
++            stop_timestamp=self.stop_ts,
++            fire_interval=self.interval)
++        | 'GetFilePattern' >> beam.Map(lambda x: self.file_pattern)
++        | MatchAll(self.empty_match_treatment))
++
+ 
+ class ReadMatches(beam.PTransform):
+   """Converts each result of MatchFiles() or MatchAll() to a ReadableFile.
+@@ -892,50 +1072,3 @@ def finish_bundle(self):
+               timestamp=key[1].start,
+               windows=[key[1]]  # TODO(pabloem) HOW DO WE GET THE PANE
+           ))
+-
+-
+-class _RemoveDuplicates(beam.DoFn):
+-  """Internal DoFn that filters out filenames already seen (even though the file
+-  has updated)."""
+-  COUNT_STATE = CombiningValueStateSpec('count', combine_fn=sum)
+-
+-  def process(
+-      self,
+-      element: tuple[str, filesystem.FileMetadata],
+-      count_state=beam.DoFn.StateParam(COUNT_STATE)
+-  ) -> Iterable[filesystem.FileMetadata]:
+-
+-    path = element[0]
+-    file_metadata = element[1]
+-    counter = count_state.read()
+-
+-    if counter == 0:
+-      count_state.add(1)
+-      _LOGGER.debug('Generated entry for file %s', path)
+-      yield file_metadata
+-    else:
+-      _LOGGER.debug('File %s was already read, seen %d times', path, counter)
+-
+-
+-class _RemoveOldDuplicates(beam.DoFn):
+-  """Internal DoFn that filters out filenames already seen and timestamp
+-  unchanged."""
+-  TIME_STATE = CombiningValueStateSpec(
+-      'count', combine_fn=partial(max, default=0.0))
+-
+-  def process(
+-      self,
+-      element: tuple[str, filesystem.FileMetadata],
+-      time_state=beam.DoFn.StateParam(TIME_STATE)
+-  ) -> Iterable[filesystem.FileMetadata]:
+-    path = element[0]
+-    file_metadata = element[1]
+-    new_ts = file_metadata.last_updated_in_seconds
+-    old_ts = time_state.read()
+-
+-    if old_ts < new_ts:
+-      time_state.add(new_ts)
+-      _LOGGER.debug('Generated entry for file %s', path)
+-      yield file_metadata
+-    else:
+-      _LOGGER.debug('File %s was already read', path)
+diff --git a/sdks/python/apache_beam/io/fileio_test.py b/sdks/python/apache_beam/io/fileio_test.py
+index ce535265ef2f..1c650653804c 100644
+--- a/sdks/python/apache_beam/io/fileio_test.py
++++ b/sdks/python/apache_beam/io/fileio_test.py
+@@ -34,7 +34,9 @@
+ import apache_beam as beam
+ from apache_beam.io import fileio
+ from apache_beam.io.filebasedsink_test import _TestCaseWithTempDirCleanUp
++from apache_beam.io.filesystem import BeamIOError
+ from apache_beam.io.filesystem import CompressionTypes
++from apache_beam.io.filesystem import FileMetadata
+ from apache_beam.io.filesystems import FileSystems
+ from apache_beam.options.pipeline_options import PipelineOptions
+ from apache_beam.options.pipeline_options import StandardOptions
+@@ -420,6 +422,349 @@ def _create_extra_file(element):
+ 
+       assert_that(match_continiously, equal_to(files))
+ 
++  def test_poll_fn_gates_on_start_timestamp(self):
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    self._create_temp_file(dir=tempdir)
++    pattern = FileSystems.join(tempdir, '*')
++
++    future_start = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW, Timestamp.now() + 3600)
++    self.assertEqual((), future_start(pattern).outputs)
++
++    past_start = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW, Timestamp.now() - 3600)
++    self.assertEqual(1, len(past_start(pattern).outputs))
++
++  def test_poll_fn_disallows_empty_match(self):
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.DISALLOW, Timestamp.now() - 3600)
++    with self.assertRaises(BeamIOError):
++      poll_fn(FileSystems.join(tempdir, 'no-such-file'))
++
++  def test_poll_fn_stamps_outputs_with_poll_time(self):
++    # Matches always carry the poll time as event time; matching updated
++    # files must not change that.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    self._create_temp_file(dir=tempdir)
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW, Timestamp.now() - 3600)
++    before = Timestamp.now()
++    result = poll_fn(FileSystems.join(tempdir, '*'))
++    after = Timestamp.now()
++    self.assertEqual(1, len(result.outputs))
++    output = result.outputs[0]
++    self.assertLessEqual(before, output.timestamp)
++    self.assertLessEqual(output.timestamp, after)
++    self.assertEqual(result.watermark, output.timestamp)
++
++  def test_match_updated_files_keys_on_path_and_mtime(self):
++    # An updated file dedups as new because its key changes.
++    metadata = FileMetadata('/tmp/a', 1, 1234.5)
++    self.assertEqual(('/tmp/a', 1234.5),
++                     fileio._file_path_and_mtime_key(metadata))
++
++  def test_match_updated_files_rejects_missing_mtime(self):
++    # A zero last-modified time is rejected: without mtimes, updates could
++    # never be detected.
++    with self.assertRaises(BeamIOError):
++      fileio._file_path_and_mtime_key(FileMetadata('/tmp/a', 1))
++
++  def test_start_equals_stop_matches_nothing(self):
++    # PeriodicImpulse's [start, stop) tick window is empty when start == stop;
++    # the deduplicated path must skip Watch's unconditional first poll by
++    # falling back to the impulse path, which also keeps the output unbounded.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    self._create_temp_file(dir=tempdir)
++    start = Timestamp.now()
++    with TestPipeline() as p:
++      match_continiously = (
++          p
++          | fileio.MatchContinuously(
++              file_pattern=FileSystems.join(tempdir, '*'),
++              interval=0.2,
++              start_timestamp=start,
++              stop_timestamp=start))
++      assert_that(match_continiously, equal_to([]))
++
++  def test_rejects_nonpositive_interval(self):
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    with self.assertRaisesRegex(ValueError, 'interval must be positive'):
++      with TestPipeline() as p:
++        _ = p | fileio.MatchContinuously(
++            file_pattern=FileSystems.join(tempdir, '*'), interval=0)
++
++  def test_watch_window_termination_ignores_pre_start_polls(self):
++    # Polls before start_timestamp are deferred waits and must not consume the
++    # budget, otherwise a future start_timestamp silently drops all output. The
++    # boundary is judged by the poll's own clock reading, so a round straddling
++    # the start cannot consume the budget without having matched.
++    start_micros = Timestamp.of(1000).micros
++    clock = fileio._PollClock()
++    term = fileio._WatchWindowTermination(clock, start_micros, max_polls=2)
++    now = Timestamp.of(999)
++    state = term.for_new_input(now, 'pattern')
++    clock.last_poll_micros = Timestamp.of(999).micros
++    state = term.on_poll_complete(state)
++    state = term.on_poll_complete(state)
++    self.assertFalse(term.can_stop_polling(now, state))
++    clock.last_poll_micros = Timestamp.of(1000).micros
++    state = term.on_poll_complete(state)
++    self.assertFalse(term.can_stop_polling(now, state))
++    state = term.on_poll_complete(state)
++    self.assertTrue(term.can_stop_polling(now, state))
++
++  def test_poll_fn_records_its_clock_reading_for_the_termination(self):
++    # The gate and the poll budget share one reading per round; see _PollClock.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    clock = fileio._PollClock()
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW, Timestamp.now() + 3600, clock)
++    self.assertIsNone(clock.last_poll_micros)
++    poll_fn(FileSystems.join(tempdir, '*'))
++    self.assertIsNotNone(clock.last_poll_micros)
++
++  def test_poll_fn_advances_watermark_on_empty_match(self):
++    # An empty (but allowed) match still carries a watermark so downstream
++    # event-time windows keep progressing when no new files appear.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW, Timestamp.now() - 3600)
++    result = poll_fn(FileSystems.join(tempdir, '*'))
++    self.assertEqual((), result.outputs)
++    self.assertIsNotNone(result.watermark)
++
++  def test_poll_fn_stamps_outputs_with_mtime_for_the_cursor(self):
++    # The cursor dedups on the event time, so a match carries its own mtime.
++    # Sub-millisecond digits are kept, or a cursor taken from them would come
++    # back below the outputs it was taken from and match them all over again.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    path = self._create_temp_file(dir=tempdir)
++    os.utime(path, (1234.567891, 1234.567891))
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW,
++        Timestamp.now() - 3600,
++        mtime_timestamps=True)
++    result = poll_fn(FileSystems.join(tempdir, '*'))
++    self.assertEqual(1, len(result.outputs))
++    self.assertEqual(
++        Timestamp.of(os.path.getmtime(path)), result.outputs[0].timestamp)
++
++  def test_poll_fn_holds_the_mtime_watermark_at_the_newest_match(self):
++    # The filesystem clock can run behind the local one, so a watermark at the
++    # poll time would make the files it has yet to hand out late.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    os.utime(self._create_temp_file(dir=tempdir), (1234.5, 1234.5))
++    os.utime(self._create_temp_file(dir=tempdir), (2345.5, 2345.5))
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW,
++        Timestamp.now() - 3600,
++        mtime_timestamps=True)
++    result = poll_fn(FileSystems.join(tempdir, '*'))
++    self.assertEqual(Timestamp.of(2345.5), result.watermark)
++
++  def test_poll_fn_releases_the_mtime_watermark_once_nothing_is_newer(self):
++    # Holding at the newest match forever would stall a directory that is
++    # merely quiet rather than empty: every poll re-lists the same old files,
++    # and the watermark would sit at their last-modified time while the poll
++    # time ran away from it, so event-time windows would never close.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    os.utime(self._create_temp_file(dir=tempdir), (1234.5, 1234.5))
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW,
++        Timestamp.now() - 3600,
++        mtime_timestamps=True)
++    pattern = FileSystems.join(tempdir, '*')
++    self.assertEqual(Timestamp.of(1234.5), poll_fn(pattern).watermark)
++    before = Timestamp.now()
++    quiet = poll_fn(pattern)
++    self.assertEqual(1, len(quiet.outputs))
++    self.assertTrue(before <= quiet.watermark <= Timestamp.now())
++
++  def test_poll_fn_holds_the_mtime_watermark_again_for_a_newer_match(self):
++    # A poll that does turn up a newer file has read the filesystem clock
++    # again, so the hold comes back rather than being spent once.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    os.utime(self._create_temp_file(dir=tempdir), (1234.5, 1234.5))
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW,
++        Timestamp.now() - 3600,
++        mtime_timestamps=True)
++    pattern = FileSystems.join(tempdir, '*')
++    poll_fn(pattern)
++    poll_fn(pattern)
++    os.utime(self._create_temp_file(dir=tempdir), (2345.5, 2345.5))
++    self.assertEqual(Timestamp.of(2345.5), poll_fn(pattern).watermark)
++
++  def test_poll_fn_caps_the_mtime_watermark_at_the_poll_time(self):
++    # A filesystem clock running ahead must not carry the watermark with it,
++    # which pins the watermark to the poll time.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    path = self._create_temp_file(dir=tempdir)
++    ahead = Timestamp.now() + 3600
++    os.utime(path, (float(ahead), float(ahead)))
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW,
++        Timestamp.now() - 3600,
++        mtime_timestamps=True)
++    before = Timestamp.now()
++    result = poll_fn(FileSystems.join(tempdir, '*'))
++    self.assertTrue(before <= result.watermark <= Timestamp.now())
++
++  def test_poll_fn_advances_the_mtime_watermark_on_empty_match(self):
++    # No match is no reading of the filesystem clock, so the watermark takes
++    # the poll time and event-time windows keep progressing.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    poll_fn = fileio._MatchContinuouslyPollFn(
++        fileio.EmptyMatchTreatment.ALLOW,
++        Timestamp.now() - 3600,
++        mtime_timestamps=True)
++    before = Timestamp.now()
++    result = poll_fn(FileSystems.join(tempdir, '*'))
++    self.assertEqual((), result.outputs)
++    self.assertTrue(before <= result.watermark <= Timestamp.now())
++
++  def test_timestamp_cursor_rejects_missing_mtime(self):
++    # Without mtimes every match would carry the same event time, so the
++    # cursor would drop everything after the first poll.
++    with self.assertRaises(BeamIOError):
++      fileio._ensure_mtime(FileMetadata('/tmp/a', 1))
++
++  def test_timestamp_cursor_requires_deduplication(self):
++    with self.assertRaisesRegex(ValueError, 'has_deduplication=True'):
++      fileio.MatchContinuously(
++          file_pattern='/tmp/*', has_deduplication=False, timestamp_cursor=True)
++
++  def test_timestamp_cursor_implies_matching_updated_files(self):
++    # timestamp_cursor forces match_updated_files=True, so an update is a new
++    # key whatever the caller passed.
++    match = fileio.MatchContinuously(
++        file_pattern='/tmp/*', timestamp_cursor=True)
++    self.assertTrue(match.match_upd)
++
++  def test_timestamp_cursor_emits_files_modified_past_the_cursor(self):
++    files = []
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++
++    # Create a file to be matched before pipeline
++    files.append(self._create_temp_file(dir=tempdir))
++    # Add file name that will be created mid-pipeline
++    files.append(FileSystems.join(tempdir, 'extra'))
++
++    interval = 0.2
++    start = Timestamp.now()
++    stop = start + interval + 0.1
++
++    def _create_extra_file(element):
++      writer = FileSystems.create(FileSystems.join(tempdir, 'extra'))
++      writer.close()
++      return element.path
++
++    with TestPipeline() as p:
++      match_continiously = (
++          p
++          | fileio.MatchContinuously(
++              file_pattern=FileSystems.join(tempdir, '*'),
++              interval=interval,
++              start_timestamp=start,
++              stop_timestamp=stop,
++              timestamp_cursor=True)
++          | beam.Map(_create_extra_file))
++
++      assert_that(match_continiously, equal_to(files))
++
++  def test_timestamp_cursor_skips_files_modified_before_the_cursor(self):
++    # A file that lands with an mtime older than one already emitted sits
++    # behind the cursor, so it never appears.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    first = self._create_temp_file(dir=tempdir)
++
++    interval = 0.2
++    start = Timestamp.now()
++    stop = start + interval + 0.1
++
++    def _create_backdated_file(element):
++      path = FileSystems.join(tempdir, 'backdated')
++      writer = FileSystems.create(path)
++      writer.close()
++      os.utime(path, (1234.5, 1234.5))
++      return element.path
++
++    with TestPipeline() as p:
++      match_continiously = (
++          p
++          | fileio.MatchContinuously(
++              file_pattern=FileSystems.join(tempdir, '*'),
++              interval=interval,
++              start_timestamp=start,
++              stop_timestamp=stop,
++              timestamp_cursor=True)
++          | beam.Map(_create_backdated_file))
++
++      assert_that(match_continiously, equal_to([first]))
++
++  def test_timestamp_cursor_emits_a_file_sharing_the_newest_mtime(self):
++    # A file landing with the same last-modified time as the newest one
++    # already emitted is still new. Filesystems that report to the
++    # millisecond, GCS among them, hand out such ties routinely.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    first = self._create_temp_file(dir=tempdir)
++    os.utime(first, (1234.5, 1234.5))
++    twin = FileSystems.join(tempdir, 'twin')
++
++    interval = 0.2
++    start = Timestamp.now()
++    stop = start + interval + 0.1
++
++    def _create_twin(element):
++      writer = FileSystems.create(twin)
++      writer.close()
++      os.utime(twin, (1234.5, 1234.5))
++      return element.path
++
++    with TestPipeline() as p:
++      match_continiously = (
++          p
++          | fileio.MatchContinuously(
++              file_pattern=FileSystems.join(tempdir, '*'),
++              interval=interval,
++              start_timestamp=start,
++              stop_timestamp=stop,
++              timestamp_cursor=True)
++          | beam.Map(_create_twin))
++
++      assert_that(match_continiously, equal_to([first, twin]))
++
++  def test_timestamp_cursor_emits_an_updated_file(self):
++    # The cursor keys on the path and the last-modified time, so an update is
++    # a new key and is matched again. Keying on the path alone would leave the
++    # update out while the key is retained and let it through once the cursor
++    # retired the key, which made the outcome depend on cursor timing.
++    tempdir = '%s%s' % (self._new_tempdir(), os.sep)
++    path = self._create_temp_file(dir=tempdir)
++    os.utime(path, (1234.5, 1234.5))
++
++    interval = 0.2
++    start = Timestamp.now()
++    stop = start + interval + 0.1
++
++    def _touch(element):
++      os.utime(path, (2345.5, 2345.5))
++      return element.path
++
++    with TestPipeline() as p:
++      match_continiously = (
++          p
++          | fileio.MatchContinuously(
++              file_pattern=FileSystems.join(tempdir, '*'),
++              interval=interval,
++              start_timestamp=start,
++              stop_timestamp=stop,
++              timestamp_cursor=True)
++          | beam.Map(_touch))
++
++      assert_that(match_continiously, equal_to([path, path]))
++
+ 
+ class WriteFilesTest(_TestCaseWithTempDirCleanUp):
+ 
+diff --git a/sdks/python/apache_beam/io/watch.py b/sdks/python/apache_beam/io/watch.py
+index 40b7e451ce6e..70adaa444178 100644
+--- a/sdks/python/apache_beam/io/watch.py
++++ b/sdks/python/apache_beam/io/watch.py
+@@ -35,11 +35,9 @@
+ hash equally across workers and restarts.
+ 
+ By default, the Watch transform internally stores the hash of all items
+-seen. If the incremental items returned by the poll function guarantee
+-monotonic timestamp growth (new items on the next poll have timestamps
+-larger than the largest of the previous poll), consider setting
+-``timestamp_cursor=True`` for better performance, as it replaces the hash
+-dedup with an O(1) event-time cursor; see :class:`Watch`.
++seen. If the items returned by the poll function arrive in roughly
++non-decreasing event time, consider setting ``timestamp_cursor=True`` for
++better performance; see :class:`Watch`.
+ 
+ Example::
+ 
+@@ -274,9 +272,9 @@ class _PollingGrowthState(_GrowthState):
+   """Keep-polling state: dedup state, watermark, termination state.
+ 
+   ``completed`` maps a 16-byte output-key hash to the event time it was first
+-  seen; it is insertion-ordered and treated as immutable. In timestamp-cursor
+-  mode ``completed`` is empty and ``cursor`` is the greatest emitted event
+-  time.
++  seen; it is insertion-ordered and treated as immutable. ``cursor`` is the
++  greatest emitted event time, set only in timestamp-cursor mode, where it
++  retires the keys it has moved past and bounds ``completed``.
+   """
+   completed: 'collections.OrderedDict[bytes, Timestamp]'
+   poll_watermark: Optional[Timestamp]
+@@ -337,22 +335,25 @@ class _GrowthStateCoder(Coder):
+   A ``(tag, payload)`` envelope selects the variant; the payload is a
+   variant-specific :class:`TupleCoder`. ``completed`` is encoded as an ordered
+   list of ``(hash, timestamp)`` pairs so insertion order survives a round
+-  trip. A cursor state encodes only its termination state and cursor; the
+-  watermark is restored from the estimator state the runner persists. Hash
+-  states keep the pre-cursor byte format. This format is internal to the
+-  Python SDK.
++  trip. A cursor state adds the cursor to that payload; the keys it carries
++  are only those the cursor has yet to retire. States without a cursor keep
++  the pre-cursor byte format. This format is internal to the Python SDK.
+   """
+   def __init__(self, output_coder: Coder, termination: TerminationCondition):
+     nullable_ts = NullableCoder(TimestampCoder())
++    completed_coder = coders.ListCoder(
++        TupleCoder([coders.BytesCoder(), TimestampCoder()]))
+     self._envelope_coder = TupleCoder(
+         [coders.VarIntCoder(), coders.BytesCoder()])
+     self._polling_coder = TupleCoder([
+         termination.state_coder(),
+         nullable_ts,
+-        coders.ListCoder(TupleCoder([coders.BytesCoder(), TimestampCoder()])),
++        completed_coder,
+     ])
+     self._cursor_polling_coder = TupleCoder([
+         termination.state_coder(),
++        nullable_ts,
++        completed_coder,
+         TimestampCoder(),
+     ])
+     self._non_polling_coder = TupleCoder([
+@@ -368,8 +369,11 @@ def encode(self, state: _GrowthState) -> bytes:
+             state.poll_watermark,
+             list(state.completed.items())))
+         return self._envelope_coder.encode((_StateTag.POLLING, payload))
+-      payload = self._cursor_polling_coder.encode(
+-          (state.termination_state, state.cursor))
++      payload = self._cursor_polling_coder.encode((
++          state.termination_state,
++          state.poll_watermark,
++          list(state.completed.items()),
++          state.cursor))
+       return self._envelope_coder.encode((_StateTag.CURSOR_POLLING, payload))
+     payload = self._non_polling_coder.encode(
+         (state.pending.watermark, list(state.pending.outputs)))
+@@ -386,9 +390,13 @@ def decode(self, encoded: bytes) -> _GrowthState:
+       watermark, outputs = self._non_polling_coder.decode(payload)
+       return _NonPollingGrowthState(PollResult(tuple(outputs), watermark))
+     if tag == _StateTag.CURSOR_POLLING:
+-      termination_state, cursor = self._cursor_polling_coder.decode(payload)
++      termination_state, poll_watermark, items, cursor = (
++          self._cursor_polling_coder.decode(payload))
+       return _PollingGrowthState(
+-          collections.OrderedDict(), None, termination_state, cursor)
++          collections.OrderedDict(items),
++          poll_watermark,
++          termination_state,
++          cursor)
+     raise ValueError('unknown Watch growth state tag: %r' % (tag, ))
+ 
+   def is_deterministic(self) -> bool:
+@@ -418,20 +426,39 @@ def _max_watermark(left: Optional[Timestamp],
+   return max(left, right)
+ 
+ 
++def _retention_floor(
++    restriction: _PollingGrowthState,
++    allowed_lateness: Duration) -> Optional[Timestamp]:
++  """The event time below which a key is retired from ``completed``.
++
++  ``None`` leaves every key retained, which is hash dedup with unbounded
++  state. Otherwise an output at or above the floor is still deduped by key,
++  and one below it is taken as already seen.
++  """
++  if restriction.cursor is None:
++    return None
++  return restriction.cursor - allowed_lateness
++
++
+ def _never_seen_before(
+     restriction: _PollingGrowthState,
+     result: PollResult,
+     key_fn: Callable[[Any], Any],
+-    key_coder: Coder) -> PollResult:
++    key_coder: Coder,
++    floor: Optional[Timestamp] = None) -> PollResult:
+   """Filters a poll result down to outputs whose key was never seen before.
+ 
+   Dedup hashes ``key_fn(output.value)`` against the restriction's completed
+-  set, also dropping in-round duplicates. Outputs are sorted by timestamp so
+-  the earliest one can serve as the inferred watermark.
++  set, also dropping in-round duplicates. An output below ``floor`` is dropped
++  without consulting the set, since the key that would prove it seen has been
++  retired. Outputs are sorted by timestamp so the earliest one can serve as
++  the inferred watermark.
+   """
+   new_outputs = []
+   seen_this_round = set()
+   for output in result.outputs:
++    if floor is not None and output.timestamp < floor:
++      continue
+     key_hash = _hash_output(key_coder, key_fn(output.value))
+     if key_hash in restriction.completed or key_hash in seen_this_round:
+       continue
+@@ -441,28 +468,18 @@ def _never_seen_before(
+   return dataclasses.replace(result, outputs=tuple(new_outputs))
+ 
+ 
+-def _cursor_of(restriction: _PollingGrowthState) -> Optional[Timestamp]:
+-  """The dedup cursor: the stored one, or for a restriction switched over
+-  from hash dedup, the greatest event time its hash map recorded."""
+-  if restriction.cursor is not None:
+-    return restriction.cursor
+-  if restriction.completed:
+-    return max(restriction.completed.values())
+-  return None
+-
+-
+-def _past_cursor(
+-    restriction: _PollingGrowthState, result: PollResult) -> PollResult:
+-  """Filters a poll result down to outputs strictly past the cursor, sorted
+-  by timestamp so the earliest infers the watermark and the latest advances
+-  the cursor."""
+-  cursor = _cursor_of(restriction)
+-  new_outputs = [
+-      output for output in result.outputs
+-      if cursor is None or output.timestamp > cursor
+-  ]
+-  new_outputs.sort(key=lambda output: output.timestamp)
+-  return dataclasses.replace(result, outputs=tuple(new_outputs))
++def _retained(
++    completed: 'collections.OrderedDict[bytes, Timestamp]',
++    floor: Optional[Timestamp]) -> 'collections.OrderedDict[bytes, Timestamp]':
++  """Drops the keys the floor has retired, which bounds the state."""
++  if floor is None:
++    return completed
++  retained = collections.OrderedDict(
++      (key_hash, timestamp) for key_hash, timestamp in completed.items()
++      if timestamp >= floor)
++  # Reuse the parent map when the floor retired nothing, so a round that adds
++  # no key leaves the state object untouched.
++  return completed if len(retained) == len(completed) else retained
+ 
+ 
+ class _GrowthRestrictionTracker(iobase.RestrictionTracker):
+@@ -479,11 +496,13 @@ def __init__(
+       restriction: _GrowthState,
+       key_fn: Callable[[Any], Any],
+       key_coder: Coder,
+-      timestamp_cursor: bool = False):
++      timestamp_cursor: bool = False,
++      allowed_lateness: Duration = Duration(0)):
+     self._restriction = restriction
+     self._key_fn = key_fn
+     self._key_coder = key_coder
+     self._timestamp_cursor = timestamp_cursor
++    self._allowed_lateness = allowed_lateness
+     self._claimed_result = None  # type: Optional[PollResult]
+     self._claimed_termination_state = None  # type: Any
+     self._claimed_hashes = None  # type: Optional[collections.OrderedDict]
+@@ -492,6 +511,12 @@ def __init__(
+   def _hash(self, value: Any) -> bytes:
+     return _hash_output(self._key_coder, self._key_fn(value))
+ 
++  def _floor(self) -> Optional[Timestamp]:
++    if not self._timestamp_cursor or not isinstance(self._restriction,
++                                                    _PollingGrowthState):
++      return None
++    return _retention_floor(self._restriction, self._allowed_lateness)
++
+   def current_restriction(self) -> _GrowthState:
+     return self._restriction
+ 
+@@ -505,35 +530,23 @@ def try_claim(self, position: tuple[PollResult, Any]) -> bool:
+     if self._should_stop:
+       return False
+     result, termination_state = position
+-    claimed_hashes = None
+-    if self._timestamp_cursor:
+-      # Cursor mode validates by timestamps and never hashes.
+-      if isinstance(self._restriction, _PollingGrowthState):
+-        cursor = _cursor_of(self._restriction)
+-        if cursor is not None and any(output.timestamp <= cursor
+-                                      for output in result.outputs):
+-          return False
+-      else:
+-        # Values may lack stable equality without a deterministic coder, so a
+-        # replay is identified by its timestamps.
+-        expected = sorted(
+-            output.timestamp for output in self._restriction.pending.outputs)
+-        if expected != sorted(output.timestamp for output in result.outputs):
+-          return False
++    claimed_hashes = collections.OrderedDict()
++    for output in result.outputs:
++      claimed_hashes[self._hash(output.value)] = output.timestamp
++    if isinstance(self._restriction, _PollingGrowthState):
++      if any(key_hash in self._restriction.completed
++             for key_hash in claimed_hashes):
++        return False
++      floor = self._floor()
++      if floor is not None and any(output.timestamp < floor
++                                   for output in result.outputs):
++        return False
+     else:
+-      claimed_hashes = collections.OrderedDict()
+-      for output in result.outputs:
+-        claimed_hashes[self._hash(output.value)] = output.timestamp
+-      if isinstance(self._restriction, _PollingGrowthState):
+-        if any(key_hash in self._restriction.completed
+-               for key_hash in claimed_hashes):
+-          return False
+-      else:
+-        expected = set(
+-            self._hash(output.value)
+-            for output in self._restriction.pending.outputs)
+-        if expected != set(claimed_hashes):
+-          return False
++      expected = set(
++          self._hash(output.value)
++          for output in self._restriction.pending.outputs)
++      if expected != set(claimed_hashes):
++        return False
+     self._should_stop = True
+     self._claimed_result = result
+     self._claimed_termination_state = termination_state
+@@ -554,24 +567,21 @@ def try_split(self, fraction_of_remainder):
+     else:
+       # The primary becomes a replay of the claimed round; the residual
+       # resumes polling with the claimed round folded into the dedup state.
+-      # A state holds hashes or a cursor, never both, so each mode drops the
+-      # other mode's leftovers after a switch.
+-      if self._timestamp_cursor:
+-        completed = self._restriction.completed
+-        if completed:
+-          completed = collections.OrderedDict()
+-        if self._claimed_result.outputs:
+-          cursor = self._claimed_result.outputs[-1].timestamp
+-        else:
+-          cursor = _cursor_of(self._restriction)
+-      elif self._claimed_hashes:
++      if self._claimed_hashes:
+         completed = collections.OrderedDict(self._restriction.completed)
+         completed.update(self._claimed_hashes)
+-        cursor = None
+       else:
+         # An idle round reuses the parent map so empty polls stay O(1).
+         completed = self._restriction.completed
+-        cursor = None
++      cursor = None
++      if self._timestamp_cursor:
++        # The cursor only ever advances, and retires the keys it moves past.
++        cursor = _max_watermark(
++            self._restriction.cursor,
++            max((output.timestamp for output in self._claimed_result.outputs),
++                default=None))
++        if cursor is not None:
++          completed = _retained(completed, cursor - self._allowed_lateness)
+       residual = _PollingGrowthState(
+           completed,
+           _max_watermark(
+@@ -623,6 +633,7 @@ def __init__(
+       key_fn: Callable[[Any], Any],
+       key_coder: Coder,
+       timestamp_cursor: bool = False,
++      allowed_lateness: Duration = Duration(0),
+       now_fn: Optional[Callable[[], float]] = None):
+     self._poll_fn = poll_fn
+     self._termination = termination
+@@ -631,6 +642,7 @@ def __init__(
+     self._key_fn = key_fn
+     self._key_coder = key_coder
+     self._timestamp_cursor = timestamp_cursor
++    self._allowed_lateness = allowed_lateness
+     self._now = now_fn or time.time
+     self._restriction_coder = _GrowthStateCoder(output_coder, termination)
+     # Count of late emissions seen on this worker, for throttled warnings.
+@@ -645,7 +657,11 @@ def initial_restriction(self, element) -> _PollingGrowthState:
+ 
+   def create_tracker(self, restriction) -> _GrowthRestrictionTracker:
+     return _GrowthRestrictionTracker(
+-        restriction, self._key_fn, self._key_coder, self._timestamp_cursor)
++        restriction,
++        self._key_fn,
++        self._key_coder,
++        self._timestamp_cursor,
++        self._allowed_lateness)
+ 
+   def restriction_coder(self) -> Coder:
+     return self._restriction_coder
+@@ -685,11 +701,11 @@ def process(
+     result = self._poll_fn(element)
+     # Read the clock after the poll so a slow poll counts against termination.
+     now = Timestamp.of(self._now())
++    floor = None
+     if self._timestamp_cursor:
+-      new_results = _past_cursor(restriction, result)
+-    else:
+-      new_results = _never_seen_before(
+-          restriction, result, self._key_fn, self._key_coder)
++      floor = _retention_floor(restriction, self._allowed_lateness)
++    new_results = _never_seen_before(
++        restriction, result, self._key_fn, self._key_coder, floor)
+     termination_state = restriction.termination_state
+     if new_results.outputs:
+       termination_state = self._termination.on_seen_new_output(
+@@ -716,9 +732,10 @@ def process(
+     else:
+       watermark = None
+     if self._timestamp_cursor:
+-      new_cursor = (
+-          new_results.outputs[-1].timestamp
+-          if new_results.outputs else restriction.cursor)
++      # Outputs are timestamp-sorted, so the last one is the greatest.
++      new_cursor = _max_watermark(
++          restriction.cursor,
++          new_results.outputs[-1].timestamp if new_results.outputs else None)
+       if new_cursor is not None and new_cursor >= MAX_TIMESTAMP:
+         # A cursor at MAX is terminal; polling on would only drop outputs.
+         return
+@@ -812,14 +829,17 @@ class Watch(PTransform):
+       inferred like ``output_coder`` when omitted. It is converted with
+       ``as_deterministic_coder`` so equal keys always hash equally; a coder
+       with no deterministic form is rejected.
+-    timestamp_cursor: dedup by event time instead of by key. Each round emits
+-      only outputs strictly past the greatest event time already emitted, so
+-      the per-input state is a single timestamp. Requires every new output to
+-      carry an event time strictly greater than all previously emitted ones;
+-      re-listed old outputs at or below the cursor are dropped as already
+-      seen. For sources whose new outputs can arrive at or below the cursor,
+-      keep the default hash dedup. Incompatible with ``output_key_fn`` and
+-      ``output_key_coder``.
++    timestamp_cursor: bound the dedup state by event time, for better
++      performance. An output more than ``allowed_lateness`` behind the greatest
++      event time emitted so far is taken as already seen and dropped, so this
++      suits sources whose outputs arrive in roughly non-decreasing event time;
++      keep the default for sources that can hand out much older outputs at any
++      time.
++    allowed_lateness: how far behind the greatest emitted event time an output
++      is still deduplicated by key, as a :class:`Duration` or in seconds.
++      Widen it for a source whose outputs arrive out of order, at the cost of a
++      larger state. Ignored unless ``timestamp_cursor`` is set; defaults to
++      zero.
+     now_fn: clock used for termination decisions; tests can inject one.
+   """
+   def __init__(
+@@ -831,15 +851,16 @@ def __init__(
+       output_key_fn: Optional[Callable[[Any], Any]] = None,
+       output_key_coder: Optional[Coder] = None,
+       timestamp_cursor: bool = False,
++      allowed_lateness=0,
+       now_fn: Optional[Callable[[], float]] = None):
+     super().__init__()
+     if poll_interval is None:
+       raise ValueError('Watch requires a poll_interval')
+-    if timestamp_cursor and (output_key_fn is not None or
+-                             output_key_coder is not None):
++    allowed_lateness = _as_duration(allowed_lateness)
++    if allowed_lateness < Duration(0):
+       raise ValueError(
+-          'timestamp_cursor dedups by event time, not by key; do not pass '
+-          'output_key_fn or output_key_coder with timestamp_cursor=True.')
++          'Watch allowed_lateness must not be negative, got %s' %
++          allowed_lateness)
+     self._poll_fn = poll_fn
+     self._poll_interval = _as_duration(poll_interval)
+     self._termination = termination or never()
+@@ -847,6 +868,7 @@ def __init__(
+     self._output_key_fn = output_key_fn
+     self._output_key_coder = output_key_coder
+     self._timestamp_cursor = timestamp_cursor
++    self._allowed_lateness = allowed_lateness
+     self._now = now_fn
+ 
+   def expand(self, pcoll):
+@@ -855,28 +877,22 @@ def expand(self, pcoll):
+       output_coder = self._poll_fn.default_output_coder()
+     if output_coder is None:
+       output_coder = _coder_for_hint(_poll_output_type(self._poll_fn))
+-    if self._timestamp_cursor:
+-      # Cursor dedup never hashes, so no deterministic key coder is needed.
++    if self._output_key_fn is None:
++      # The output is its own dedup key, so the key coder is the output coder.
+       key_fn = _identity
+-      key_coder = output_coder
++      key_coder = self._output_key_coder or output_coder
+     else:
+-      if self._output_key_fn is None:
+-        # The output is its own dedup key, so the key coder is the output
+-        # coder.
+-        key_fn = _identity
+-        key_coder = self._output_key_coder or output_coder
+-      else:
+-        key_fn = self._output_key_fn
+-        key_coder = self._output_key_coder or _coder_for_hint(
+-            _return_type(self._output_key_fn))
+-      # Dedup hashes the encoded key, so equal keys must encode equally; use
+-      # the coder's deterministic form and reject coders that have none.
+-      key_coder = key_coder.as_deterministic_coder(
+-          self.label,
+-          'Watch dedups by hashing the encoded output key, so the key coder '
+-          'must be deterministic. %s has no deterministic form; pass a '
+-          'deterministic output_key_coder (or output_coder).' %
+-          type(key_coder).__name__)
++      key_fn = self._output_key_fn
++      key_coder = self._output_key_coder or _coder_for_hint(
++          _return_type(self._output_key_fn))
++    # Dedup hashes the encoded key, so equal keys must encode equally; use the
++    # coder's deterministic form and reject coders that have none.
++    key_coder = key_coder.as_deterministic_coder(
++        self.label,
++        'Watch dedups by hashing the encoded output key, so the key coder '
++        'must be deterministic. %s has no deterministic form; pass a '
++        'deterministic output_key_coder (or output_coder).' %
++        type(key_coder).__name__)
+     # Type the (input, output) pairs from the input type and the resolved
+     # coder's type, so downstream transforms are typed and coder inference does
+     # not fall back to pickling.
+@@ -894,6 +910,7 @@ def expand(self, pcoll):
+             key_fn,
+             key_coder,
+             self._timestamp_cursor,
++            self._allowed_lateness,
+             self._now)).with_output_types(tuple[input_type, value_type])
+ 
+ 
+diff --git a/sdks/python/apache_beam/io/watch_test.py b/sdks/python/apache_beam/io/watch_test.py
+index a07f98bfa8d7..a44428af5923 100644
+--- a/sdks/python/apache_beam/io/watch_test.py
++++ b/sdks/python/apache_beam/io/watch_test.py
+@@ -37,8 +37,8 @@
+ from apache_beam.io.watch import _GrowthStateCoder
+ from apache_beam.io.watch import _never_seen_before
+ from apache_beam.io.watch import _NonPollingGrowthState
+-from apache_beam.io.watch import _past_cursor
+ from apache_beam.io.watch import _PollingGrowthState
++from apache_beam.io.watch import _retention_floor
+ from apache_beam.io.watch import _WatchGrowthDoFn
+ from apache_beam.io.watch import after_total_of
+ from apache_beam.io.watch import never
+@@ -56,6 +56,7 @@
+ from apache_beam.transforms.window import TimestampedValue
+ from apache_beam.typehints import typehints
+ from apache_beam.utils.timestamp import MAX_TIMESTAMP
++from apache_beam.utils.timestamp import MIN_TIMESTAMP
+ from apache_beam.utils.timestamp import Duration
+ from apache_beam.utils.timestamp import Timestamp
+ 
+@@ -77,9 +78,22 @@ def _tracker(restriction):
+   return _GrowthRestrictionTracker(restriction, _identity, StrUtf8Coder())
+ 
+ 
+-def _cursor_tracker(restriction):
++def _cursor_tracker(restriction, allowed_lateness=Duration(0)):
+   return _GrowthRestrictionTracker(
+-      restriction, _identity, StrUtf8Coder(), timestamp_cursor=True)
++      restriction,
++      _identity,
++      StrUtf8Coder(),
++      timestamp_cursor=True,
++      allowed_lateness=allowed_lateness)
++
++
++def _cursor_results(restriction, result, allowed_lateness=Duration(0)):
++  return _never_seen_before(
++      restriction,
++      result,
++      _identity,
++      StrUtf8Coder(),
++      _retention_floor(restriction, allowed_lateness))
+ 
+ 
+ def _initial_polling(termination=None, now=Timestamp(0)):
+@@ -133,17 +147,18 @@ def test_polling_round_trip_preserves_resume_state(self):
+     self.assertEqual(termination_state, decoded.termination_state)
+     self.assertIsNone(decoded.cursor)
+ 
+-  def test_polling_round_trip_preserves_cursor(self):
++  def test_polling_round_trip_preserves_cursor_and_retained_keys(self):
+     coder = _GrowthStateCoder(StrUtf8Coder(), never())
++    completed = collections.OrderedDict([(b'a' * 16, Timestamp(42))])
+     state = _PollingGrowthState(
+-        collections.OrderedDict(),
++        completed,
+         Timestamp(5),
+         never().for_new_input(Timestamp(0), 'input'),
+         Timestamp(42))
+     decoded = coder.decode(coder.encode(state))
+     self.assertEqual(Timestamp(42), decoded.cursor)
+-    self.assertEqual(0, len(decoded.completed))
+-    self.assertIsNone(decoded.poll_watermark)  # not part of the payload
++    self.assertEqual(list(completed.items()), list(decoded.completed.items()))
++    self.assertEqual(Timestamp(5), decoded.poll_watermark)
+ 
+   def test_cursorless_state_keeps_the_pre_cursor_byte_format(self):
+     # A polling state without a cursor must encode exactly as before the
+@@ -307,64 +322,121 @@ def test_idle_round_reuses_completed_map_object(self):
+ 
+ 
+ class TimestampCursorTest(unittest.TestCase):
+-  """Cursor-mode dedup: high-water-mark timestamp instead of a hash set."""
+-  def test_keeps_state_o1_and_tracks_high_water_mark(self):
++  """Cursor-mode dedup: hash dedup whose keys the cursor retires."""
++  def test_bounds_the_key_set_to_the_newest_event_time(self):
+     state = _initial_polling()
+     result = PollResult.incomplete([_ts('a', 1), _ts('b', 2), _ts('c', 3)])
+-    new_results = _past_cursor(state, result)
++    new_results = _cursor_results(state, result)
+     self.assertEqual(['a', 'b', 'c'], [o.value for o in new_results.outputs])
+     tracker = _cursor_tracker(state)
+     self.assertTrue(tracker.try_claim((new_results, 0)))
+     _, residual = tracker.try_split(0)
+     self.assertIsInstance(residual, _PollingGrowthState)
+-    self.assertEqual(0, len(residual.completed))  # no hash set
+-    self.assertEqual(Timestamp(3), residual.cursor)  # high-water mark
++    self.assertEqual(Timestamp(3), residual.cursor)
++    # The two older keys are retired; only the one at the cursor is kept.
++    self.assertEqual(1, len(residual.completed))
+ 
+-  def test_emits_only_outputs_after_the_cursor(self):
+-    # A later round emits only outputs strictly past the cursor; a re-listed
+-    # output (== cursor) and an earlier output (< cursor) are both dropped.
++  def test_outputs_sharing_an_event_time_are_each_emitted_once(self):
++    # A bare cursor cannot tell two outputs at one event time apart, so it
++    # either drops the second or repeats both on the next re-list. The keys
++    # the cursor still retains are what distinguishes them.
+     state = _initial_polling()
++    first = _cursor_results(
++        state, PollResult.incomplete([_ts('a', 10), _ts('b', 10)]))
++    self.assertEqual(['a', 'b'], sorted(o.value for o in first.outputs))
+     tracker = _cursor_tracker(state)
+-    first = _past_cursor(state, PollResult.incomplete([_ts('a', 10)]))
+     self.assertTrue(tracker.try_claim((first, 0)))
+     _, residual = tracker.try_split(0)
+     self.assertEqual(Timestamp(10), residual.cursor)
+-    second = _past_cursor(
++    relist = _cursor_results(
++        residual,
++        PollResult.incomplete([_ts('a', 10), _ts('b', 10), _ts('c', 10)]))
++    self.assertEqual(['c'], [o.value for o in relist.outputs])
++
++  def test_drops_outputs_the_cursor_retired(self):
++    state = _initial_polling()
++    tracker = _cursor_tracker(state)
++    first = _cursor_results(state, PollResult.incomplete([_ts('a', 10)]))
++    self.assertTrue(tracker.try_claim((first, 0)))
++    _, residual = tracker.try_split(0)
++    self.assertEqual(Timestamp(10), residual.cursor)
++    second = _cursor_results(
+         residual,
+         PollResult.incomplete([_ts('early', 5), _ts('a', 10), _ts('c', 20)]))
+-    self.assertEqual(['c'], [o.value for o in second.outputs])  # only 20 > 10
++    # 'early' is below the floor, 'a' is a retained key, only 'c' is new.
++    self.assertEqual(['c'], [o.value for o in second.outputs])
+     resumed = _cursor_tracker(residual)
+     self.assertTrue(resumed.try_claim((second, 0)))
+     _, residual = resumed.try_split(0)
+     self.assertEqual(Timestamp(20), residual.cursor)
+ 
++  def test_allowed_lateness_retains_keys_below_the_cursor(self):
++    # A wider window keeps deduping outputs that arrive behind the cursor
++    # instead of taking them as already seen.
++    lateness = Duration(10)
++    state = _initial_polling()
++    tracker = _cursor_tracker(state, lateness)
++    first = _cursor_results(
++        state, PollResult.incomplete([_ts('a', 20)]), lateness)
++    self.assertTrue(tracker.try_claim((first, 0)))
++    _, residual = tracker.try_split(0)
++    late = _cursor_results(
++        residual,
++        PollResult.incomplete([_ts('a', 20), _ts('late', 12), _ts('old', 5)]),
++        lateness)
++    self.assertEqual(['late'], [o.value for o in late.outputs])
++
++  def test_a_retired_key_returning_later_is_emitted_again(self):
++    # What bounding the state costs. A key is retired by the event time it was
++    # recorded with, so a key that comes back at a later event time, after the
++    # cursor has moved past the one it was recorded with, has nothing left to
++    # prove it was seen. This is the case for a file modified after the cursor
++    # passed it: it is emitted a second time, whatever the key function says
++    # about updates. Keep the default hash dedup where that matters.
++    state = _initial_polling()
++    tracker = _cursor_tracker(state)
++    first = _cursor_results(state, PollResult.incomplete([_ts('a', 10)]))
++    self.assertTrue(tracker.try_claim((first, 0)))
++    _, residual = tracker.try_split(0)
++    # 'b' moves the cursor past the event time 'a' was recorded with, which
++    # retires 'a'.
++    second = _cursor_results(
++        residual, PollResult.incomplete([_ts('a', 10), _ts('b', 20)]))
++    self.assertEqual(['b'], [o.value for o in second.outputs])
++    resumed = _cursor_tracker(residual)
++    self.assertTrue(resumed.try_claim((second, 0)))
++    _, residual = resumed.try_split(0)
++    self.assertEqual([Timestamp(20)], list(residual.completed.values()))
++    # 'a' now returns above the floor, so it reads as new.
++    third = _cursor_results(
++        residual, PollResult.incomplete([_ts('a', 30), _ts('b', 20)]))
++    self.assertEqual(['a'], [o.value for o in third.outputs])
++
+   def test_relist_emits_each_output_exactly_once(self):
+     # A full re-list of a growing collection at strictly increasing event
+-    # times emits each output once; the state never accumulates a hash set.
++    # times emits each output once; the key set stays bounded throughout.
+     state = _initial_polling()
+     emitted = collections.Counter()
+     for round_index in range(10):
+       result = PollResult.incomplete(
+           [_ts('f%d' % i, i + 1) for i in range(round_index + 1)])
+-      new_results = _past_cursor(state, result)
++      new_results = _cursor_results(state, result)
+       tracker = _cursor_tracker(state)
+       self.assertTrue(tracker.try_claim((new_results, 0)))
+       for output in new_results.outputs:
+         emitted[output.value] += 1
+       _, state = tracker.try_split(0)
+-      self.assertEqual(0, len(state.completed))  # O(1) throughout
++      self.assertEqual(1, len(state.completed))
+     self.assertEqual([1] * 10, [emitted['f%d' % i] for i in range(10)])
+     self.assertEqual(Timestamp(10), state.cursor)
+ 
+-  def test_round_below_high_water_mark_keeps_cursor_and_reuses_state(self):
+-    # A round whose outputs are all at or below the cursor emits nothing and
+-    # leaves the cursor unchanged; the (empty) completed map is reused as-is.
++  def test_round_below_the_cursor_leaves_it_unchanged(self):
+     state = _initial_polling()
+     tracker = _cursor_tracker(state)
+-    first = _past_cursor(state, PollResult.incomplete([_ts('a', 10)]))
++    first = _cursor_results(state, PollResult.incomplete([_ts('a', 10)]))
+     self.assertTrue(tracker.try_claim((first, 0)))
+     _, residual1 = tracker.try_split(0)
+-    stale = _past_cursor(
++    stale = _cursor_results(
+         residual1, PollResult.incomplete([_ts('a', 10), _ts('old', 4)]))
+     self.assertEqual((), stale.outputs)
+     resumed = _cursor_tracker(residual1)
+@@ -373,60 +445,42 @@ def test_round_below_high_water_mark_keeps_cursor_and_reuses_state(self):
+     self.assertEqual(Timestamp(10), residual2.cursor)  # unchanged
+     self.assertIs(residual1.completed, residual2.completed)
+ 
+-  def test_claim_rejects_outputs_at_or_below_the_cursor(self):
+-    # The tracker re-validates a claim, so a round that was not filtered
+-    # against the cursor is rejected instead of emitting already-seen outputs.
++  def test_claim_rejects_retained_keys_and_retired_outputs(self):
++    # The tracker re-validates a claim, so a round that was not filtered is
++    # rejected instead of emitting already-seen outputs.
+     state = _initial_polling()
+     tracker = _cursor_tracker(state)
+-    first = _past_cursor(state, PollResult.incomplete([_ts('a', 10)]))
++    first = _cursor_results(state, PollResult.incomplete([_ts('a', 10)]))
+     self.assertTrue(tracker.try_claim((first, 0)))
+     _, residual = tracker.try_split(0)
+-    stale = PollResult.incomplete([_ts('a', 10)])
+-    self.assertFalse(_cursor_tracker(residual).try_claim((stale, 0)))
+-
+-  def test_replay_validates_by_timestamps(self):
+-    # Cursor mode never hashes, so a replay is validated by its timestamps.
+-    pending = PollResult((_ts('a', 1), _ts('b', 2)), MAX_TIMESTAMP)
+-    tracker = _cursor_tracker(_NonPollingGrowthState(pending))
+-    partial = PollResult((_ts('a', 1), ), None)
+-    self.assertFalse(tracker.try_claim((partial, None)))
+-    self.assertTrue(tracker.try_claim((pending, None)))
+-
+-  def test_switching_hash_state_to_cursor_drops_the_hash_map(self):
+-    # A restriction carried over from hash dedup still holds completed hashes;
+-    # cursor mode ignores them, so the first cursor round must drop them and
+-    # make the state O(1) rather than carry dead hashes forever.
+-    legacy = _PollingGrowthState(
+-        collections.OrderedDict([(b'a' * 16, Timestamp(1))]),
+-        None,
+-        never().for_new_input(Timestamp(0), 'input'))
+-    result = _past_cursor(legacy, PollResult.incomplete([_ts('a', 100)]))
+-    tracker = _cursor_tracker(legacy)
+-    self.assertTrue(tracker.try_claim((result, 0)))
+-    _, residual = tracker.try_split(0)
+-    self.assertEqual(0, len(residual.completed))
+-    self.assertEqual(Timestamp(100), residual.cursor)
+-
+-  def test_switching_hash_state_to_cursor_seeds_the_cursor(self):
+-    # Outputs at or below the hash map's greatest recorded event time are
+-    # already seen and must not re-emit after the switch.
+-    legacy = _PollingGrowthState(
+-        collections.OrderedDict([(b'a' * 16, Timestamp(5)),
+-                                 (b'b' * 16, Timestamp(10))]),
+-        None,
+-        never().for_new_input(Timestamp(0), 'input'))
+-    relist = PollResult.incomplete([_ts('a', 5), _ts('b', 10), _ts('c', 20)])
+-    new_results = _past_cursor(legacy, relist)
+-    self.assertEqual(['c'], [o.value for o in new_results.outputs])
++    self.assertFalse(
++        _cursor_tracker(residual).try_claim(
++            (PollResult.incomplete([_ts('a', 10)]), 0)))
++    self.assertFalse(
++        _cursor_tracker(residual).try_claim(
++            (PollResult.incomplete([_ts('old', 4)]), 0)))
++
++  def test_switching_hash_state_to_cursor_keeps_the_keys(self):
++    # A restriction resumed in cursor mode still holds the hashes from its
++    # hash rounds, so nothing re-emits; the cursor retires them from there on.
++    state = _initial_polling()
++    hash_tracker = _tracker(state)
++    first = _new_results(state, PollResult.incomplete([_ts('a', 5)]))
++    self.assertTrue(hash_tracker.try_claim((first, 0)))
++    _, legacy = hash_tracker.try_split(0)
++    self.assertIsNone(legacy.cursor)
++    relist = _cursor_results(
++        legacy, PollResult.incomplete([_ts('a', 5), _ts('c', 20)]))
++    self.assertEqual(['c'], [o.value for o in relist.outputs])
+     tracker = _cursor_tracker(legacy)
+-    self.assertTrue(tracker.try_claim((new_results, 0)))
++    self.assertTrue(tracker.try_claim((relist, 0)))
+     _, residual = tracker.try_split(0)
+-    self.assertEqual(0, len(residual.completed))
+     self.assertEqual(Timestamp(20), residual.cursor)
++    self.assertEqual(1, len(residual.completed))
+ 
+   def test_hash_round_drops_a_stale_cursor(self):
+-    # The reverse switch: a hash round drops the cursor, so a state never
+-    # holds hashes and a cursor at the same time.
++    # The reverse switch: a hash round retains every key, so the cursor that
++    # would retire them is dropped.
+     state = _PollingGrowthState(
+         collections.OrderedDict(), None, 0, cursor=Timestamp(10))
+     tracker = _tracker(state)
+@@ -444,7 +498,7 @@ def encoded_residual_after_claiming(count):
+       result = PollResult.incomplete(
+           [_ts('output%d' % i, i + 1) for i in range(count)])
+       tracker = _cursor_tracker(state)
+-      self.assertTrue(tracker.try_claim((_past_cursor(state, result), 0)))
++      self.assertTrue(tracker.try_claim((_cursor_results(state, result), 0)))
+       _, residual = tracker.try_split(0)
+       return coder.encode(residual)
+ 
+@@ -785,20 +839,26 @@ def test_timestamp_cursor_dedups_growing_source(self):
+               _growing_poll,
+               poll_interval=Duration(0.05),
+               timestamp_cursor=True))
+-      # Each output is emitted exactly once via the high-water-mark cursor,
+-      # with no hash set kept, across poll rounds and checkpoints.
++      # Each output is emitted exactly once, with the cursor retiring keys as
++      # it advances, across poll rounds and checkpoints.
+       assert_that(
+           output,
+           equal_to([('x:', 'x:0'), ('x:', 'x:1'), ('x:', 'x:2'), ('y:', 'y:0'),
+                     ('y:', 'y:1'), ('y:', 'y:2')]))
+ 
+-  def test_timestamp_cursor_rejects_key_spec(self):
+-    with self.assertRaises(ValueError):
+-      Watch(
+-          _complete_poll,
+-          poll_interval=Duration(1),
+-          output_key_fn=_first_char,
+-          timestamp_cursor=True)
++  def test_timestamp_cursor_composes_with_an_output_key(self):
++    # The cursor bounds the state; the key still decides what counts as seen.
++    _POLL_CALLS.clear()
++    with self._in_memory_pipeline() as p:
++      output = (
++          p | beam.Create(['x:'])
++          | Watch(
++              _growing_poll,
++              poll_interval=Duration(0.05),
++              output_key_fn=_first_char,
++              timestamp_cursor=True))
++      # Every output shares a key, so only the first one is ever emitted.
++      assert_that(output, equal_to([('x:', 'x:0')]))
+ 
+   def test_output_key_dedups_across_pipeline(self):
+     with self._in_memory_pipeline() as p:

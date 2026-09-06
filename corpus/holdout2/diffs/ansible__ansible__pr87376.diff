@@ -1,0 +1,447 @@
+diff --git a/changelogs/fragments/mask_inurl_auth.yml b/changelogs/fragments/mask_inurl_auth.yml
+new file mode 100644
+index 00000000000000..4d8c2d532855c9
+--- /dev/null
++++ b/changelogs/fragments/mask_inurl_auth.yml
+@@ -0,0 +1,7 @@
++bugfixes:
++  - module_utils.urls now all errors mask in line url authentication information.
++  - apt_key module now masks authentication information in all displays and returns of uri information.
++  - get_url module now masks authentication information in all displays and returns of uri information.
++  - rpm_key module now masks authentication information in all displays and returns of uri information.
++  - uri module now masks authentication information in all displays and returns of uri information.
++  - url lookup now masks authentication information in all displays and returns of uri information.
+diff --git a/changelogs/fragments/mask_url-password-auth.yml b/changelogs/fragments/mask_url-password-auth.yml
+new file mode 100644
+index 00000000000000..9843fe6c1acac1
+--- /dev/null
++++ b/changelogs/fragments/mask_url-password-auth.yml
+@@ -0,0 +1,4 @@
++bugfixes:
++  - module_utils - ``mask_url`` now masks the password in URLs that contain a
++    password but no username, such as ``redis://:password@host``, instead of
++    returning them unmasked.
+diff --git a/changelogs/fragments/mask_url.yml b/changelogs/fragments/mask_url.yml
+new file mode 100644
+index 00000000000000..7c3564984d95c2
+--- /dev/null
++++ b/changelogs/fragments/mask_url.yml
+@@ -0,0 +1,2 @@
++minor_changes:
++ - mask_url function in module_utils to allow for masking of auth data embedded in urls.
+diff --git a/lib/ansible/module_utils/urls.py b/lib/ansible/module_utils/urls.py
+index a1e36a6c5ce0e0..66a3a03873f246 100644
+--- a/lib/ansible/module_utils/urls.py
++++ b/lib/ansible/module_utils/urls.py
+@@ -49,6 +49,7 @@
+ import types  # pylint: disable=unused-import
+ import urllib.error
+ import urllib.request
++
+ from contextlib import contextmanager
+ from http import cookiejar
+ from urllib.parse import unquote, urlparse, urlunparse
+@@ -316,6 +317,24 @@ def as_list(self):
+         return [self.get(k, None) for k in ('scheme', 'netloc', 'path', 'params', 'query', 'fragment')]
+ 
+ 
++def mask_url(url: str) -> str:
++    """
++    Safely display a url by masking confidential data
++    from a string or the result from urlparse/split
++    """
++    if (parsed_url := urlparse(url)) and not parsed_url.username and not parsed_url.password:
++        return url
++
++    netloc: str
++    mask = '****'
++    if parsed_url.password:
++        netloc = parsed_url.netloc.replace(f'{parsed_url.username}:{parsed_url.password}@', f'{mask}:{mask}@')
++    else:
++        netloc = parsed_url.netloc.replace(f'{parsed_url.username}@', f'{mask}@')
++
++    return urlunparse(parsed_url._replace(netloc=netloc))
++
++
+ def generic_urlparse(parts):
+     """
+     Returns a dictionary of url parts as parsed by urlparse,
+@@ -1235,7 +1254,7 @@ def fetch_url(module, url, data=None, headers=None, method=None,
+         cookies = cookiejar.CookieJar()
+ 
+     r = None
+-    info = dict(url=url, status=-1)
++    info = dict(url=mask_url(url), status=-1)
+     try:
+         r = open_url(url, data=data, headers=headers, method=method,
+                      use_proxy=use_proxy, force=force, last_mod_time=last_mod_time, timeout=timeout,
+@@ -1272,7 +1291,7 @@ def fetch_url(module, url, data=None, headers=None, method=None,
+ 
+         info['cookies'] = cookie_dict
+         # finally update the result with a message about the fetch
+-        info.update(dict(msg="OK (%s bytes)" % r.headers.get('Content-Length', 'unknown'), url=r.geturl(), status=r.code))
++        info.update(dict(msg="OK (%s bytes)" % r.headers.get('Content-Length', 'unknown'), url=mask_url(r.geturl()), status=r.code))
+     except (ConnectionError, ValueError) as e:
+         module.fail_json(msg=to_native(e), **info)
+     except MissingModuleError as e:
+@@ -1392,14 +1411,14 @@ def fetch_file(module, url, data=None, headers=None, method=None,
+                               unredirected_headers=unredirected_headers, decompress=decompress, ciphers=ciphers,
+                               ca_path=ca_path, cookies=cookies)
+         if not rsp or (rsp.code and rsp.code >= 400):
+-            module.fail_json(msg="Failure downloading %s, %s" % (url, info['msg']))
++            module.fail_json(msg="Failure downloading %s, %s" % (mask_url(url), info['msg']))
+         data = rsp.read(bufsize)
+         while data:
+             fetch_temp_file.write(data)
+             data = rsp.read(bufsize)
+         fetch_temp_file.close()
+     except Exception as e:
+-        module.fail_json(msg="Failure downloading %s, %s" % (url, to_native(e)))
++        module.fail_json(msg="Failure downloading %s, %s" % (mask_url(url), to_native(e)))
+     return fetch_temp_file.name
+ 
+ 
+diff --git a/lib/ansible/modules/apt_key.py b/lib/ansible/modules/apt_key.py
+index 06648041e323a2..c85b9d4b4187a1 100644
+--- a/lib/ansible/modules/apt_key.py
++++ b/lib/ansible/modules/apt_key.py
+@@ -175,7 +175,7 @@
+ from ansible.module_utils.common.text.converters import to_native
+ from ansible.module_utils.basic import AnsibleModule
+ from ansible.module_utils.common.locale import get_best_parsable_locale
+-from ansible.module_utils.urls import fetch_url
++from ansible.module_utils.urls import fetch_url, mask_url
+ 
+ 
+ apt_key_bin = None
+@@ -313,11 +313,11 @@ def download_key(module, url):
+         # note: validate_certs and other args are pulled from module directly
+         rsp, info = fetch_url(module, url, use_proxy=True)
+         if info['status'] != 200:
+-            module.fail_json(msg="Failed to download key at %s: %s" % (url, info['msg']))
++            module.fail_json(msg="Failed to download key at %s: %s" % (mask_url(url), info['msg']))
+ 
+         return rsp.read()
+     except Exception:
+-        module.fail_json(msg=f"Error getting key id from url: {url}")
++        module.fail_json(msg=f"Error getting key id from url: {mask_url(url)}")
+ 
+ 
+ def get_key_id_from_file(module, filename, data=None):
+diff --git a/lib/ansible/modules/get_url.py b/lib/ansible/modules/get_url.py
+index 39278fc211109a..fce82317df0077 100644
+--- a/lib/ansible/modules/get_url.py
++++ b/lib/ansible/modules/get_url.py
+@@ -378,7 +378,7 @@
+ 
+ from ansible.module_utils.basic import AnsibleModule
+ from ansible.module_utils.common.text.converters import to_native
+-from ansible.module_utils.urls import fetch_url, url_argument_spec
++from ansible.module_utils.urls import fetch_url, url_argument_spec, mask_url
+ 
+ # ==============================================================
+ # url handling
+@@ -405,14 +405,14 @@ def url_get(module, url, dest, use_proxy, last_mod_time, force, timeout=10, head
+     elapsed = (datetime.now(timezone.utc) - start).seconds
+ 
+     if info['status'] == 304:
+-        module.exit_json(url=url, dest=dest, changed=False, msg=info.get('msg', ''), status_code=info['status'], elapsed=elapsed)
++        module.exit_json(url=mask_url(url), dest=dest, changed=False, msg=info.get('msg', ''), status_code=info['status'], elapsed=elapsed)
+ 
+     # Exceptions in fetch_url may result in a status -1, the ensures a proper error to the user in all cases
+     if info['status'] == -1:
+-        module.fail_json(msg=info['msg'], url=url, dest=dest, elapsed=elapsed)
++        module.fail_json(msg=info['msg'], url=mask_url(url), dest=dest, elapsed=elapsed)
+ 
+     if info['status'] != 200 and not url.startswith('file:/') and not (url.startswith('ftp:/') and info.get('msg', '').startswith('OK')):
+-        module.fail_json(msg="Request failed", status_code=info['status'], response=info['msg'], url=url, dest=dest, elapsed=elapsed)
++        module.fail_json(msg="Request failed", status_code=info['status'], response=info['msg'], url=mask_url(url), dest=dest, elapsed=elapsed)
+ 
+     # create a temporary file and copy content to do checksum-based replacement
+     if tmp_dest:
+@@ -555,7 +555,7 @@ def main():
+         checksum_src=None,
+         dest=dest,
+         elapsed=0,
+-        url=url,
++        url=mask_url(url),
+     )
+ 
+     dest_is_dir = os.path.isdir(dest)
+@@ -587,7 +587,7 @@ def main():
+                 checksum = None
+ 
+             if checksum is None:
+-                module.fail_json(msg="Unable to find a checksum for file '%s' in '%s'" % (filename, checksum_url))
++                module.fail_json(msg="Unable to find a checksum for file '%s' in '%s'" % (filename, mask_url(checksum_url)))
+         # Remove any non-alphanumeric characters, including the infamous
+         # Unicode zero-width space
+         checksum = re.sub(r'\W+', '', checksum).lower()
+diff --git a/lib/ansible/modules/rpm_key.py b/lib/ansible/modules/rpm_key.py
+index 9f78c5028bac33..06615146d56191 100644
+--- a/lib/ansible/modules/rpm_key.py
++++ b/lib/ansible/modules/rpm_key.py
+@@ -96,7 +96,7 @@
+ 
+ # import module snippets
+ from ansible.module_utils.basic import AnsibleModule
+-from ansible.module_utils.urls import fetch_url
++from ansible.module_utils.urls import fetch_url, mask_url
+ from ansible.module_utils.compat.version import LooseVersion
+ from ansible.module_utils.common.text.converters import to_native
+ 
+@@ -475,11 +475,11 @@ def fetch_key(self, url: str) -> str:
+         """Downloads a key from url, returns a valid path to a gpg key"""
+         rsp, info = fetch_url(self.module, url)
+         if info['status'] != 200:
+-            self.module.fail_json(msg="failed to fetch key at %s , error was: %s" % (url, info['msg']))
++            self.module.fail_json(msg="failed to fetch key at %s , error was: %s" % (mask_url(url), info['msg']))
+ 
+         key = rsp.read()
+         if not is_pubkey(key):
+-            self.module.fail_json(msg="Not a public key: %s" % url)
++            self.module.fail_json(msg="Not a public key: %s" % mask_url(url))
+         tmpfd, tmpname = tempfile.mkstemp()
+         self.module.add_cleanup_file(tmpname)
+         with os.fdopen(tmpfd, "w+b") as tmpfile:
+diff --git a/lib/ansible/modules/uri.py b/lib/ansible/modules/uri.py
+index ceb6bcae764bac..10959066a00892 100644
+--- a/lib/ansible/modules/uri.py
++++ b/lib/ansible/modules/uri.py
+@@ -447,6 +447,7 @@
+ from ansible.module_utils.urls import (
+     fetch_url,
+     get_response_filename,
++    mask_url,
+     parse_content_type,
+     prepare_multipart,
+     url_argument_spec,
+@@ -635,6 +636,9 @@ def main():
+     ciphers = module.params['ciphers']
+     use_netrc = module.params['use_netrc']
+ 
++    # for errors and to compare to fetched responses
++    masked_url = mask_url(url)
++
+     if not re.match('^[A-Z]+$', method):
+         module.fail_json(msg="Parameter 'method' needs to be a single word in uppercase, like GET or POST.")
+ 
+@@ -716,14 +720,14 @@ def main():
+             # may have been stored in the info as 'body'
+             content = info.pop('body', b'')
+         except http.client.HTTPException as http_err:
+-            module.fail_json(msg=f"HTTP Error while fetching {url}: {to_native(http_err)}")
++            module.fail_json(msg=f"HTTP Error while fetching {masked_url}: {to_native(http_err)}")
+     elif r:
+         content = r
+     else:
+         content = None
+ 
+     resp = {}
+-    resp['redirected'] = info['url'] != url
++    resp['redirected'] = info['url'] != masked_url
+     resp.update(info)
+ 
+     resp['elapsed'] = elapsed
+@@ -751,7 +755,7 @@ def main():
+         uresp[ukey] = value
+ 
+     if 'location' in uresp:
+-        uresp['location'] = urljoin(url, uresp['location'])
++        uresp['location'] = urljoin(masked_url, uresp['location'])
+ 
+     # Default content_encoding to try
+     if isinstance(content, bytes):
+diff --git a/lib/ansible/plugins/action/unarchive.py b/lib/ansible/plugins/action/unarchive.py
+index be2740a81d6e49..50fdeff4e6c0f3 100644
+--- a/lib/ansible/plugins/action/unarchive.py
++++ b/lib/ansible/plugins/action/unarchive.py
+@@ -21,6 +21,7 @@
+ 
+ from ansible.errors import AnsibleActionFail, AnsibleActionSkip
+ from ansible.module_utils.parsing.convert_bool import boolean
++from ansible.module_utils.urls import mask_url
+ from ansible.plugins.action import ActionBase
+ 
+ 
+@@ -64,10 +65,15 @@ def run(self, tmp=None, task_vars=None):
+                     raise AnsibleActionSkip("skipped, since %s exists" % creates)
+ 
+             dest = self._remote_expand_user(dest)  # CCTODO: Fix path for Windows hosts.
+-            source = os.path.expanduser(source)
+ 
++            # if not remote, we need to get source at controller
+             if not remote_src:
+-                source = self._loader.get_real_file(self._find_needle('files', source), decrypt=decrypt)
++                if '://' in source:
++                    # TODO: implement using open_url?
++                    raise AnsibleActionFail(f"Unsupported option, an URI src ({mask_url(source)}) is only supported when remote_src is True")
++                else:
++                    source = os.path.expanduser(source)
++                    source = self._loader.get_real_file(self._find_needle('files', source), decrypt=decrypt)
+ 
+             remote_stat = self._execute_remote_stat(dest, all_vars=task_vars, follow=True)
+ 
+diff --git a/lib/ansible/plugins/lookup/url.py b/lib/ansible/plugins/lookup/url.py
+index 26c7c09d278edb..b2d4fcb0596b10 100644
+--- a/lib/ansible/plugins/lookup/url.py
++++ b/lib/ansible/plugins/lookup/url.py
+@@ -211,8 +211,8 @@
+ from urllib.error import HTTPError, URLError
+ 
+ from ansible.errors import AnsibleError
+-from ansible.module_utils.common.text.converters import to_text, to_native
+-from ansible.module_utils.urls import open_url, ConnectionError, SSLValidationError
++from ansible.module_utils.common.text.converters import to_text
++from ansible.module_utils.urls import open_url, mask_url, ConnectionError, SSLValidationError
+ from ansible.plugins.lookup import LookupBase
+ from ansible.utils.display import Display
+ 
+@@ -227,7 +227,7 @@ def run(self, terms, variables=None, **kwargs):
+ 
+         ret = []
+         for term in terms:
+-            display.vvvv("url lookup connecting to %s" % term)
++            display.vvvv("url lookup connecting to %s" % mask_url(term))
+             if self.get_option('follow_redirects') in ('yes', 'no'):
+                 display.deprecated(
+                     msg="Using 'yes' or 'no' for 'follow_redirects' parameter is deprecated.",
+@@ -253,13 +253,13 @@ def run(self, terms, variables=None, **kwargs):
+                     use_netrc=self.get_option('use_netrc')
+                 )
+             except HTTPError as e:
+-                raise AnsibleError("Received HTTP error for %s : %s" % (term, to_native(e)))
++                raise AnsibleError(f"Received HTTP error for {mask_url(term)}") from e
+             except URLError as e:
+-                raise AnsibleError("Failed lookup url for %s : %s" % (term, to_native(e)))
++                raise AnsibleError(f"Failed lookup url for {mask_url(term)}") from e
+             except SSLValidationError as e:
+-                raise AnsibleError("Error validating the server's certificate for %s: %s" % (term, to_native(e)))
++                raise AnsibleError(f"Error validating the server's certificate for {mask_url(term)}") from e
+             except ConnectionError as e:
+-                raise AnsibleError("Error connecting to %s: %s" % (term, to_native(e)))
++                raise AnsibleError(f"Error connecting to {mask_url(term)}") from e
+ 
+             if self.get_option('split_lines'):
+                 for line in response.read().splitlines():
+diff --git a/test/integration/targets/get_url/tasks/main.yml b/test/integration/targets/get_url/tasks/main.yml
+index f03fb87fca1d4a..dbd889a75a411a 100644
+--- a/test/integration/targets/get_url/tasks/main.yml
++++ b/test/integration/targets/get_url/tasks/main.yml
+@@ -835,3 +835,15 @@
+ - assert:
+     that:
+       - get_dir_filename.dest == remote_tmp_dir ~ "/filename.json"
++
++- name: Test auth fail downloading to dir
++  get_url:
++    url: 'https://secretuser:secretpassword@{{ httpbin_host }}/nonexistant'
++    dest: "{{ remote_tmp_dir }}"
++  ignore_errors: true
++  register: auth_error
++
++- name: Ensure secret is not visible
++  assert:
++    that:
++      - "'secret' not in auth_error|to_json"
+diff --git a/test/integration/targets/unarchive/auth_mask.yml b/test/integration/targets/unarchive/auth_mask.yml
+new file mode 100644
+index 00000000000000..a75fefd65d3a33
+--- /dev/null
++++ b/test/integration/targets/unarchive/auth_mask.yml
+@@ -0,0 +1,18 @@
++- hosts: testhost
++  gather_facts: false
++  tasks:
++  - name: unarchive auth fail a tar from an URL download from remote
++    unarchive: src="http://secretuser:secretpassword@localhost/nothere" dest="/tmp/" remote_src=no
++    ignore_errors: true
++    register: auth1
++  
++  - name: unarchive auth fail a tar from an URL download from controller
++    unarchive: src="http://secretuser:secretpassword@localhost/nothere" dest="/tmp/" remote_src=yes
++    ignore_errors: true
++    register: auth2
++  
++  - name: ensure not disclosure
++    assert:
++      that:
++        - "'secret' not in auth1|to_json"
++        - "'secret' not in auth2|to_json"
+diff --git a/test/integration/targets/unarchive/runme.sh b/test/integration/targets/unarchive/runme.sh
+index 5351a0c24554d3..560267f5ffcaee 100755
+--- a/test/integration/targets/unarchive/runme.sh
++++ b/test/integration/targets/unarchive/runme.sh
+@@ -6,3 +6,8 @@ ansible-playbook -i ../../inventory runme.yml -v "$@"
+ 
+ # https://github.com/ansible/ansible/issues/80710
+ ANSIBLE_REMOTE_TMP=./ansible ansible-playbook -i ../../inventory test_relative_tmp_dir.yml -v "$@"
++
++# ensure uri inline secrets are masked
++ULOG="${OUTPUT_DIR}/$$-unarchive.log"
++ansible-playbook auth_mask.yml -i ../../inventory "$@" 2>&1 | tee "${ULOG}"
++[ "$(grep -Ec 'secret' "${ULOG}")" = "0" ]
+diff --git a/test/integration/targets/uri/tasks/main.yml b/test/integration/targets/uri/tasks/main.yml
+index 62748d7591f28f..2426a8b64a78a8 100644
+--- a/test/integration/targets/uri/tasks/main.yml
++++ b/test/integration/targets/uri/tasks/main.yml
+@@ -774,3 +774,15 @@
+   assert:
+     that:
+       - uri_check.msg == "This action (uri) does not support check mode."
++
++- name: Test auth fail downloading to dir
++  uri:
++    url: 'https://secretuser:secretpassword@{{ httpbin_host }}/nonexistant'
++    dest: "{{ remote_tmp_dir }}"
++  ignore_errors: true
++  register: auth_error
++
++- name: Ensure secret is not visible
++  assert:
++    that:
++      - "'secret' not in auth_error|to_json"
+diff --git a/test/units/module_utils/urls/test_mask_url.py b/test/units/module_utils/urls/test_mask_url.py
+new file mode 100644
+index 00000000000000..a987813a442511
+--- /dev/null
++++ b/test/units/module_utils/urls/test_mask_url.py
+@@ -0,0 +1,38 @@
++# -*- coding: utf-8 -*-
++# (c) 2026 The Ansible Project
++# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
++
++from __future__ import annotations
++
++import pytest
++
++from ansible.module_utils.urls import mask_url
++
++
++# for test data use 'secret' as part of any parameter that requires masking, avoid elsewhere
++@pytest.mark.parametrize(
++    'url, wanted',
++    (
++        ('http://nothingtoseehere.com', ('nothingtoseehere.com', 'http')),
++        ('http://nothingtoseehere.com:80/stuff.asp?he=no', ('http://nothingtoseehere.com:80/stuff.asp?he=no',)),
++        ('http://nothingtoseehere.com:80?password=intheclear&user=wrongbutweignore', ('wrongbut', 'intheclear', 'password')),
++        ('https://secretuser@hideme.com/index.html', ('hideme.com', 'index.html', '*')),
++        ('https://secretuser@hideme.com/index.html?token=nothidden&user=alsonothidden', ('token', 'nothidden', 'alsonothidden', 'user')),
++        ('https://secretuser:secretpass@hideme.com/randomfile.html', ('randomfile.html')),
++        ('https://secretuser:secretpass@hideme.com:443/protected.html', ('protected.html', '443')),
++        ('ftp://secretuser:secretpass@files.insecure/subdir/intheclear.txt', ('subdir', 'intheclear.txt', 'ftp', 'files.insecure')),
++        ('sftp://secretuser:secretpass@files.secure/subdir2/encrypted', ('encrypted', 'sftp')),
++        ('ftps://secretuser:secretpass@file.secure/yolo.asc', ('yolo.asc', 'file.secure')),
++        ('ftps://file.server/yolo.asc', ('yolo.asc')),
++        ('ftps://secretuser:secretsecret@file.server/yolo.asc', ('file.server/yolo.asc')),
++        ('redis://:secretpass@cache.internal:6379/0', ('cache.internal', '6379', 'redis')),
++        ('amqp://:secretpw@rabbit.internal:5672/vhost', ('rabbit.internal', '5672', 'vhost')),
++    )
++)
++def test_mask_url(url, wanted):
++
++    masked = mask_url(url)
++    assert 'secret' not in masked
++
++    for notmasked in wanted:
++        assert notmasked in masked

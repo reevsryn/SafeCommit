@@ -1,0 +1,192 @@
+diff --git a/.changes/unreleased/Fixes-20260812-130820.yaml b/.changes/unreleased/Fixes-20260812-130820.yaml
+new file mode 100644
+index 00000000000..b7f90b2be6c
+--- /dev/null
++++ b/.changes/unreleased/Fixes-20260812-130820.yaml
+@@ -0,0 +1,8 @@
++kind: Fixes
++body: Re-parse the built-in generic tests (test_not_null, test_unique, test_accepted_values,
++    test_relationships) after loading a Fusion-generated manifest, so they are not
++    permanently evicted and left undefined at test-compile time
++time: 2026-08-12T13:08:20.000000-06:00
++custom:
++    Author: aiguofer
++    Issue: "15914"
+diff --git a/.changes/unreleased/Fixes-20260812-133414.yaml b/.changes/unreleased/Fixes-20260812-133414.yaml
+new file mode 100644
+index 00000000000..02872c0e5b3
+--- /dev/null
++++ b/.changes/unreleased/Fixes-20260812-133414.yaml
+@@ -0,0 +1,8 @@
++kind: Fixes
++body: Write target/manifest.json from the corrected in-memory manifest after loading
++    a Fusion-generated manifest, so the on-disk artifact reflects the rediscovered
++    adapter macros actually used for compilation instead of Fusion's raw bundled macros
++time: 2026-08-12T13:34:14.000000-06:00
++custom:
++    Author: aiguofer
++    Issue: ""
+diff --git a/core/dbt/parser/fusion.py b/core/dbt/parser/fusion.py
+index 124b3a721d2..596700f9faf 100644
+--- a/core/dbt/parser/fusion.py
++++ b/core/dbt/parser/fusion.py
+@@ -82,9 +82,9 @@ def parse_with_fusion(
+             writable_manifest = _load_writable_manifest(manifest_path)
+ 
+             if write and write_json:
+-                # Copy v2 parser artifacts rather than re-serializing through write_manifest
++                # macro rediscovery below doesn't affect semantic models, so
++                # semantic_manifest.json needs no correction pass.
+                 project_target_path.mkdir(parents=True, exist_ok=True)
+-                shutil.copyfile(manifest_path, project_target_path / "manifest.json")
+                 semantic_manifest_path = handoff / "semantic_manifest.json"
+                 if semantic_manifest_path.exists():
+                     shutil.copyfile(
+@@ -128,6 +128,15 @@ def parse_with_fusion(
+     _delete_stale_partial_parse(project_target_path)
+ 
+     if write and write_json:
++        # Written from the corrected manifest so the on-disk artifact reflects
++        # rediscovered adapter macros rather than Fusion's bundled ones.
++        # write_manifest() isn't reusable here: it no-ops under USE_V2_PARSER
++        # and would also rewrite the semantic_manifest.json copied above.
++        from dbt.utils.artifact_upload import add_artifact_produced
++
++        manifest_out_path = str(project_target_path / "manifest.json")
++        manifest.write(manifest_out_path)
++        add_artifact_produced(manifest_out_path)
+         enrich_manifest_with_plugin_artifacts(manifest, runtime_config.project_name)
+ 
+     return manifest
+@@ -148,10 +157,11 @@ def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig
+     )
+     from dbt.context.macro_resolver import MacroResolver
+     from dbt.mp_context import get_mp_context
++    from dbt.parser.generic_test import GenericTestParser
+     from dbt.parser.macros import MacroParser
+     from dbt.parser.manifest import resolve_macro_depends_on
+     from dbt.parser.read_files import load_source_file
+-    from dbt.parser.search import FileBlock
++    from dbt.parser.search import FileBlock, filesystem_search
+ 
+     adapter_type = runtime_config.credentials.type
+     load_plugin(adapter_type)
+@@ -183,6 +193,18 @@ def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig
+             if source_file:
+                 macro_parser.parse_file(FileBlock(source_file))
+ 
++        # Eviction above only restores via MacroParser, so the built-in generic
++        # tests (parsed separately by GenericTestParser) are lost without this pass.
++        generic_test_parser = GenericTestParser(project, manifest)
++        for path in filesystem_search(
++            project=project, relative_dirs=project.generic_test_paths, extension=".sql"
++        ):
++            source_file = load_source_file(
++                path, ParseFileType.GenericTest, project.project_name, {}
++            )
++            if source_file:
++                generic_test_parser.parse_file(FileBlock(source_file))
++
+     new_macro_ids = set(manifest.macros.keys()) - pre_existing_ids
+     if new_macro_ids:
+         macro_resolver = MacroResolver(
+diff --git a/tests/unit/parser/test_fusion.py b/tests/unit/parser/test_fusion.py
+index 76ad89833a3..883c85a6000 100644
+--- a/tests/unit/parser/test_fusion.py
++++ b/tests/unit/parser/test_fusion.py
+@@ -308,9 +308,16 @@ def test_no_write_json_leaves_target_dir_untouched(self, tmp_path: Path, _patch_
+             parse_with_fusion(self._runtime_config(target), write=True, write_json=False)
+         assert list(target.iterdir()) == []
+ 
+-    def test_write_json_copies_manifest_to_target_dir(self, tmp_path: Path, _patch_fusion_deps):
++    def test_write_json_writes_corrected_manifest_to_target_dir(
++        self, tmp_path: Path, _patch_fusion_deps
++    ):
++        """manifest.json must be written from the corrected in-memory Manifest
++        (after rediscover_adapter_macros) rather than copied from Fusion's raw
++        handoff file, so the on-disk artifact reflects the rediscovered macros
++        actually used for compilation."""
+         target = tmp_path / "target"
+         target.mkdir()
++        corrected_manifest = mock.MagicMock()
+         with mock.patch(
+             "dbt.parser.fusion.subprocess.run",
+             side_effect=_fake_parser(json.dumps({"metadata": {}})),
+@@ -319,10 +326,10 @@ def test_write_json_copies_manifest_to_target_dir(self, tmp_path: Path, _patch_f
+             return_value=mock.MagicMock(),
+         ), mock.patch(
+             "dbt.parser.fusion.Manifest.from_writable_manifest",
+-            return_value=mock.MagicMock(),
++            return_value=corrected_manifest,
+         ):
+             parse_with_fusion(self._runtime_config(target), write=True, write_json=True)
+-        assert (target / "manifest.json").exists()
++        corrected_manifest.write.assert_called_once_with(str(target / "manifest.json"))
+ 
+ 
+ class TestParseWithFusionTelemetry:
+@@ -489,6 +496,64 @@ def test_skips_none_source_file(self):
+ 
+         mock_parser_instance.parse_file.assert_not_called()
+ 
++    def test_restores_evicted_generic_test_macros(self):
++        """The four built-in generic tests (test_not_null, test_unique,
++        test_accepted_values, test_relationships) are {% test %} blocks under
++        tests/generic/, parsed by GenericTestParser over generic_test_paths --
++        not by MacroParser over macro_paths. Eviction removes them (their
++        package_name is "dbt"), so the GenericTestParser reparse pass must
++        restore them; otherwise test compilation fails with 'test_not_null'
++        is undefined (regression from issue #15914)."""
++        from dbt.contracts.graph.nodes import Macro
++        from dbt.node_types import NodeType
++
++        stale = self._make_macro("macro.dbt.test_not_null", "dbt")
++
++        manifest = mock.MagicMock()
++        manifest.macros = {"macro.dbt.test_not_null": stale}
++
++        dbt_project = mock.MagicMock()
++        dbt_project.project_name = "dbt"
++
++        runtime_config = mock.MagicMock()
++        runtime_config.credentials.type = "postgres"
++        runtime_config.project_name = "my_project"
++        runtime_config.load_projects.return_value = [("dbt", dbt_project)]
++
++        restored = Macro(
++            name="test_not_null",
++            resource_type=NodeType.Macro,
++            package_name="dbt",
++            path="tests/generic/builtin.sql",
++            original_file_path="tests/generic/builtin.sql",
++            unique_id="macro.dbt.test_not_null",
++            macro_sql="{% test not_null(model, column_name) %}select 1{% endtest %}",
++        )
++
++        def _parse_file_side_effect(block):
++            manifest.macros[restored.unique_id] = restored
++
++        with mock.patch("dbt.adapters.factory.load_plugin"), mock.patch(
++            "dbt.adapters.factory.get_adapter_package_names",
++            return_value=["dbt_postgres", "dbt"],
++        ), mock.patch("dbt.adapters.factory.get_include_paths", return_value=[]), mock.patch(
++            "dbt.parser.macros.MacroParser"
++        ), mock.patch(
++            "dbt.parser.read_files.load_source_file", return_value=mock.MagicMock()
++        ), mock.patch(
++            "dbt.parser.search.filesystem_search", return_value=[mock.MagicMock()]
++        ), mock.patch(
++            "dbt.parser.generic_test.GenericTestParser"
++        ) as MockGenericTestParser, mock.patch(
++            "dbt.parser.manifest.get_adapter", return_value=mock.MagicMock()
++        ):
++            MockGenericTestParser.return_value.parse_file.side_effect = _parse_file_side_effect
++
++            rediscover_adapter_macros(manifest, runtime_config)
++
++        assert "macro.dbt.test_not_null" in manifest.macros
++        MockGenericTestParser.return_value.parse_file.assert_called_once()
++
+     def test_populates_depends_on_for_reparsed_macros(self):
+         """A re-parsed adapter macro that calls another macro should get
+         depends_on.macros populated, mirroring what ManifestLoader.macro_depends_on

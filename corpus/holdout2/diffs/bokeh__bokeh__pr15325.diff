@@ -1,0 +1,299 @@
+diff --git a/bokehjs/test/baselines/linux/Bug__in_issue_#12187__displays_dates_as_zero_epoch_in_a_DataTable_if_one_element_isn't_a_date.blf b/bokehjs/test/baselines/linux/Bug__in_issue_#12187__displays_dates_as_zero_epoch_in_a_DataTable_if_one_element_isn't_a_date.blf
+new file mode 100644
+index 00000000000..d8600c6ddb8
+--- /dev/null
++++ b/bokehjs/test/baselines/linux/Bug__in_issue_#12187__displays_dates_as_zero_epoch_in_a_DataTable_if_one_element_isn't_a_date.blf
+@@ -0,0 +1 @@
++DataTable bbox=[0, 0, 400, 280]
+diff --git a/bokehjs/test/baselines/linux/Bug__in_issue_#12187__displays_dates_as_zero_epoch_in_a_DataTable_if_one_element_isn't_a_date.png b/bokehjs/test/baselines/linux/Bug__in_issue_#12187__displays_dates_as_zero_epoch_in_a_DataTable_if_one_element_isn't_a_date.png
+new file mode 100644
+index 00000000000..4fc0324f4a7
+Binary files /dev/null and b/bokehjs/test/baselines/linux/Bug__in_issue_#12187__displays_dates_as_zero_epoch_in_a_DataTable_if_one_element_isn't_a_date.png differ
+diff --git a/bokehjs/test/baselines/linux/Bug__in_issue_#12187__shows_dates_as_zero_epoch_in_a_DataTable_if_the_date_column_contains_a_NaN.blf b/bokehjs/test/baselines/linux/Bug__in_issue_#12187__shows_dates_as_zero_epoch_in_a_DataTable_if_the_date_column_contains_a_NaN.blf
+new file mode 100644
+index 00000000000..c30a6b35507
+--- /dev/null
++++ b/bokehjs/test/baselines/linux/Bug__in_issue_#12187__shows_dates_as_zero_epoch_in_a_DataTable_if_the_date_column_contains_a_NaN.blf
+@@ -0,0 +1 @@
++DataTable bbox=[0, 0, 600, 400]
+diff --git a/bokehjs/test/baselines/linux/Bug__in_issue_#12187__shows_dates_as_zero_epoch_in_a_DataTable_if_the_date_column_contains_a_NaN.png b/bokehjs/test/baselines/linux/Bug__in_issue_#12187__shows_dates_as_zero_epoch_in_a_DataTable_if_the_date_column_contains_a_NaN.png
+new file mode 100644
+index 00000000000..3f7448bcfee
+Binary files /dev/null and b/bokehjs/test/baselines/linux/Bug__in_issue_#12187__shows_dates_as_zero_epoch_in_a_DataTable_if_the_date_column_contains_a_NaN.png differ
+diff --git a/bokehjs/test/integration/cross.ts b/bokehjs/test/integration/cross.ts
+index 7695947deda..e2040c37718 100644
+--- a/bokehjs/test/integration/cross.ts
++++ b/bokehjs/test/integration/cross.ts
+@@ -6,10 +6,12 @@ import json5 from "json5"
+ 
+ import {version} from "@bokehjs/version"
+ import type {DocJson} from "@bokehjs/document"
++import type {ColumnarDataSource} from "@bokehjs/models"
+ import {Document} from "@bokehjs/document"
+ import {GlyphRenderer} from "@bokehjs/models"
+ import {PlotView} from "@bokehjs/models/plots/plot"
+ import {GridPlotView} from "@bokehjs/models/plots/grid_plot"
++import {DataTableView} from "@bokehjs/models/widgets/tables/data_table"
+ 
+ async function test(name: string) {
+   const response = await fetch(`/cases/${name}`)
+@@ -80,4 +82,22 @@ describe("Bug", () => {
+       await test("regressions/issue_13964.json5")
+     })
+   })
++
++  describe("in issue #12187", () => {
++    it("displays dates as zero epoch in a DataTable if one element isn't a date", async () => {
++      const {views} = await test("regressions/issue_12187.json5")
++      const [t] = views
++      expect_instanceof(t, DataTableView)
++
++      const source = t.model.source as ColumnarDataSource
++      const dates = source.get_array("dates")
++
++      expect(dates.length).to.be.equal(10)
++      expect(Number.isNaN(dates[0])).to.be.true
++      for (let i = 1; i < dates.length; i++) {
++        const day = String(i + 1).padStart(2, "0")
++        expect(dates[i]).to.be.equal(`2014-03-${day}`)
++      }
++    })
++  })
+ })
+diff --git a/bokehjs/test/integration/regressions.ts b/bokehjs/test/integration/regressions.ts
+index 57c7c4bb845..33b04ac9974 100644
+--- a/bokehjs/test/integration/regressions.ts
++++ b/bokehjs/test/integration/regressions.ts
+@@ -5531,4 +5531,30 @@ describe("Bug", () => {
+       await expect_contained("above", [450, 350], "top_right")
+     })
+   })
++
++  describe("in issue #12187", () => {
++    it("shows dates as zero epoch in a DataTable if the date column contains a NaN", async () => {
++      const source = new ColumnDataSource({
++        data: {
++          dates: [
++            NaN,
++            1393632000000, // 2014-03-01
++            1393718400000, // 2014-03-02
++            1393804800000, // 2014-03-03
++            1393891200000, // 2014-03-04
++          ],
++          downloads: [0, 10, 20, 30, 40],
++        },
++      })
++
++      const columns = [
++        new TableColumn({field: "dates", title: "Date", formatter: new DateFormatter()}),
++        new TableColumn({field: "downloads", title: "Downloads"}),
++      ]
++
++      const table = new DataTable({source, columns})
++
++      await display(table, [600, 400])
++    })
++  })
+ })
+diff --git a/tests/baselines/cross/regressions/issue_12187.json5 b/tests/baselines/cross/regressions/issue_12187.json5
+new file mode 100644
+index 00000000000..23843aafa4c
+--- /dev/null
++++ b/tests/baselines/cross/regressions/issue_12187.json5
+@@ -0,0 +1,159 @@
++{
++  config: {
++    type: "object",
++    name: "DocumentConfig",
++    id: "p1022",
++    attributes: {
++      notifications: {
++        type: "object",
++        name: "Notifications",
++        id: "p1023",
++      },
++    },
++  },
++  roots: [
++    {
++      type: "object",
++      name: "DataTable",
++      id: "p1016",
++      attributes: {
++        width: 400,
++        height: 280,
++        source: {
++          type: "object",
++          name: "ColumnDataSource",
++          id: "p1006",
++          attributes: {
++            selected: {
++              type: "object",
++              name: "Selection",
++              id: "p1007",
++              attributes: {
++                indices: [],
++                line_indices: [],
++              },
++            },
++            selection_policy: {
++              type: "object",
++              name: "UnionRenderers",
++              id: "p1008",
++            },
++            data: {
++              type: "map",
++              entries: [
++                [
++                  "index",
++                  {
++                    type: "ndarray",
++                    array: {
++                      type: "bytes",
++                      data: "H4sIAAEAAAAA/w3DiQ0AIAwEoNP6df+FhYQkGU7L5fZ4fbYfAnnvjSgAAAA=",
++                    },
++                    shape: [
++                      10,
++                    ],
++                    dtype: "int32",
++                    order: "little",
++                  },
++                ],
++                [
++                  "dates",
++                  {
++                    type: "ndarray",
++                    array: [
++                      {
++                        type: "number",
++                        value: "nan",
++                      },
++                      "2014-03-02",
++                      "2014-03-03",
++                      "2014-03-04",
++                      "2014-03-05",
++                      "2014-03-06",
++                      "2014-03-07",
++                      "2014-03-08",
++                      "2014-03-09",
++                      "2014-03-10",
++                    ],
++                    shape: [
++                      10,
++                    ],
++                    dtype: "object",
++                    order: "little",
++                  },
++                ],
++                [
++                  "downloads",
++                  {
++                    type: "ndarray",
++                    array: {
++                      type: "bytes",
++                      data: "H4sIAAEAAAAA/xNkYGDwAOJEIOYAYgUg5gdie6iYJZC2AWIASpCZLCgAAAA=",
++                    },
++                    shape: [
++                      10,
++                    ],
++                    dtype: "int32",
++                    order: "little",
++                  },
++                ],
++              ],
++            },
++          },
++        },
++        view: {
++          type: "object",
++          name: "CDSView",
++          id: "p1020",
++          attributes: {
++            filter: {
++              type: "object",
++              name: "AllIndices",
++              id: "p1021",
++            },
++          },
++        },
++        columns: [
++          {
++            type: "object",
++            name: "TableColumn",
++            id: "p1010",
++            attributes: {
++              field: "dates",
++              title: "Date",
++              formatter: {
++                type: "object",
++                name: "DateFormatter",
++                id: "p1009",
++              },
++              editor: {
++                type: "object",
++                name: "StringEditor",
++                id: "p1012",
++              },
++            },
++          },
++          {
++            type: "object",
++            name: "TableColumn",
++            id: "p1013",
++            attributes: {
++              field: "downloads",
++              title: "Downloads",
++              formatter: {
++                type: "object",
++                name: "StringFormatter",
++                id: "p1014",
++              },
++              editor: {
++                type: "object",
++                name: "StringEditor",
++                id: "p1015",
++              },
++            },
++          },
++        ],
++      },
++    },
++  ],
++}
+diff --git a/tests/cross/cases/regressions/issue_12187.py b/tests/cross/cases/regressions/issue_12187.py
+new file mode 100644
+index 00000000000..6d7e441703a
+--- /dev/null
++++ b/tests/cross/cases/regressions/issue_12187.py
+@@ -0,0 +1,31 @@
++# https://github.com/bokeh/bokeh/issues/12187
++
++# Standard library imports
++from datetime import date
++from random import randint
++
++# External imports
++import numpy as np
++import pandas as pd
++
++# Bokeh imports
++from bokeh.models import (
++    ColumnDataSource,
++    DataTable,
++    DateFormatter,
++    TableColumn,
++)
++
++data = pd.DataFrame(dict(
++        dates=[date(2014, 3, i+1) for i in range(10)],
++        downloads=[randint(0, 100) for i in range(10)],
++))
++data.iloc[0, 0] = np.nan
++source = ColumnDataSource(data)
++
++columns = [
++        TableColumn(field="dates", title="Date", formatter=DateFormatter()),
++        TableColumn(field="downloads", title="Downloads"),
++    ]
++data_table = DataTable(source=source, columns=columns, width=400, height=280)
++output = data_table

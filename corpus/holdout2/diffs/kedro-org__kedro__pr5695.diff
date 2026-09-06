@@ -1,0 +1,344 @@
+diff --git a/RELEASE.md b/RELEASE.md
+index befde0e4e1..208d85d60b 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -10,6 +10,7 @@
+ 
+ ## Bug fixes and other changes
+ 
++- Fixed a thread-safety issue in `_ProjectPipelines` where concurrent access could trigger duplicate pipeline loading or operate on a cleared cache; all shared state mutations are now protected by a reentrant lock.
+ - Fixed a thread-safety issue in the Kedro HTTP server by adding a `serving_mode` argument to `KedroServiceSession.create()` that preloads all pipelines upfront.
+ - Fixed a `RecursionError` when initialising a session with dynaconf-backed settings by converting `settings.SESSION_STORE_ARGS` to a plain `dict` before deepcopying it.
+ - Excluded `kedro_benchmarks` from the built wheel so benchmark tests are no longer shipped with the package.
+diff --git a/kedro/framework/project/__init__.py b/kedro/framework/project/__init__.py
+index aa5c522ef4..91ea1115d6 100644
+--- a/kedro/framework/project/__init__.py
++++ b/kedro/framework/project/__init__.py
+@@ -7,6 +7,7 @@
+ import logging.config
+ import operator
+ import os
++import threading
+ import traceback
+ import warnings
+ from collections import UserDict
+@@ -179,8 +180,9 @@ def _load_data_wrapper(func: Any) -> Any:
+     """
+ 
+     def inner(self: Any, *args: Any, **kwargs: Any) -> Any:
+-        self._load_data()
+-        return func(self._content, *args, **kwargs)
++        with self._lock:
++            content = self._load_data()
++            return func(content, *args, **kwargs)
+ 
+     return inner
+ 
+@@ -200,6 +202,17 @@ class _ProjectPipelines(MutableMapping):
+     3. To ensure Kedro CLI remains functional when pipelines are broken. During development, broken
+        pipelines are common, but they shouldn't prevent other parts of Kedro CLI from functioning
+        properly (e.g. `kedro -h`).
++
++    Note:
++        Accessing `pipelines` from module-level code that runs during an import (e.g. a
++        helper module imported by `pipeline_registry.py` that reads `pipelines[...]` at
++        import time) is not supported and can deadlock. `_load_data()` holds the instance
++        lock across `importlib.import_module` and the user-supplied `register_pipelines()`
++        call, so if another thread is meanwhile importing that same module and blocked on
++        Python's per-module import lock waiting to acquire our instance lock, the two
++        threads wait on each other forever. The lock here only protects against per-call
++        state races (double loading, torn reads); it does not make import-time access to
++        `pipelines` safe.
+     """
+ 
+     def __init__(self) -> None:
+@@ -207,6 +220,11 @@ def __init__(self) -> None:
+         self._is_data_loaded = False
+         self._content: dict[str, Pipeline] = {}
+         self._requested_pipelines: list[str] | None = None
++        # RLock because `inner` (in _load_data_wrapper) takes the lock and then calls
++        # _load_data(), which takes it again on the same thread — this happens on every
++        # load. It also lets configure()/set_requested() be re-entered from the same
++        # thread, e.g. if a user's register_pipelines() calls back into either of them.
++        self._lock = threading.RLock()
+ 
+     @staticmethod
+     def _get_pipelines_registry_callable(pipelines_module: str) -> Any:
+@@ -214,21 +232,22 @@ def _get_pipelines_registry_callable(pipelines_module: str) -> Any:
+         register_pipelines = getattr(module_obj, "register_pipelines")
+         return register_pipelines
+ 
+-    def _load_data(self) -> None:
+-        """Lazily read pipelines defined in the pipelines registry module."""
+-
+-        # If the pipelines dictionary has not been configured with a pipelines module
+-        # or if data has been loaded
+-        if self._pipelines_module is None or self._is_data_loaded:
+-            return
+-
+-        register_pipelines = self._get_pipelines_registry_callable(
+-            self._pipelines_module
+-        )
+-        project_pipelines = register_pipelines()
++    def _load_data(self) -> dict[str, Pipeline]:
++        """Lazily read pipelines defined in the pipelines registry module.
+ 
+-        self._content = project_pipelines
+-        self._is_data_loaded = True
++        Returns:
++            The loaded pipelines dictionary, or the current (possibly empty)
++            ``_content`` unchanged if not configured or already loaded.
++        """
++        with self._lock:
++            if self._pipelines_module is None or self._is_data_loaded:
++                return self._content
++            register_pipelines = self._get_pipelines_registry_callable(
++                self._pipelines_module
++            )
++            self._content = register_pipelines()
++            self._is_data_loaded = True
++            return self._content
+ 
+     def set_requested(self, pipeline_names: list[str] | None) -> None:
+         """Store which pipelines should be loaded on the next dict access.
+@@ -240,32 +259,37 @@ def set_requested(self, pipeline_names: list[str] | None) -> None:
+             pipeline_names: Names of the pipelines to load selectively, or
+                 ``None`` to load all registered pipelines.
+         """
+-        if set(self._requested_pipelines or []) != set(pipeline_names or []):
+-            self._is_data_loaded = False
+-            self._content = {}
+-        self._requested_pipelines = (
+-            list(pipeline_names) if pipeline_names is not None else None
+-        )
++        with self._lock:
++            if set(self._requested_pipelines or []) != set(pipeline_names or []):
++                self._is_data_loaded = False
++                self._content = {}
++            self._requested_pipelines = (
++                list(pipeline_names) if pipeline_names is not None else None
++            )
+ 
+     def configure(self, pipelines_module: str | None = None) -> None:
+         """Configure the pipelines_module to load the pipelines dictionary.
+         Reset the data loading state so that after every ``configure`` call,
+         data are reloaded.
+         """
+-        self._pipelines_module = pipelines_module
+-        self._is_data_loaded = False
+-        self._content = {}
+-        self._requested_pipelines = None
++        with self._lock:
++            self._pipelines_module = pipelines_module
++            self._is_data_loaded = False
++            self._content = {}
++            self._requested_pipelines = None
+ 
+     # Dict-like interface
+     __getitem__ = _load_data_wrapper(operator.getitem)
+     __setitem__ = _load_data_wrapper(operator.setitem)
+     __delitem__ = _load_data_wrapper(operator.delitem)
+-    __iter__ = _load_data_wrapper(iter)
+     __len__ = _load_data_wrapper(len)
+-    keys = _load_data_wrapper(operator.methodcaller("keys"))
+-    values = _load_data_wrapper(operator.methodcaller("values"))
+-    items = _load_data_wrapper(operator.methodcaller("items"))
++    # These return snapshots (not live views over `content`) so that iterating/reading
++    # them after the lock is released is safe even if a concurrent configure()/
++    # set_requested() mutates `self._content` in place in the meantime.
++    __iter__ = _load_data_wrapper(lambda content: iter(dict(content)))
++    keys = _load_data_wrapper(lambda content: dict(content).keys())
++    values = _load_data_wrapper(lambda content: dict(content).values())
++    items = _load_data_wrapper(lambda content: dict(content).items())
+ 
+     # Presentation methods
+     __repr__ = _load_data_wrapper(repr)
+diff --git a/tests/framework/project/test_pipeline_registry.py b/tests/framework/project/test_pipeline_registry.py
+index 4ca74529f4..54a081045c 100644
+--- a/tests/framework/project/test_pipeline_registry.py
++++ b/tests/framework/project/test_pipeline_registry.py
+@@ -1,9 +1,11 @@
+ import sys
+ import textwrap
++import threading
++import time
+ 
+ import pytest
+ 
+-from kedro.framework.project import configure_project, pipelines
++from kedro.framework.project import _ProjectPipelines, configure_project, pipelines
+ from kedro.pipeline import Pipeline
+ 
+ 
+@@ -25,15 +27,12 @@ def register_pipelines():
+     sys.path.pop(0)
+ 
+ 
+-def test_pipelines_without_configure_project_is_empty(
+-    mock_package_name_with_pipelines_file,
+-):
+-    # Reimport `pipelines` from `kedro.framework.project` to ensure that
+-    # it was not set by a prior call to the `configure_project` function.
+-    del sys.modules["kedro.framework.project"]
+-    from kedro.framework.project import pipelines
+-
+-    assert pipelines == {}
++def test_pipelines_without_configure_project_is_empty():
++    # A freshly created, unconfigured `_ProjectPipelines` is empty. Using a new
++    # instance (rather than the `kedro.framework.project.pipelines` singleton)
++    # avoids depending on whether `configure_project` was already called by
++    # another test
++    assert _ProjectPipelines() == {}
+ 
+ 
+ @pytest.fixture
+@@ -76,3 +75,149 @@ def test_configure_project_should_not_raise_for_unimportable_pipelines(
+         ModuleNotFoundError, match="No module named 'this_is_not_a_real_thing'"
+     ):
+         _ = pipelines["new_pipeline"]
++
++
++def _make_pipelines_with_mock_loader(call_counter=None, sleep=0.0):
++    """Return a _ProjectPipelines whose loader records call count."""
++    counter = call_counter if call_counter is not None else []
++
++    def register_pipelines():
++        counter.append(1)
++        if sleep:
++            time.sleep(sleep)
++        return {"pipe_a": Pipeline([]), "pipe_b": Pipeline([])}
++
++    p = _ProjectPipelines()
++    p._pipelines_module = "fake_module"
++    p._get_pipelines_registry_callable = lambda _: register_pipelines
++    return p, counter
++
++
++def test_first_load_runs_once():
++    """register_pipelines() fires exactly once even with many concurrent first reads."""
++    n_threads = 20
++    barrier = threading.Barrier(n_threads)
++    errors = []
++    p, counter = _make_pipelines_with_mock_loader(sleep=0.02)
++
++    def reader():
++        try:
++            barrier.wait(timeout=5)
++            _ = p["pipe_a"]
++        except Exception as e:
++            errors.append(e)
++
++    threads = [threading.Thread(target=reader, daemon=True) for _ in range(n_threads)]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join(timeout=5)
++
++    assert all(
++        not t.is_alive() for t in threads
++    ), "threads did not finish — possible deadlock"
++    assert not errors, errors
++    assert len(counter) == 1
++
++
++def test_concurrent_set_requested_and_reads():
++    """Smoke test: concurrent set_requested() and reads must not crash or hang."""
++    n_reader_threads = 10
++    n_iterations = 100
++    errors = []
++    p, _ = _make_pipelines_with_mock_loader()
++
++    def reader():
++        try:
++            for _ in range(n_iterations):
++                _ = len(p)
++        except Exception as e:
++            errors.append(e)
++
++    def invalidator():
++        try:
++            for _ in range(n_iterations):
++                p.set_requested(None)
++                p.set_requested(["pipe_a"])
++        except Exception as e:
++            errors.append(e)
++
++    threads = [
++        threading.Thread(target=reader, daemon=True) for _ in range(n_reader_threads)
++    ]
++    threads += [threading.Thread(target=invalidator, daemon=True) for _ in range(2)]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join(timeout=5)
++
++    assert all(
++        not t.is_alive() for t in threads
++    ), "threads did not finish — possible deadlock"
++    assert not errors, errors
++
++
++@pytest.mark.parametrize(
++    "invalidate",
++    [
++        lambda p: p.set_requested(["pipe_a"]),
++        lambda p: p.configure("fake_module"),
++    ],
++    ids=["set_requested", "configure"],
++)
++def test_invalidation_race_no_stale_read(invalidate):
++    """A concurrent invalidation right as _load_data() returns must not affect
++    the read that's already in flight — it must see the pre-invalidation content.
++
++    Real threads can't reliably land in this window (it's a couple of
++    bytecodes wide), so the interleaving is forced deterministically instead.
++    """
++    p, _ = _make_pipelines_with_mock_loader()
++    _ = p["pipe_a"]  # warm the cache: 2 pipelines loaded
++
++    original_load_data = p._load_data
++
++    def racing_load_data():
++        result = original_load_data()
++        invalidate(p)  # simulate a concurrent set_requested()/configure()
++        return result
++
++    p._load_data = racing_load_data
++
++    assert len(p) == 2
++
++
++def test_concurrent_configure_and_reads():
++    """Smoke test: concurrent configure() and reads must not crash or hang."""
++    n_reader_threads = 10
++    n_iterations = 100
++    errors = []
++    p, _ = _make_pipelines_with_mock_loader()
++
++    def reader():
++        try:
++            for _ in range(n_iterations):
++                _ = len(p)
++        except Exception as e:
++            errors.append(e)
++
++    def reconfigurer():
++        try:
++            for _ in range(n_iterations):
++                p.configure("fake_module")
++        except Exception as e:
++            errors.append(e)
++
++    threads = [
++        threading.Thread(target=reader, daemon=True) for _ in range(n_reader_threads)
++    ]
++    threads += [threading.Thread(target=reconfigurer, daemon=True)]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join(timeout=5)
++
++    assert all(
++        not t.is_alive() for t in threads
++    ), "threads did not finish — possible deadlock"
++    assert not errors, errors

@@ -1,0 +1,192 @@
+diff --git a/RELEASE.md b/RELEASE.md
+index e46e9ffe2b..ab3e39e5fa 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -1,5 +1,7 @@
+ # Upcoming Release
+ ## Major features and improvements
++* Added the node function name to project inspection snapshots as `NodeSnapshot.func_name`.
++
+ ## Bug fixes and other changes
+ ## Documentation changes
+ ## Community contributions
+diff --git a/docs/extend/serving.md b/docs/extend/serving.md
+index a1f71801a6..5fa0f2ef31 100644
+--- a/docs/extend/serving.md
++++ b/docs/extend/serving.md
+@@ -81,6 +81,7 @@ curl http://127.0.0.1:8000/snapshot
+       "nodes": [
+         {
+           "name": "split_data_node",
++          "func_name": "split_data",
+           "inputs": ["example_iris_data"],
+           "outputs": ["X_train", "X_test"],
+           "tags": [],
+diff --git a/docs/inspect/inspect-project.md b/docs/inspect/inspect-project.md
+index a11047a387..85efb76565 100644
+--- a/docs/inspect/inspect-project.md
++++ b/docs/inspect/inspect-project.md
+@@ -90,13 +90,14 @@ default_pipeline = next(p for p in snapshot.pipelines if p.name == "__default__"
+ 
+ for node in default_pipeline.nodes:
+     print(node.name)
++    print("  func_name:", node.func_name)
+     print("  namespace:", node.namespace)
+     print("  inputs:   ", node.inputs)
+     print("  outputs:  ", node.outputs)
+     print("  tags:     ", node.tags)
+ ```
+ 
+-Each node is represented as a [`NodeSnapshot`][kedro.inspection.models.NodeSnapshot] with `name`, `namespace`, `inputs`, `outputs`, and `tags` fields.
++Each node is represented as a [`NodeSnapshot`][kedro.inspection.models.NodeSnapshot] with `name`, `func_name`, `namespace`, `inputs`, `outputs`, and `tags` fields.
+ 
+ ## How to inspect catalog datasets
+ 
+diff --git a/kedro/inspection/models.py b/kedro/inspection/models.py
+index 23ce688f6a..adbe45c243 100644
+--- a/kedro/inspection/models.py
++++ b/kedro/inspection/models.py
+@@ -57,6 +57,7 @@ class NodeSnapshot:
+ 
+     Attributes:
+         name: Fully-qualified node name (includes namespace prefix if present).
++        func_name: Readable name of the node's underlying function.
+         namespace: Node namespace, or ``None`` if the node has no namespace.
+         tags: Sorted list of tags assigned to the node.
+         inputs: Ordered list of input dataset names.
+@@ -64,6 +65,7 @@ class NodeSnapshot:
+     """
+ 
+     name: str
++    func_name: str = field(kw_only=True)
+     namespace: str | None = None
+     tags: list[str] = field(default_factory=list)
+     inputs: list[str] = field(default_factory=list)
+diff --git a/kedro/inspection/snapshot.py b/kedro/inspection/snapshot.py
+index 340f24cfac..1e1a144198 100644
+--- a/kedro/inspection/snapshot.py
++++ b/kedro/inspection/snapshot.py
+@@ -79,6 +79,7 @@ def _node_to_snapshot(node: Node) -> NodeSnapshot:
+     """
+     return NodeSnapshot(
+         name=node.name,
++        func_name=node._func_name,  # Matches Node.__str__ and registry describe.
+         namespace=node.namespace,
+         tags=sorted(node.tags),
+         inputs=node.inputs,
+diff --git a/tests/inspection/test_helper.py b/tests/inspection/test_helper.py
+index d8a0e9eb4a..8dc47a647c 100644
+--- a/tests/inspection/test_helper.py
++++ b/tests/inspection/test_helper.py
+@@ -12,7 +12,7 @@
+ 
+ 
+ def _make_node_snapshot(inputs: list[str], outputs: list[str]) -> NodeSnapshot:
+-    return NodeSnapshot(name="n", inputs=inputs, outputs=outputs)
++    return NodeSnapshot(name="n", func_name="identity", inputs=inputs, outputs=outputs)
+ 
+ 
+ def _make_pipeline_snapshot(nodes: list[NodeSnapshot]) -> PipelineSnapshot:
+diff --git a/tests/inspection/test_node_pipeline_snapshot.py b/tests/inspection/test_node_pipeline_snapshot.py
+index b292317a84..b03ee4e324 100644
+--- a/tests/inspection/test_node_pipeline_snapshot.py
++++ b/tests/inspection/test_node_pipeline_snapshot.py
+@@ -2,6 +2,8 @@
+ 
+ from __future__ import annotations
+ 
++from functools import partial
++
+ import pytest
+ 
+ from kedro.inspection.models import NodeSnapshot, PipelineSnapshot
+@@ -42,18 +44,28 @@ def simple_pipeline(simple_node):
+ 
+ class TestNodeSnapshot:
+     def test_instantiation_defaults(self):
+-        snapshot = NodeSnapshot(name="my_node")
++        snapshot = NodeSnapshot(name="my_node", func_name="my_func")
+         assert snapshot.name == "my_node"
++        assert snapshot.func_name == "my_func"
+         assert snapshot.namespace is None
+         assert snapshot.tags == []
+         assert snapshot.inputs == []
+         assert snapshot.outputs == []
+ 
++    def test_func_name_is_keyword_only(self):
++        snapshot = NodeSnapshot("my_node", "my_namespace", func_name="my_func")
++        assert snapshot.func_name == "my_func"
++        assert snapshot.namespace == "my_namespace"
++
++        with pytest.raises(TypeError, match="func_name"):
++            NodeSnapshot("my_node", "my_namespace")
++
+ 
+ class TestNodeToSnapshot:
+     def test_populates_all_fields(self, simple_node):
+         snapshot = _node_to_snapshot(simple_node)
+         assert snapshot.name == simple_node.name
++        assert snapshot.func_name == "_identity"
+         assert snapshot.namespace == simple_node.namespace
+         assert snapshot.inputs == simple_node.inputs
+         assert snapshot.outputs == simple_node.outputs
+@@ -69,10 +81,26 @@ def test_namespace_populated(self, namespaced_node):
+     def test_returns_node_snapshot_instance(self, simple_node):
+         assert isinstance(_node_to_snapshot(simple_node), NodeSnapshot)
+ 
++    def test_named_partial_func_name_warns(self):
++        partial_node = node(
++            partial(_identity),
++            inputs="raw",
++            outputs="processed",
++            name="partial_node",
++        )
++
++        with pytest.warns(UserWarning, match="made from a 'partial' function"):
++            snapshot = _node_to_snapshot(partial_node)
++
++        assert snapshot.name == "partial_node"
++        assert snapshot.func_name == "<partial>"
++
+ 
+ class TestPipelineSnapshot:
+     def test_instantiation(self):
+-        node_snap = NodeSnapshot(name="n", inputs=["a"], outputs=["b"])
++        node_snap = NodeSnapshot(
++            name="n", func_name="identity", inputs=["a"], outputs=["b"]
++        )
+         snapshot = PipelineSnapshot(name="my_pipe", nodes=[node_snap])
+         assert snapshot.name == "my_pipe"
+         assert snapshot.nodes == [node_snap]
+diff --git a/tests/inspection/test_project_snapshot.py b/tests/inspection/test_project_snapshot.py
+index c7635d55e4..700ad8e82d 100644
+--- a/tests/inspection/test_project_snapshot.py
++++ b/tests/inspection/test_project_snapshot.py
+@@ -43,6 +43,7 @@ def metadata_snapshot():
+ def node_snapshot():
+     return NodeSnapshot(
+         name="node_a",
++        func_name="process_companies",
+         inputs=["companies"],
+         outputs=["processed_companies"],
+     )
+diff --git a/tests/server/test_snapshot_endpoint.py b/tests/server/test_snapshot_endpoint.py
+index 37c29f9502..8d41427a9d 100644
+--- a/tests/server/test_snapshot_endpoint.py
++++ b/tests/server/test_snapshot_endpoint.py
+@@ -23,6 +23,7 @@ def _make_snapshot() -> ProjectSnapshot:
+                 nodes=[
+                     NodeSnapshot(
+                         name="my_node",
++                        func_name="process_data",
+                         namespace="ns",
+                         tags=["tag1"],
+                         inputs=["raw_data"],
+@@ -76,6 +77,7 @@ def test_snapshot_response_contains_all_fields(self, mocker, make_http_server):
+         assert len(pipelines) == 1
+         assert pipelines[0]["name"] == "__default__"
+         assert pipelines[0]["nodes"][0]["name"] == "my_node"
++        assert pipelines[0]["nodes"][0]["func_name"] == "process_data"
+ 
+         assert "raw_data" in payload["datasets"]
+         assert payload["datasets"]["raw_data"]["type"] == "pandas.CSVDataset"

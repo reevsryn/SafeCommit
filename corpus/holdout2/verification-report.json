@@ -1,0 +1,3358 @@
+{
+  "generated": "2026-09-06",
+  "corpus": "corpus/holdout2",
+  "framing": "Survivorship (merged + CI in a major repo) is the cleanliness guarantee. This report is QA on the mining. Its PyPI oracle is the same oracle the Phase 1 detector uses, so it must not be cited as independent proof of corpus cleanliness.",
+  "occurrences": {
+    "stdlib": 428,
+    "unresolved": 7,
+    "pypi": 527,
+    "relative": 17,
+    "pypi-alias": 3,
+    "first-party": 276
+  },
+  "names": [
+    {
+      "repo": "Netflix/metaflow",
+      "name": ".",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "Netflix__metaflow__pr3306"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": ".kube_utils",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "Netflix__metaflow__pr3319"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": ".mflog",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "Netflix__metaflow__pr3306"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "base64",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3233"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "contextlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3244"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "importlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3351",
+        "Netflix__metaflow__pr3231"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "inspect",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3351"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "json",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3306"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "math",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3233"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "metaflow",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "Netflix__metaflow__pr3357",
+        "Netflix__metaflow__pr3351",
+        "Netflix__metaflow__pr3340",
+        "Netflix__metaflow__pr3339",
+        "Netflix__metaflow__pr3319",
+        "Netflix__metaflow__pr3290",
+        "Netflix__metaflow__pr3332",
+        "Netflix__metaflow__pr3306",
+        "Netflix__metaflow__pr3122",
+        "Netflix__metaflow__pr3231",
+        "Netflix__metaflow__pr3252",
+        "Netflix__metaflow__pr3259",
+        "Netflix__metaflow__pr3233"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "metaflow",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "Netflix__metaflow__pr3306",
+        "Netflix__metaflow__pr3231"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3351",
+        "Netflix__metaflow__pr3306"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "platform",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3332"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "Netflix__metaflow__pr3351",
+        "Netflix__metaflow__pr3340",
+        "Netflix__metaflow__pr3290",
+        "Netflix__metaflow__pr3332",
+        "Netflix__metaflow__pr3306",
+        "Netflix__metaflow__pr3231",
+        "Netflix__metaflow__pr3252",
+        "Netflix__metaflow__pr3233"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "shutil",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3351"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "subprocess",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3306"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3351",
+        "Netflix__metaflow__pr3306"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "textwrap",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3306"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "time",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3306"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "types",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3306",
+        "Netflix__metaflow__pr3252"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "types",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3122"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3351"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "unittest",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3351"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "unittest",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3290"
+      ]
+    },
+    {
+      "repo": "Netflix/metaflow",
+      "name": "urllib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "Netflix__metaflow__pr3357",
+        "Netflix__metaflow__pr3333"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "anyio",
+      "kind": "requirement",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr22862"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "anyio",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr22622"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "asyncio",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22622"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22869",
+        "PrefectHQ__prefect__pr22622"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "contextlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22808"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "datetime",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr21640"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "docker",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr22154"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "logging",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22869"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22882"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "pathlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22855",
+        "PrefectHQ__prefect__pr22882",
+        "PrefectHQ__prefect__pr22573"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "prefect",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "PrefectHQ__prefect__pr22961",
+        "PrefectHQ__prefect__pr22945",
+        "PrefectHQ__prefect__pr22869",
+        "PrefectHQ__prefect__pr22855",
+        "PrefectHQ__prefect__pr22820",
+        "PrefectHQ__prefect__pr22808",
+        "PrefectHQ__prefect__pr21640",
+        "PrefectHQ__prefect__pr22568",
+        "PrefectHQ__prefect__pr22622"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "prefect_redis",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr22950"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "pydantic",
+      "kind": "requirement",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr22862"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "pydantic",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr22568"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "PrefectHQ__prefect__pr22882",
+        "PrefectHQ__prefect__pr21640",
+        "PrefectHQ__prefect__pr22622"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "sqlalchemy",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr22961",
+        "PrefectHQ__prefect__pr22869"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "stat",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22855"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "subprocess",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22882"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr21640"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "threading",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22869"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "types",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22961"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22869",
+        "PrefectHQ__prefect__pr22882",
+        "PrefectHQ__prefect__pr22808",
+        "PrefectHQ__prefect__pr22622"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "unittest",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22961",
+        "PrefectHQ__prefect__pr22862"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "whenever",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr21640"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "yaml",
+      "kind": "import",
+      "status": "pypi-alias",
+      "evidence": "import alias -> PyYAML; PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "PrefectHQ__prefect__pr22882"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "zipfile",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr22855"
+      ]
+    },
+    {
+      "repo": "PrefectHQ/prefect",
+      "name": "zoneinfo",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "PrefectHQ__prefect__pr21640"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "..module_utils.basic",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "._internal",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "ansible__ansible__pr87250"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "._internal._logging",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "ansible__ansible__pr87250"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "__future__",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87377",
+        "ansible__ansible__pr87376",
+        "ansible__ansible__pr87375",
+        "ansible__ansible__pr87149",
+        "ansible__ansible__pr87249",
+        "ansible__ansible__pr87248",
+        "ansible__ansible__pr87250"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "ansible",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "ansible__ansible__pr87377",
+        "ansible__ansible__pr87376",
+        "ansible__ansible__pr87375",
+        "ansible__ansible__pr87149",
+        "ansible__ansible__pr87009",
+        "ansible__ansible__pr87361",
+        "ansible__ansible__pr87249",
+        "ansible__ansible__pr87248"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "contextlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "datetime",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "faulthandler",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "gzip",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87291"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "http",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87243"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "inspect",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87249",
+        "ansible__ansible__pr87248"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "my_module",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "ansible__ansible__pr87249",
+        "ansible__ansible__pr87248"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "my_module",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "ansible__ansible__pr87249",
+        "ansible__ansible__pr87248"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87465",
+        "ansible__ansible__pr87466",
+        "ansible__ansible__pr87467",
+        "ansible__ansible__pr87453",
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "pathlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "pathlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "pkgutil",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87249",
+        "ansible__ansible__pr87248"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "platform",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "ansible__ansible__pr87377",
+        "ansible__ansible__pr87376",
+        "ansible__ansible__pr87375"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "signal",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "syslog",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87250"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "systemd",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "ansible__ansible__pr87250"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "tempfile",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "traceback",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87149"
+      ]
+    },
+    {
+      "repo": "ansible/ansible",
+      "name": "typing",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ansible__ansible__pr87250"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "abc",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "apache_beam",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "apache__beam__pr39800",
+        "apache__beam__pr39344",
+        "apache__beam__pr39888",
+        "apache__beam__pr39826",
+        "apache__beam__pr39847",
+        "apache__beam__pr39685",
+        "apache__beam__pr39792",
+        "apache__beam__pr39636",
+        "apache__beam__pr39465",
+        "apache__beam__pr39461",
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "argparse",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "ast",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "base64",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "boto3",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "apache__beam__pr39763"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "cryptography",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "datetime",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39177"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "enum",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39078"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "google",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "apache__beam__pr39834",
+        "apache__beam__pr39685",
+        "apache__beam__pr39792",
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "google",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "inspect",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39685"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "json",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39834",
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "logging",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39685",
+        "apache__beam__pr39636",
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "parameterized",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "shlex",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "shutil",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39834"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "tempfile",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "time",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39685"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39177",
+        "apache__beam__pr39636",
+        "apache__beam__pr39461"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "unittest",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39685",
+        "apache__beam__pr39636",
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "unittest",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39685",
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "uuid",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39736"
+      ]
+    },
+    {
+      "repo": "apache/beam",
+      "name": "warnings",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "apache__beam__pr39636"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": ".property.dataspec",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "bokeh__bokeh__pr15322"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": ".timing",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "bokeh__bokeh__pr15393"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "__future__",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15411",
+        "bokeh__bokeh__pr15393",
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15394",
+        "bokeh__bokeh__pr15342",
+        "bokeh__bokeh__pr15352"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "asyncio",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "bokeh",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "bokeh__bokeh__pr15325",
+        "bokeh__bokeh__pr15393",
+        "bokeh__bokeh__pr15282",
+        "bokeh__bokeh__pr15395",
+        "bokeh__bokeh__pr14978",
+        "bokeh__bokeh__pr15194",
+        "bokeh__bokeh__pr15342",
+        "bokeh__bokeh__pr15352"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "bokeh",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "bokeh__bokeh__pr15404"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15394",
+        "bokeh__bokeh__pr15342",
+        "bokeh__bokeh__pr15352"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "concurrent",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15394",
+        "bokeh__bokeh__pr15352"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "copy",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15385"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "dataclasses",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15393"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "datetime",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15325"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "gc",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15322"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "hashlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15395"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "heapq",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15393"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "html",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15342"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "importlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15395"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "json",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15395"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "multiprocessing",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "numpy",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "bokeh__bokeh__pr15325",
+        "bokeh__bokeh__pr15282"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15342"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "os",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15394"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "pandas",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "bokeh__bokeh__pr15325"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "pathlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15394",
+        "bokeh__bokeh__pr15395",
+        "bokeh__bokeh__pr15342"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "pickle",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15393"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "playwright",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15394"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "bokeh__bokeh__pr15411",
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15394",
+        "bokeh__bokeh__pr15342",
+        "bokeh__bokeh__pr15352"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "queue",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "random",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15325"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "shared",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "bokeh__bokeh__pr15342"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "shutil",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15395"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "shutil",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15342"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "socket",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15394"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "sphinx",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "bokeh__bokeh__pr15393"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "string",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr14978"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "subprocess",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15342"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15069",
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15395",
+        "bokeh__bokeh__pr14978",
+        "bokeh__bokeh__pr15342",
+        "bokeh__bokeh__pr15352"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "sysconfig",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15352"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "tests",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "bokeh__bokeh__pr15411",
+        "bokeh__bokeh__pr15394"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "threading",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "threading",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15352"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "time",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15393"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "time",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15342"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "types",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15393"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15411",
+        "bokeh__bokeh__pr14152",
+        "bokeh__bokeh__pr15385",
+        "bokeh__bokeh__pr15393",
+        "bokeh__bokeh__pr15404",
+        "bokeh__bokeh__pr15394",
+        "bokeh__bokeh__pr15395"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "urllib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15394",
+        "bokeh__bokeh__pr15395",
+        "bokeh__bokeh__pr15342"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "weakref",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "bokeh__bokeh__pr15322"
+      ]
+    },
+    {
+      "repo": "bokeh/bokeh",
+      "name": "yaml",
+      "kind": "import",
+      "status": "pypi-alias",
+      "evidence": "import alias -> PyYAML; PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "bokeh__bokeh__pr15411"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": ".",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": ".component",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": ".ops",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": ".resources",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": ".types",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "click",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33287",
+        "dagster-io__dagster__pr33273"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "concurrent",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33258"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "contextlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33232"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "contextvars",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33860",
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33354",
+        "dagster-io__dagster__pr33293",
+        "dagster-io__dagster__pr33258",
+        "dagster-io__dagster__pr33257",
+        "dagster-io__dagster__pr33287",
+        "dagster-io__dagster__pr33273",
+        "dagster-io__dagster__pr33189",
+        "dagster-io__dagster__pr33126"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33665",
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33354",
+        "dagster-io__dagster__pr33293",
+        "dagster-io__dagster__pr33287",
+        "dagster-io__dagster__pr33232",
+        "dagster-io__dagster__pr33126"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_aws",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33126"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_azure",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33293"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_cloud_cli",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_dbt",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33232"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_dg_cli",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_dg_core",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33232"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_elasticsearch",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33860"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_gcp",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33354"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_hightouch",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_hightouch",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_k8s_test_infra",
+      "kind": "from-import",
+      "status": "unresolved",
+      "evidence": "PyPI 404 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr31999"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_shared",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_snowflake",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33273"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dagster_test",
+      "kind": "from-import",
+      "status": "unresolved",
+      "evidence": "PyPI 404 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dataclasses",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "datetime",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "dateutil",
+      "kind": "from-import",
+      "status": "pypi-alias",
+      "evidence": "import alias -> python-dateutil; PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "docs_snippets_tests",
+      "kind": "from-import",
+      "status": "unresolved",
+      "evidence": "PyPI 404 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33232"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "functools",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33126"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "importlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "itertools",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "json",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "logging",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "pathlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33287",
+        "dagster-io__dagster__pr33241",
+        "dagster-io__dagster__pr33232",
+        "dagster-io__dagster__pr33189"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "pathlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "pydantic",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33354",
+        "dagster-io__dagster__pr33293",
+        "dagster-io__dagster__pr33287",
+        "dagster-io__dagster__pr33126"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "dagster-io__dagster__pr33665",
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33354",
+        "dagster-io__dagster__pr33293",
+        "dagster-io__dagster__pr33241",
+        "dagster-io__dagster__pr33126"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "requests",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "responses",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "setuptools",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "shutil",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr31999"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "sphinx",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "dagster-io__dagster__pr33645"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "tempfile",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "time",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33354",
+        "dagster-io__dagster__pr33293",
+        "dagster-io__dagster__pr33287",
+        "dagster-io__dagster__pr33241",
+        "dagster-io__dagster__pr33126"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "unittest",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33361",
+        "dagster-io__dagster__pr33287",
+        "dagster-io__dagster__pr33241"
+      ]
+    },
+    {
+      "repo": "dagster-io/dagster",
+      "name": "urllib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dagster-io__dagster__pr33287"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "dbt",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dbt-labs__dbt-core__pr16132",
+        "dbt-labs__dbt-core__pr15925",
+        "dbt-labs__dbt-core__pr15944",
+        "dbt-labs__dbt-core__pr15946",
+        "dbt-labs__dbt-core__pr15943",
+        "dbt-labs__dbt-core__pr15897",
+        "dbt-labs__dbt-core__pr15942",
+        "dbt-labs__dbt-core__pr15939",
+        "dbt-labs__dbt-core__pr15938",
+        "dbt-labs__dbt-core__pr15937",
+        "dbt-labs__dbt-core__pr15936",
+        "dbt-labs__dbt-core__pr15910"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "dbt",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "dbt-labs__dbt-core__pr15944",
+        "dbt-labs__dbt-core__pr15946",
+        "dbt-labs__dbt-core__pr15943",
+        "dbt-labs__dbt-core__pr15942",
+        "dbt-labs__dbt-core__pr15939",
+        "dbt-labs__dbt-core__pr15938",
+        "dbt-labs__dbt-core__pr15937"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "dbt_common",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "dbt-labs__dbt-core__pr15672",
+        "dbt-labs__dbt-core__pr16132",
+        "dbt-labs__dbt-core__pr15897",
+        "dbt-labs__dbt-core__pr15936",
+        "dbt-labs__dbt-core__pr15910"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "dbt_common",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "dbt-labs__dbt-core__pr15897",
+        "dbt-labs__dbt-core__pr15936",
+        "dbt-labs__dbt-core__pr15910"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "io",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dbt-labs__dbt-core__pr15942"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "json",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dbt-labs__dbt-core__pr15672"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "opentelemetry",
+      "kind": "from-import",
+      "status": "unresolved",
+      "evidence": "PyPI 404 (checked 2026-09-06)",
+      "cases": [
+        "dbt-labs__dbt-core__pr15992"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "dbt-labs__dbt-core__pr16132",
+        "dbt-labs__dbt-core__pr15944",
+        "dbt-labs__dbt-core__pr15946",
+        "dbt-labs__dbt-core__pr15943",
+        "dbt-labs__dbt-core__pr15897",
+        "dbt-labs__dbt-core__pr15942",
+        "dbt-labs__dbt-core__pr15939",
+        "dbt-labs__dbt-core__pr15938",
+        "dbt-labs__dbt-core__pr15937",
+        "dbt-labs__dbt-core__pr15936",
+        "dbt-labs__dbt-core__pr15910"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "re",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dbt-labs__dbt-core__pr15945"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "threading",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dbt-labs__dbt-core__pr15672"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dbt-labs__dbt-core__pr15672",
+        "dbt-labs__dbt-core__pr15897",
+        "dbt-labs__dbt-core__pr15939",
+        "dbt-labs__dbt-core__pr15938",
+        "dbt-labs__dbt-core__pr15937",
+        "dbt-labs__dbt-core__pr15936",
+        "dbt-labs__dbt-core__pr15910"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "unittest",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dbt-labs__dbt-core__pr16132",
+        "dbt-labs__dbt-core__pr15944",
+        "dbt-labs__dbt-core__pr15946",
+        "dbt-labs__dbt-core__pr15943",
+        "dbt-labs__dbt-core__pr15897",
+        "dbt-labs__dbt-core__pr15942",
+        "dbt-labs__dbt-core__pr15939",
+        "dbt-labs__dbt-core__pr15938",
+        "dbt-labs__dbt-core__pr15937",
+        "dbt-labs__dbt-core__pr15936",
+        "dbt-labs__dbt-core__pr15910"
+      ]
+    },
+    {
+      "repo": "dbt-labs/dbt-core",
+      "name": "urllib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "dbt-labs__dbt-core__pr15945"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": ".api",
+      "kind": "relative",
+      "status": "relative",
+      "evidence": "relative import: first-party by construction",
+      "cases": [
+        "kedro-org__kedro__pr5741"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "IPython",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "kedro-org__kedro__pr5640"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "__future__",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5741",
+        "kedro-org__kedro__pr5742",
+        "kedro-org__kedro__pr5715"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "behave",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "kedro-org__kedro__pr5742"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "collections",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5628"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "concurrent",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5687"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "dataclasses",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5741"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "dataclasses",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5628"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "functools",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5718",
+        "kedro-org__kedro__pr5663"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "importlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5718"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "inspect",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5718",
+        "kedro-org__kedro__pr5628"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "json",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5741"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "kedro",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "kedro-org__kedro__pr5741",
+        "kedro-org__kedro__pr5745",
+        "kedro-org__kedro__pr5735",
+        "kedro-org__kedro__pr5695",
+        "kedro-org__kedro__pr5715",
+        "kedro-org__kedro__pr5718",
+        "kedro-org__kedro__pr5628",
+        "kedro-org__kedro__pr5630",
+        "kedro-org__kedro__pr5649"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "kedro",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "kedro-org__kedro__pr5628"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "kedro_benchmarks",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "kedro-org__kedro__pr5649"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "logging",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5715",
+        "kedro-org__kedro__pr5649"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "math",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5741"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5715",
+        "kedro-org__kedro__pr5649"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "pandas",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "kedro-org__kedro__pr5741",
+        "kedro-org__kedro__pr5715"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "pandera",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "kedro-org__kedro__pr5741",
+        "kedro-org__kedro__pr5715"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "pathlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5718",
+        "kedro-org__kedro__pr5628",
+        "kedro-org__kedro__pr5649"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "pickle",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5715"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "pydantic",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "kedro-org__kedro__pr5628"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "kedro-org__kedro__pr5741",
+        "kedro-org__kedro__pr5715"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "re",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5735",
+        "kedro-org__kedro__pr5726",
+        "kedro-org__kedro__pr5640"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "shutil",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5649"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "textwrap",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5649"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "threading",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5695"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "time",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5695"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "traceback",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5735"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5741",
+        "kedro-org__kedro__pr5628"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "urllib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5735"
+      ]
+    },
+    {
+      "repo": "kedro-org/kedro",
+      "name": "warnings",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "kedro-org__kedro__pr5734"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "__future__",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25412"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "contextlib",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr24778"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "contextlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25293",
+        "mlflow__mlflow__pr25304"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "docker",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "mlflow__mlflow__pr25305"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "fastapi",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "mlflow__mlflow__pr25236"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "flask",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "mlflow__mlflow__pr25236"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "functools",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25496"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "google",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "mlflow__mlflow__pr25412"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "logging",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25304"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "mlflow",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "mlflow__mlflow__pr25556",
+        "mlflow__mlflow__pr25236",
+        "mlflow__mlflow__pr25578",
+        "mlflow__mlflow__pr25568",
+        "mlflow__mlflow__pr25566",
+        "mlflow__mlflow__pr24778",
+        "mlflow__mlflow__pr25232",
+        "mlflow__mlflow__pr25496",
+        "mlflow__mlflow__pr25412",
+        "mlflow__mlflow__pr25293",
+        "mlflow__mlflow__pr25305",
+        "mlflow__mlflow__pr25304",
+        "mlflow__mlflow__pr25127"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "mlflow",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "mlflow__mlflow__pr25304"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25232",
+        "mlflow__mlflow__pr25127"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "pty",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25533"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "mlflow__mlflow__pr25236",
+        "mlflow__mlflow__pr25232",
+        "mlflow__mlflow__pr25304"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "re",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25127"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "shutil",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25304"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "sqlalchemy",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-09-06)",
+      "cases": [
+        "mlflow__mlflow__pr25232"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25533"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "threading",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25496"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "time",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25304"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25412"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "unittest",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25496",
+        "mlflow__mlflow__pr25304"
+      ]
+    },
+    {
+      "repo": "mlflow/mlflow",
+      "name": "uuid",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "mlflow__mlflow__pr25232",
+        "mlflow__mlflow__pr25304"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "asyncio",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65452"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "contextlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65452"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "copy",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65767"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "dataclasses",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65821"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "gc",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "glob",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "logging",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65452"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "os",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65748",
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "pathlib",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65820"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "pyarrow",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "ray-project__ray__pr65955",
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "pyarrow",
+      "kind": "from-import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "ray-project__ray__pr65821"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "pytest",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "ray-project__ray__pr65955",
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "ray",
+      "kind": "from-import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "ray-project__ray__pr65820",
+        "ray-project__ray__pr65748",
+        "ray-project__ray__pr65955",
+        "ray-project__ray__pr65894",
+        "ray-project__ray__pr65767",
+        "ray-project__ray__pr65742",
+        "ray-project__ray__pr64497",
+        "ray-project__ray__pr65250",
+        "ray-project__ray__pr65499",
+        "ray-project__ray__pr65452",
+        "ray-project__ray__pr65821"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "ray",
+      "kind": "import",
+      "status": "first-party",
+      "evidence": "repo paths / root listing / seed map",
+      "cases": [
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "ray_release",
+      "kind": "from-import",
+      "status": "unresolved",
+      "evidence": "PyPI 404 (checked 2026-09-06)",
+      "cases": [
+        "ray-project__ray__pr65907"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "re",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65767",
+        "ray-project__ray__pr65452"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "requests",
+      "kind": "import",
+      "status": "pypi",
+      "evidence": "PyPI 200 (cached 2026-06-11)",
+      "cases": [
+        "ray-project__ray__pr65767"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "shlex",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65820"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "shutil",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65748",
+        "ray-project__ray__pr65742"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "signal",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65820"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "socket",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65820"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "sphinxcontrib-openapi",
+      "kind": "requirement",
+      "status": "pypi",
+      "evidence": "PyPI 200 (checked 2026-09-06)",
+      "cases": [
+        "ray-project__ray__pr65460"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "sys",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65955",
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "tempfile",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "time",
+      "kind": "import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65748",
+        "ray-project__ray__pr65725",
+        "ray-project__ray__pr65499"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "typing",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65894",
+        "ray-project__ray__pr65767",
+        "ray-project__ray__pr65742",
+        "ray-project__ray__pr65736",
+        "ray-project__ray__pr65499",
+        "ray-project__ray__pr65452",
+        "ray-project__ray__pr65821"
+      ]
+    },
+    {
+      "repo": "ray-project/ray",
+      "name": "unittest",
+      "kind": "from-import",
+      "status": "stdlib",
+      "evidence": "sys.stdlib_module_names",
+      "cases": [
+        "ray-project__ray__pr65767",
+        "ray-project__ray__pr65499"
+      ]
+    }
+  ],
+  "unresolved": {
+    "dagster-io__dagster__pr31999": [
+      {
+        "name": "dagster_k8s_test_infra.integration_utils",
+        "top": "dagster_k8s_test_infra",
+        "file": "integration_tests/python_modules/dagster-k8s-test-infra/dagster_k8s_test_infra/kind.py",
+        "line": "from dagster_k8s_test_infra.integration_utils import IS_BUILDKITE, check_output, within_docker",
+        "kind": "from-import",
+        "evidence": "PyPI 404 (checked 2026-09-06)",
+        "signals": [
+          "added in a test file -> may be synthetic example source embedded in a string literal (regex extractor cannot tell; tree-sitter in Phase 1 would)"
+        ]
+      }
+    ],
+    "dagster-io__dagster__pr33241": [
+      {
+        "name": "dagster_test.dg_utils.utils",
+        "top": "dagster_test",
+        "file": "python_modules/libraries/dagster-dg-cli/dagster_dg_cli_tests/cli_tests/plus_tests/test_plus_deploy_validation.py",
+        "line": "from dagster_test.dg_utils.utils import ProxyRunner, isolated_example_project_foo_bar",
+        "kind": "from-import",
+        "evidence": "PyPI 404 (checked 2026-09-06)",
+        "signals": [
+          "added in a test file -> may be synthetic example source embedded in a string literal (regex extractor cannot tell; tree-sitter in Phase 1 would)"
+        ]
+      }
+    ],
+    "dagster-io__dagster__pr33232": [
+      {
+        "name": "docs_snippets_tests.snippet_checks.guides.components.utils",
+        "top": "docs_snippets_tests",
+        "file": "examples/docs_snippets/docs_snippets_tests/snippet_checks/guides/components/integrations/test_dbt_component_remote.py",
+        "line": "from docs_snippets_tests.snippet_checks.guides.components.utils import (",
+        "kind": "from-import",
+        "evidence": "PyPI 404 (checked 2026-09-06)",
+        "signals": [
+          "added in a test file -> may be synthetic example source embedded in a string literal (regex extractor cannot tell; tree-sitter in Phase 1 would)"
+        ]
+      },
+      {
+        "name": "docs_snippets_tests.snippet_checks.utils",
+        "top": "docs_snippets_tests",
+        "file": "examples/docs_snippets/docs_snippets_tests/snippet_checks/guides/components/integrations/test_dbt_component_remote.py",
+        "line": "from docs_snippets_tests.snippet_checks.utils import (",
+        "kind": "from-import",
+        "evidence": "PyPI 404 (cached 2026-09-06)",
+        "signals": [
+          "added in a test file -> may be synthetic example source embedded in a string literal (regex extractor cannot tell; tree-sitter in Phase 1 would)"
+        ]
+      }
+    ],
+    "ray-project__ray__pr65907": [
+      {
+        "name": "ray_release.buildkite.step",
+        "top": "ray_release",
+        "file": "release/ray_release/tests/test_step.py",
+        "line": "from ray_release.buildkite.step import (",
+        "kind": "from-import",
+        "evidence": "PyPI 404 (checked 2026-09-06)",
+        "signals": [
+          "added in a test file -> may be synthetic example source embedded in a string literal (regex extractor cannot tell; tree-sitter in Phase 1 would)"
+        ]
+      }
+    ],
+    "dbt-labs__dbt-core__pr15992": [
+      {
+        "name": "opentelemetry",
+        "top": "opentelemetry",
+        "file": "core/dbt/context/base.py",
+        "line": "from opentelemetry import trace",
+        "kind": "from-import",
+        "evidence": "PyPI 404 (checked 2026-09-06)",
+        "signals": [
+          "no independent signal either way -> treat as candidate contamination; human judgment required"
+        ]
+      },
+      {
+        "name": "opentelemetry",
+        "top": "opentelemetry",
+        "file": "tests/unit/context/test_base.py",
+        "line": "from opentelemetry import trace",
+        "kind": "from-import",
+        "evidence": "PyPI 404 (cached 2026-09-06)",
+        "signals": [
+          "added in a test file -> may be synthetic example source embedded in a string literal (regex extractor cannot tell; tree-sitter in Phase 1 would)"
+        ]
+      }
+    ]
+  }
+}

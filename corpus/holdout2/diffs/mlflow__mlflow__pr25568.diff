@@ -1,0 +1,149 @@
+diff --git a/mlflow/utils/validation.py b/mlflow/utils/validation.py
+index 7a34ed15ecf73..db3696921b013 100644
+--- a/mlflow/utils/validation.py
++++ b/mlflow/utils/validation.py
+@@ -898,6 +898,32 @@ def _validate_webhook_name(name: str) -> None:
+         )
+ 
+ 
++_NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
++
++
++def _embedded_ipv4(
++    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
++) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
++    """Decode IPv6 transition formats that carry an embedded IPv4 address.
++
++    This normalizes IPv6-transition addresses (IPv4-mapped, 6to4, NAT64) to their
++    embedded IPv4 address so that a wrapped private/CGNAT/link-local address cannot
++    masquerade as global.
++    """
++    if isinstance(ip, ipaddress.IPv6Address):
++        embedded = ip.ipv4_mapped or ip.sixtofour
++        if embedded is None and ip in _NAT64_PREFIX:
++            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
++        if embedded is not None:
++            return embedded
++    return ip
++
++
++def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
++    """Check if an IP is public, accounting for IPv6-transition address formats."""
++    return _embedded_ipv4(ip).is_global
++
++
+ def _resolve_hostname_with_timeout(hostname: str, field_name: str):
+     acquired = _HOSTNAME_RESOLUTION_SEMAPHORE.acquire(timeout=_HOSTNAME_RESOLUTION_TIMEOUT_SECONDS)
+     if not acquired:
+@@ -944,7 +970,7 @@ def _validate_hostname_resolves_to_public_ips(hostname: str, field_name: str) ->
+             raise MlflowException.invalid_parameter_value(
+                 f"{field_name} hostname {hostname!r} resolved to an invalid IP address: {e}"
+             ) from e
+-        if not ip.is_global:
++        if not _is_public_ip(ip):
+             raise MlflowException.invalid_parameter_value(
+                 f"{field_name} must not resolve to a non-public IP address. "
+                 f"{hostname!r} resolves to {ip}."
+diff --git a/mlflow/webhooks/ssrf.py b/mlflow/webhooks/ssrf.py
+index f5133aacccfbb..e619a20f44431 100644
+--- a/mlflow/webhooks/ssrf.py
++++ b/mlflow/webhooks/ssrf.py
+@@ -27,6 +27,7 @@
+ from urllib3.poolmanager import PoolManager, ProxyManager
+ 
+ from mlflow.environment_variables import _MLFLOW_WEBHOOK_ALLOW_PRIVATE_IPS
++from mlflow.utils.validation import _is_public_ip
+ 
+ 
+ class SSRFProtectionError(Exception):
+@@ -58,7 +59,7 @@ def _assert_public_peer(sock: socket.socket) -> None:
+             f"Webhook connection resolved to an invalid IP address: {peer_ip!r}"
+         ) from e
+ 
+-    if not ip.is_global:
++    if not _is_public_ip(ip):
+         sock.close()
+         raise SSRFProtectionError(
+             f"Webhook connection blocked: {ip} is not a public IP address. "
+diff --git a/tests/utils/test_validation.py b/tests/utils/test_validation.py
+index d376c35afb9ba..29f4bae84d702 100644
+--- a/tests/utils/test_validation.py
++++ b/tests/utils/test_validation.py
+@@ -498,6 +498,9 @@ def test_validate_webhook_url_rejects_invalid_input(url, expected_match):
+         ("https://cgnat.internal/hook", "100.64.0.1"),
+         ("https://ipv6-loopback.internal/hook", "::1"),
+         ("https://ipv6-private.internal/hook", "fc00::1"),
++        ("https://nat64-metadata.internal/hook", "64:ff9b::169.254.169.254"),
++        ("https://ipv6-mapped-cgnat.internal/hook", "::ffff:100.64.0.1"),
++        ("https://6to4-private.internal/hook", "2002:a9fe:a9fe::"),
+     ],
+ )
+ def test_validate_webhook_url_rejects_private_ips(url, resolved_ip):
+@@ -781,3 +784,39 @@ def test_validate_model_renaming_invalid_chars(invalid_name):
+         check=lambda e: e.error_code == ErrorCode.Name(INVALID_PARAMETER_VALUE),
+     ):
+         _validate_model_renaming(invalid_name)
++
++
++@pytest.mark.parametrize(
++    "ipv6_transition_ip",
++    [
++        "64:ff9b::169.254.169.254",
++        "::ffff:100.64.0.1",
++        "2002:a9fe:a9fe::",
++    ],
++)
++def test_validate_public_https_url_rejects_ipv6_transition_addresses_with_private_ipv4(
++    ipv6_transition_ip: str,
++):
++    with patch(
++        "mlflow.utils.validation.socket.getaddrinfo",
++        side_effect=_mock_getaddrinfo(ipv6_transition_ip),
++    ) as mock_getaddrinfo:
++        with pytest.raises(MlflowException, match="must not resolve to a non-public"):
++            _validate_public_https_url("https://example.com/icon.png", field_name="Icon URL")
++        mock_getaddrinfo.assert_called()
++
++
++@pytest.mark.parametrize(
++    "public_ipv6",
++    [
++        "2001:4860:4860::8888",
++        "::ffff:8.8.8.8",
++    ],
++)
++def test_validate_public_https_url_accepts_public_ipv6_addresses(public_ipv6: str):
++    with patch(
++        "mlflow.utils.validation.socket.getaddrinfo",
++        side_effect=_mock_getaddrinfo(public_ipv6),
++    ) as mock_getaddrinfo:
++        _validate_public_https_url("https://example.com/icon.png", field_name="Icon URL")
++        mock_getaddrinfo.assert_called()
+diff --git a/tests/webhooks/test_ssrf.py b/tests/webhooks/test_ssrf.py
+index 019a6a043828b..67c17119d364b 100644
+--- a/tests/webhooks/test_ssrf.py
++++ b/tests/webhooks/test_ssrf.py
+@@ -129,3 +129,23 @@ def test_getpeername_oserror_fails_closed(loopback_server: int):
+     with mock.patch.object(socket.socket, "getpeername", side_effect=OSError("ENOTCONN")):
+         with pytest.raises(SSRFProtectionError, match="peer address"):
+             session.post(f"http://127.0.0.1:{loopback_server}/", timeout=10)
++
++
++@pytest.mark.parametrize(
++    "peer_ip",
++    [
++        "64:ff9b::169.254.169.254",
++        "::ffff:100.64.0.1",
++        "2002:a9fe:a9fe::",
++    ],
++)
++def test_ipv6_transition_addresses_embedding_private_ipv4_are_blocked(
++    loopback_server: int, peer_ip: str
++):
++    session = _create_webhook_session()
++    with mock.patch.object(
++        socket.socket, "getpeername", return_value=(peer_ip, loopback_server)
++    ) as mock_getpeername:
++        with pytest.raises(SSRFProtectionError, match="not a public IP"):
++            session.post(f"http://127.0.0.1:{loopback_server}/", timeout=10)
++        mock_getpeername.assert_called()

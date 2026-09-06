@@ -1,0 +1,204 @@
+diff --git a/metaflow/plugins/argo/argo_workflows.py b/metaflow/plugins/argo/argo_workflows.py
+index 9cd2d1197eb..9fd13836c54 100644
+--- a/metaflow/plugins/argo/argo_workflows.py
++++ b/metaflow/plugins/argo/argo_workflows.py
+@@ -1202,6 +1202,20 @@ def _many_in_funcs_all_conditional(self, node):
+         ]
+         return len(cond_in_funcs) > 1 and len(cond_in_funcs) == len(node.in_funcs)
+ 
++    def _skippable_input_steps_in_dag_order(self, node):
++        graph_order = {
++            node_name: index for index, node_name in enumerate(self.graph.sorted_nodes)
++        }
++        return sorted(
++            [
++                in_func
++                for in_func in node.in_funcs
++                if self.graph[in_func].type == "split-switch"
++            ],
++            key=lambda in_func: graph_order[in_func],
++            reverse=True,
++        )
++
+     def _is_recursive_node(self, node):
+         return node.name in self.recursive_nodes
+ 
+@@ -2214,11 +2228,7 @@ def _container_templates(self):
+                 # we need to pass in the set of conditional in_funcs to the pathspec generating script as in the case of split-switch skipping cases,
+                 # non-conditional input-paths need to be ignored in favour of conditional ones when they have executed.
+                 skippable_input_steps = ",".join(
+-                    [
+-                        in_func
+-                        for in_func in node.in_funcs
+-                        if self.graph[in_func].type == "split-switch"
+-                    ]
++                    self._skippable_input_steps_in_dag_order(node)
+                 )
+                 input_paths = (
+                     "$(python -m metaflow.plugins.argo.conditional_input_paths %s %s)"
+diff --git a/metaflow/plugins/argo/conditional_input_paths.py b/metaflow/plugins/argo/conditional_input_paths.py
+index 13013b69472..fda796d1aac 100644
+--- a/metaflow/plugins/argo/conditional_input_paths.py
++++ b/metaflow/plugins/argo/conditional_input_paths.py
+@@ -4,6 +4,13 @@
+ import base64
+ 
+ 
++def _step_name_from_path(path):
++    parts = path.split("/", 2)
++    if len(parts) > 1:
++        return parts[1]
++    return None
++
++
+ def generate_input_paths(input_paths, skippable_steps):
+     # => run_id/step/:foo,bar
+     # input_paths are base64 encoded due to Argo shenanigans
+@@ -20,13 +27,22 @@ def generate_input_paths(input_paths, skippable_steps):
+     # all pathspecs of leading steps that executed.
+     trimmed = [path for path in paths if not "{{" in path]
+ 
++    skippable_steps = [step for step in skippable_steps if step]
++    skippable_step_set = set(skippable_steps)
++    paths_by_step = {}
++    for path in trimmed:
++        paths_by_step.setdefault(_step_name_from_path(path), path)
++
+     # If the input-path is from a conditional, we want to pick the one that is last-in-line in the DAG.
+-    # The order of graph parsing ensures that the steps are in reverse order of occurrence, so the first one is the latest.
+-    latest_conditional_in_graph = trimmed[:1]
++    # Argo passes skippable_steps in reverse DAG order, so the first matching
++    # executed skippable step is the latest conditional predecessor.
++    latest_conditional_in_graph = [
++        paths_by_step[step] for step in skippable_steps if step in paths_by_step
++    ][:1] or trimmed[:1]
+     # pathspecs of leading steps that are conditional, and should be used instead of non-conditional ones
+     # e.g. the case of skipping switches: start -> case_step -> conditional_a or end
+     conditionals = [
+-        path for path in trimmed if not any(step in path for step in skippable_steps)
++        path for path in trimmed if _step_name_from_path(path) not in skippable_step_set
+     ]
+     pathspecs_to_use = conditionals if conditionals else latest_conditional_in_graph
+     return compress_list(pathspecs_to_use, zlibmin=inf)
+diff --git a/test/unit/test_argo_conditional_input_paths.py b/test/unit/test_argo_conditional_input_paths.py
+new file mode 100644
+index 00000000000..a52217aebcc
+--- /dev/null
++++ b/test/unit/test_argo_conditional_input_paths.py
+@@ -0,0 +1,116 @@
++import base64
++from math import inf
++
++import pytest
++
++from metaflow import FlowSpec, step
++from metaflow.plugins.argo.argo_workflows import ArgoWorkflows
++from metaflow.plugins.argo.conditional_input_paths import generate_input_paths
++from metaflow.util import compress_list, decompress_list
++
++RUN_ID = "argo-run"
++
++
++class ChainSkipReproFlow(FlowSpec):
++    @step
++    def start(self):
++        self.route1 = "step2"
++        self.next({"end": self.end, "step2": self.step2}, condition="route1")
++
++    @step
++    def step2(self):
++        self.route2 = "end"
++        self.next({"end": self.end, "step3": self.step3}, condition="route2")
++
++    @step
++    def step3(self):
++        self.next(self.end)
++
++    @step
++    def end(self):
++        pass
++
++
++@pytest.fixture
++def chain_skip_argo(mocker):
++    mocker.patch.object(ArgoWorkflows, "_compile_workflow_template", return_value=None)
++    mocker.patch.object(ArgoWorkflows, "_compile_sensor", return_value=None)
++
++    return ArgoWorkflows(
++        name="chain-skip-repro",
++        graph=ChainSkipReproFlow._graph,
++        flow=ChainSkipReproFlow(use_cli=False),
++        code_package_metadata={},
++        code_package_sha="sha",
++        code_package_url="s3://metaflow/chain-skip-repro",
++        production_token="token",
++        metadata=None,
++        flow_datastore=None,
++        environment=None,
++        event_logger=None,
++        monitor=None,
++        username="test-user",
++    )
++
++
++def _encode_input_paths(paths):
++    return base64.b64encode(compress_list(paths, zlibmin=inf).encode("utf-8")).decode(
++        "utf-8"
++    )
++
++
++def _decode_input_paths(paths):
++    return decompress_list(paths)
++
++
++def _task_path(step_name):
++    return "%s/%s/%s-task" % (RUN_ID, step_name, step_name)
++
++
++def _unresolved_task_path(step_name):
++    return "%s/%s/{{{{tasks.%s.outputs.parameters.task-id}}}}" % (
++        RUN_ID,
++        step_name,
++        step_name,
++    )
++
++
++def test_chain_skip_fallback_uses_latest_executed_split_switch(chain_skip_argo):
++    node = chain_skip_argo.graph["end"]
++    assert node.in_funcs == ["start", "step2", "step3"]
++
++    skippable_steps = chain_skip_argo._skippable_input_steps_in_dag_order(node)
++    assert skippable_steps == ["step2", "start"]
++
++    input_paths = _encode_input_paths(
++        [_task_path("start"), _task_path("step2"), _unresolved_task_path("step3")]
++    )
++
++    result = generate_input_paths(input_paths, skippable_steps)
++
++    assert _decode_input_paths(result) == [_task_path("step2")]
++
++
++@pytest.mark.parametrize(
++    "paths, skippable_steps, expected",
++    [
++        (
++            [_task_path("left"), _task_path("right")],
++            [],
++            [_task_path("left"), _task_path("right")],
++        ),
++        (
++            [_task_path("start"), _task_path("branch")],
++            ["start"],
++            [_task_path("branch")],
++        ),
++        ([_task_path("step"), _task_path("step2")], ["step"], [_task_path("step2")]),
++    ],
++    ids=["normal_join", "non_skippable_executed", "exact_step_name"],
++)
++def test_generate_input_paths_filters_by_exact_step_name(
++    paths, skippable_steps, expected
++):
++    result = generate_input_paths(_encode_input_paths(paths), skippable_steps)
++
++    assert _decode_input_paths(result) == expected

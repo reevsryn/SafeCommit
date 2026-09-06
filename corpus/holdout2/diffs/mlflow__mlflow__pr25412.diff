@@ -1,0 +1,1585 @@
+diff --git a/mlflow/entities/_job.py b/mlflow/entities/_job.py
+index a0b89913bc768..44929b18ee6b7 100644
+--- a/mlflow/entities/_job.py
++++ b/mlflow/entities/_job.py
+@@ -1,5 +1,5 @@
+ import json
+-from typing import Any
++from typing import Any, cast
+ 
+ from mlflow.entities._job_status import JobStatus
+ from mlflow.entities._mlflow_object import _MlflowObject
+@@ -96,7 +96,8 @@ def parsed_result(self) -> Any:
+         Otherwise, the parsed result is None.
+         """
+         if self.status == JobStatus.SUCCEEDED:
+-            return json.loads(self.result)
++            # `result` is always populated for succeeded jobs.
++            return json.loads(cast(str, self.result))
+         return self.result
+ 
+     @property
+diff --git a/mlflow/entities/assessment_source.py b/mlflow/entities/assessment_source.py
+index 9035f755f75bb..b41df590ff236 100644
+--- a/mlflow/entities/assessment_source.py
++++ b/mlflow/entities/assessment_source.py
+@@ -71,9 +71,9 @@ class AssessmentSource(_MlflowObject):
+     """
+ 
+     source_type: str
+-    source_id: str = "default"
++    source_id: str | None = "default"
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         # Perform the standardization on source_type after initialization
+         self.source_type = AssessmentSourceType._standardize(self.source_type)
+ 
+@@ -84,7 +84,7 @@ def to_dictionary(self) -> dict[str, Any]:
+     def from_dictionary(cls, source_dict: dict[str, Any]) -> "AssessmentSource":
+         return cls(**source_dict)
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoAssessmentSource:
+         source = ProtoAssessmentSource()
+         source.source_type = ProtoAssessmentSource.SourceType.Value(self.source_type)
+         if self.source_id is not None:
+@@ -92,7 +92,7 @@ def to_proto(self):
+         return source
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoAssessmentSource) -> "AssessmentSource":
+         return AssessmentSource(
+             source_type=AssessmentSourceType.from_proto(proto.source_type),
+             source_id=proto.source_id or None,
+@@ -157,7 +157,7 @@ class AssessmentSourceType:
+     CODE = "CODE"
+     _SOURCE_TYPES = [SOURCE_TYPE_UNSPECIFIED, LLM_JUDGE, HUMAN, CODE]
+ 
+-    def __init__(self, source_type: str):
++    def __init__(self, source_type: str) -> None:
+         self._source_type = AssessmentSourceType._parse(source_type)
+ 
+     @staticmethod
+@@ -182,7 +182,7 @@ def _parse(source_type: str) -> str:
+             )
+         return source_type
+ 
+-    def __str__(self):
++    def __str__(self) -> str:
+         return self._source_type
+ 
+     @staticmethod
+@@ -190,5 +190,6 @@ def _standardize(source_type: str) -> str:
+         return str(AssessmentSourceType(source_type))
+ 
+     @classmethod
+-    def from_proto(cls, proto_source_type) -> str:
+-        return ProtoAssessmentSource.SourceType.Name(proto_source_type)
++    def from_proto(cls, proto_source_type: int) -> str:
++        source_type_name: str = ProtoAssessmentSource.SourceType.Name(proto_source_type)
++        return source_type_name
+diff --git a/mlflow/entities/dataset.py b/mlflow/entities/dataset.py
+index 2802a4e898542..7534e513273dd 100644
+--- a/mlflow/entities/dataset.py
++++ b/mlflow/entities/dataset.py
+@@ -1,3 +1,5 @@
++from typing import Any
++
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.protos.service_pb2 import Dataset as ProtoDataset
+ 
+@@ -21,7 +23,7 @@ def __init__(
+         self._schema = schema
+         self._profile = profile
+ 
+-    def __eq__(self, other: _MlflowObject) -> bool:
++    def __eq__(self, other: object) -> bool:
+         if type(other) is type(self):
+             return self.__dict__ == other.__dict__
+         return False
+@@ -47,16 +49,16 @@ def source(self) -> str:
+         return self._source
+ 
+     @property
+-    def schema(self) -> str:
++    def schema(self) -> str | None:
+         """String schema of the dataset."""
+         return self._schema
+ 
+     @property
+-    def profile(self) -> str:
++    def profile(self) -> str | None:
+         """String profile of the dataset."""
+         return self._profile
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoDataset:
+         dataset = ProtoDataset()
+         dataset.name = self.name
+         dataset.digest = self.digest
+@@ -69,7 +71,7 @@ def to_proto(self):
+         return dataset
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoDataset) -> "Dataset":
+         return cls(
+             proto.name,
+             proto.digest,
+@@ -79,7 +81,7 @@ def from_proto(cls, proto):
+             proto.profile if proto.HasField("profile") else None,
+         )
+ 
+-    def to_dictionary(self):
++    def to_dictionary(self) -> dict[str, Any]:
+         return {
+             "name": self.name,
+             "digest": self.digest,
+diff --git a/mlflow/entities/dataset_record.py b/mlflow/entities/dataset_record.py
+index 712dd113b374f..5fd22dabadd41 100644
+--- a/mlflow/entities/dataset_record.py
++++ b/mlflow/entities/dataset_record.py
+@@ -2,9 +2,9 @@
+ 
+ import json
+ from dataclasses import dataclass
+-from typing import Any
++from typing import Any, cast
+ 
+-from google.protobuf.json_format import MessageToDict
++from google.protobuf.json_format import MessageToDict  # type: ignore[import-untyped]
+ 
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.entities.dataset_record_source import (
+@@ -42,7 +42,7 @@ class DatasetRecord(_MlflowObject):
+     created_by: str | None = None
+     last_updated_by: str | None = None
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         if self.inputs is None:
+             raise ValueError("inputs must be provided")
+ 
+@@ -50,11 +50,13 @@ def __post_init__(self):
+             self.tags = {}
+ 
+         if self.source and isinstance(self.source, DatasetRecordSource):
++            # DatasetRecordSource.__post_init__ guarantees source_data is a dict
++            source_data = cast("dict[str, Any]", self.source.source_data)
+             if not self.source_id:
+                 if self.source.source_type == DatasetRecordSourceType.TRACE:
+-                    self.source_id = self.source.source_data.get("trace_id")
++                    self.source_id = source_data.get("trace_id")
+                 else:
+-                    self.source_id = self.source.source_data.get("source_id")
++                    self.source_id = source_data.get("source_id")
+             if not self.source_type:
+                 self.source_type = self.source.source_type.value
+ 
+@@ -116,7 +118,7 @@ def from_proto(cls, proto: ProtoDatasetRecord) -> "DatasetRecord":
+         )
+ 
+     def to_dict(self) -> dict[str, Any]:
+-        d = MessageToDict(
++        d: dict[str, Any] = MessageToDict(
+             self.to_proto(),
+             preserving_proto_field_name=True,
+         )
+diff --git a/mlflow/entities/dataset_record_source.py b/mlflow/entities/dataset_record_source.py
+index e9e739a593fb7..910b965e559f0 100644
+--- a/mlflow/entities/dataset_record_source.py
++++ b/mlflow/entities/dataset_record_source.py
+@@ -3,7 +3,7 @@
+ import json
+ from dataclasses import asdict, dataclass
+ from enum import Enum
+-from typing import Any
++from typing import Any, cast
+ 
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.exceptions import MlflowException
+@@ -80,7 +80,7 @@ def _standardize(source_type: str) -> "DatasetRecordSourceType":
+ 
+     @classmethod
+     def from_proto(cls, proto_source_type) -> str:
+-        name = ProtoDatasetRecordSource.SourceType.Name(proto_source_type)
++        name = cast(str, ProtoDatasetRecordSource.SourceType.Name(proto_source_type))
+         if name == _PROTO_UNSPECIFIED_SOURCE_TYPE_NAME:
+             return cls.UNSPECIFIED.value
+         return name
+@@ -108,7 +108,7 @@ class DatasetRecordSource(_MlflowObject):
+     source_type: DatasetRecordSourceType
+     source_data: dict[str, Any] | None = None
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         self.source_type = DatasetRecordSourceType._standardize(self.source_type)
+ 
+         if self.source_data is None:
+@@ -130,7 +130,9 @@ def from_proto(cls, proto: ProtoDatasetRecordSource) -> "DatasetRecordSource":
+             else DatasetRecordSourceType.UNSPECIFIED
+         )
+ 
+-        return cls(source_type=source_type, source_data=source_data)
++        # NB: A str source_type is standardized to the enum in __post_init__, but an unset
++        # proto field passes None, which _standardize does not handle.
++        return cls(source_type=source_type, source_data=source_data)  # type: ignore[arg-type]
+ 
+     def to_dict(self) -> dict[str, Any]:
+         d = asdict(self)
+diff --git a/mlflow/entities/experiment.py b/mlflow/entities/experiment.py
+index 9da63581e5e58..17f47a5e94d1e 100644
+--- a/mlflow/entities/experiment.py
++++ b/mlflow/entities/experiment.py
+@@ -23,17 +23,17 @@ class Experiment(_MlflowObject):
+ 
+     def __init__(
+         self,
+-        experiment_id,
+-        name,
+-        artifact_location,
+-        lifecycle_stage,
+-        tags=None,
+-        creation_time=None,
+-        last_update_time=None,
+-        workspace=None,
+-        trace_location=None,
+-        effective_trace_archival_retention=None,
+-    ):
++        experiment_id: str,
++        name: str,
++        artifact_location: str,
++        lifecycle_stage: str,
++        tags: list[ExperimentTag] | None = None,
++        creation_time: int | None = None,
++        last_update_time: int | None = None,
++        workspace: str | None = None,
++        trace_location: UnityCatalog | None = None,
++        effective_trace_archival_retention: str | None = None,
++    ) -> None:
+         super().__init__()
+         self._experiment_id = experiment_id
+         self._name = name
+@@ -47,12 +47,12 @@ def __init__(
+         self._effective_trace_archival_retention = effective_trace_archival_retention
+ 
+     @property
+-    def experiment_id(self):
++    def experiment_id(self) -> str:
+         """String ID of the experiment."""
+         return self._experiment_id
+ 
+     @property
+-    def name(self):
++    def name(self) -> str:
+         """String name of the experiment."""
+         return self._name
+ 
+@@ -60,17 +60,17 @@ def _set_name(self, new_name):
+         self._name = new_name
+ 
+     @property
+-    def artifact_location(self):
++    def artifact_location(self) -> str:
+         """String corresponding to the root artifact URI for the experiment."""
+         return self._artifact_location
+ 
+     @property
+-    def lifecycle_stage(self):
++    def lifecycle_stage(self) -> str:
+         """Lifecycle stage of the experiment. Can either be 'active' or 'deleted'."""
+         return self._lifecycle_stage
+ 
+     @property
+-    def tags(self):
++    def tags(self) -> dict[str, str]:
+         """Tags that have been set on the experiment."""
+         return self._tags
+ 
+@@ -78,26 +78,28 @@ def _add_tag(self, tag):
+         self._tags[tag.key] = tag.value
+ 
+     @property
+-    def creation_time(self):
++    def creation_time(self) -> int | None:
+         return self._creation_time
+ 
+     def _set_creation_time(self, creation_time):
+         self._creation_time = creation_time
+ 
+     @property
+-    def last_update_time(self):
++    def last_update_time(self) -> int | None:
+         return self._last_update_time
+ 
+     def _set_last_update_time(self, last_update_time):
+         self._last_update_time = last_update_time
+ 
+     @property
+-    def effective_trace_archival_retention(self):
++    def effective_trace_archival_retention(self) -> str | None:
+         """Effective trace archival retention after applying broader-scope overrides."""
+         return self._effective_trace_archival_retention
+ 
+     @effective_trace_archival_retention.setter
+-    def effective_trace_archival_retention(self, effective_trace_archival_retention):
++    def effective_trace_archival_retention(
++        self, effective_trace_archival_retention: str | None
++    ) -> None:
+         self._effective_trace_archival_retention = effective_trace_archival_retention
+ 
+     @property
+@@ -108,7 +110,7 @@ def trace_location(self) -> UnityCatalog | None:
+         return self._trace_location
+ 
+     @trace_location.setter
+-    def trace_location(self, trace_location):
++    def trace_location(self, trace_location: UnityCatalog | None) -> None:
+         self._trace_location = trace_location
+ 
+     def _resolve_trace_location_from_tags(self) -> UnityCatalog | None:
+@@ -138,7 +140,7 @@ def workspace(self) -> str:
+         return self._workspace
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoExperiment) -> Experiment:
+         experiment = cls(
+             proto.experiment_id,
+             proto.name,
+@@ -161,7 +163,7 @@ def from_proto(cls, proto):
+             experiment._add_tag(ExperimentTag.from_proto(proto_tag))
+         return experiment
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoExperiment:
+         experiment = ProtoExperiment()
+         experiment.experiment_id = self.experiment_id
+         experiment.name = self.name
+diff --git a/mlflow/entities/gateway_budget_policy.py b/mlflow/entities/gateway_budget_policy.py
+index a9296c43612fe..f569bc0628313 100644
+--- a/mlflow/entities/gateway_budget_policy.py
++++ b/mlflow/entities/gateway_budget_policy.py
+@@ -2,6 +2,7 @@
+ 
+ from dataclasses import dataclass
+ from enum import Enum
++from typing import cast
+ 
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.protos.service_pb2 import BudgetAction as ProtoBudgetAction
+@@ -30,7 +31,8 @@ def from_proto(cls, proto: ProtoBudgetDurationUnit) -> BudgetDurationUnit | None
+             return None
+ 
+     def to_proto(self) -> ProtoBudgetDurationUnit:
+-        return ProtoBudgetDurationUnit.Value(self.value)
++        # `EnumTypeWrapper.Value` is untyped upstream, hence the cast.
++        return cast(ProtoBudgetDurationUnit, ProtoBudgetDurationUnit.Value(self.value))
+ 
+ 
+ class BudgetTargetScope(str, Enum):
+@@ -49,7 +51,8 @@ def from_proto(cls, proto: ProtoBudgetTargetScope) -> BudgetTargetScope | None:
+             return None
+ 
+     def to_proto(self) -> ProtoBudgetTargetScope:
+-        return ProtoBudgetTargetScope.Value(self.value)
++        # `EnumTypeWrapper.Value` is untyped upstream, hence the cast.
++        return cast(ProtoBudgetTargetScope, ProtoBudgetTargetScope.Value(self.value))
+ 
+ 
+ class BudgetAction(str, Enum):
+@@ -66,7 +69,8 @@ def from_proto(cls, proto: ProtoBudgetAction) -> BudgetAction | None:
+             return None
+ 
+     def to_proto(self) -> ProtoBudgetAction:
+-        return ProtoBudgetAction.Value(self.value)
++        # `EnumTypeWrapper.Value` is untyped upstream, hence the cast.
++        return cast(ProtoBudgetAction, ProtoBudgetAction.Value(self.value))
+ 
+ 
+ class BudgetUnit(str, Enum):
+@@ -82,7 +86,8 @@ def from_proto(cls, proto: ProtoBudgetUnit) -> BudgetUnit | None:
+             return None
+ 
+     def to_proto(self) -> ProtoBudgetUnit:
+-        return ProtoBudgetUnit.Value(self.value)
++        # `EnumTypeWrapper.Value` is untyped upstream, hence the cast.
++        return cast(ProtoBudgetUnit, ProtoBudgetUnit.Value(self.value))
+ 
+ 
+ @dataclass
+@@ -92,7 +97,7 @@ class BudgetDuration:
+     unit: BudgetDurationUnit
+     value: int
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         if isinstance(self.unit, str):
+             self.unit = BudgetDurationUnit(self.unit)
+ 
+@@ -104,8 +109,10 @@ def to_proto(self) -> ProtoBudgetDuration:
+ 
+     @classmethod
+     def from_proto(cls, proto: ProtoBudgetDuration) -> BudgetDuration:
++        # Well-formed protos always carry concrete enum values, so the
++        # optional results of the enum converters cannot occur here.
+         return cls(
+-            unit=BudgetDurationUnit.from_proto(proto.unit),
++            unit=cast(BudgetDurationUnit, BudgetDurationUnit.from_proto(proto.unit)),
+             value=proto.value,
+         )
+ 
+@@ -148,7 +155,7 @@ class GatewayBudgetPolicy(_MlflowObject):
+     workspace: str | None = None
+     target_value: str | None = None
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         self.workspace = resolve_entity_workspace_name(self.workspace)
+         if isinstance(self.budget_unit, str):
+             self.budget_unit = BudgetUnit(self.budget_unit)
+@@ -157,7 +164,7 @@ def __post_init__(self):
+         if isinstance(self.budget_action, str):
+             self.budget_action = BudgetAction(self.budget_action)
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoGatewayBudgetPolicy:
+         proto = ProtoGatewayBudgetPolicy()
+         proto.budget_policy_id = self.budget_policy_id
+         proto.budget_unit = self.budget_unit.to_proto()
+@@ -174,14 +181,16 @@ def to_proto(self):
+         return proto
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoGatewayBudgetPolicy) -> GatewayBudgetPolicy:
++        # Well-formed protos always carry concrete enum values, so the
++        # optional results of the enum converters cannot occur here.
+         return cls(
+             budget_policy_id=proto.budget_policy_id,
+-            budget_unit=BudgetUnit.from_proto(proto.budget_unit),
++            budget_unit=cast(BudgetUnit, BudgetUnit.from_proto(proto.budget_unit)),
+             budget_amount=proto.budget_amount,
+             duration=BudgetDuration.from_proto(proto.duration),
+-            target_scope=BudgetTargetScope.from_proto(proto.target_scope),
+-            budget_action=BudgetAction.from_proto(proto.budget_action),
++            target_scope=cast(BudgetTargetScope, BudgetTargetScope.from_proto(proto.target_scope)),
++            budget_action=cast(BudgetAction, BudgetAction.from_proto(proto.budget_action)),
+             created_by=proto.created_by or None,
+             created_at=proto.created_at,
+             last_updated_by=proto.last_updated_by or None,
+diff --git a/mlflow/entities/gateway_guardrail.py b/mlflow/entities/gateway_guardrail.py
+index b7646d7c50f99..3e1ef0a1f47ca 100644
+--- a/mlflow/entities/gateway_guardrail.py
++++ b/mlflow/entities/gateway_guardrail.py
+@@ -2,6 +2,7 @@
+ 
+ from dataclasses import dataclass
+ from enum import Enum
++from typing import cast
+ 
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.entities.scorer import ScorerVersion
+@@ -24,7 +25,8 @@ def from_proto(cls, proto: ProtoGuardrailStage) -> GuardrailStage:
+         return cls(ProtoGuardrailStage.Name(proto))
+ 
+     def to_proto(self) -> ProtoGuardrailStage:
+-        return ProtoGuardrailStage.Value(self.value)
++        # `EnumTypeWrapper.Value` is untyped upstream, hence the cast.
++        return cast(ProtoGuardrailStage, ProtoGuardrailStage.Value(self.value))
+ 
+ 
+ class GuardrailAction(str, Enum):
+@@ -39,7 +41,8 @@ def from_proto(cls, proto: ProtoGuardrailAction) -> GuardrailAction:
+         return cls(ProtoGuardrailAction.Name(proto))
+ 
+     def to_proto(self) -> ProtoGuardrailAction:
+-        return ProtoGuardrailAction.Value(self.value)
++        # `EnumTypeWrapper.Value` is untyped upstream, hence the cast.
++        return cast(ProtoGuardrailAction, ProtoGuardrailAction.Value(self.value))
+ 
+ 
+ @dataclass
+@@ -56,14 +59,14 @@ class GatewayGuardrail(_MlflowObject):
+     last_updated_by: str | None = None
+     workspace: str | None = None
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         self.workspace = resolve_entity_workspace_name(self.workspace)
+         if isinstance(self.stage, str):
+             self.stage = GuardrailStage(self.stage)
+         if isinstance(self.action, str):
+             self.action = GuardrailAction(self.action)
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoGatewayGuardrail:
+         proto = ProtoGatewayGuardrail()
+         proto.guardrail_id = self.guardrail_id
+         proto.name = self.name
+@@ -79,7 +82,7 @@ def to_proto(self):
+         return proto
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoGatewayGuardrail) -> GatewayGuardrail:
+         return cls(
+             guardrail_id=proto.guardrail_id,
+             name=proto.name,
+@@ -106,7 +109,7 @@ class GatewayGuardrailConfig(_MlflowObject):
+     created_by: str | None = None
+     workspace: str | None = None
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoGatewayGuardrailConfig:
+         proto = ProtoGatewayGuardrailConfig()
+         proto.endpoint_id = self.endpoint_id
+         proto.guardrail_id = self.guardrail_id
+@@ -119,7 +122,7 @@ def to_proto(self):
+         return proto
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoGatewayGuardrailConfig) -> GatewayGuardrailConfig:
+         guardrail = None
+         if proto.HasField("guardrail"):
+             guardrail = GatewayGuardrail.from_proto(proto.guardrail)
+diff --git a/mlflow/entities/gateway_secrets.py b/mlflow/entities/gateway_secrets.py
+index 36b1bb0e4bb62..27248423dc022 100644
+--- a/mlflow/entities/gateway_secrets.py
++++ b/mlflow/entities/gateway_secrets.py
+@@ -52,10 +52,10 @@ class GatewaySecretInfo(_MlflowObject):
+     created_by: str | None = None
+     last_updated_by: str | None = None
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         object.__setattr__(self, "workspace", resolve_entity_workspace_name(self.workspace))
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoGatewaySecretInfo:
+         proto = ProtoGatewaySecretInfo()
+         proto.secret_id = self.secret_id
+         proto.secret_name = self.secret_name
+@@ -73,7 +73,7 @@ def to_proto(self):
+         return proto
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoGatewaySecretInfo) -> "GatewaySecretInfo":
+         # Empty map means no auth_config was provided
+         auth_config = dict(proto.auth_config) or None
+         return cls(
+diff --git a/mlflow/entities/issue.py b/mlflow/entities/issue.py
+index 5f85678305271..79dc8201308ce 100644
+--- a/mlflow/entities/issue.py
++++ b/mlflow/entities/issue.py
+@@ -16,7 +16,7 @@ class IssueStatus(str, Enum):
+     REJECTED = "rejected"
+     RESOLVED = "resolved"
+ 
+-    def __str__(self):
++    def __str__(self) -> str:
+         return self.value
+ 
+ 
+@@ -28,7 +28,7 @@ class IssueSeverity(str, Enum):
+     MEDIUM = "medium"
+     HIGH = "high"
+ 
+-    def __str__(self):
++    def __str__(self) -> str:
+         return self.value
+ 
+     @cached_property
+@@ -36,22 +36,22 @@ def _rank(self) -> int:
+         """Return the ordinal rank for severity comparison."""
+         return list(IssueSeverity).index(self)
+ 
+-    def __lt__(self, other) -> bool:
++    def __lt__(self, other: object) -> bool:
+         if isinstance(other, IssueSeverity):
+             return self._rank < other._rank
+         return NotImplemented
+ 
+-    def __le__(self, other) -> bool:
++    def __le__(self, other: object) -> bool:
+         if isinstance(other, IssueSeverity):
+             return self._rank <= other._rank
+         return NotImplemented
+ 
+-    def __gt__(self, other) -> bool:
++    def __gt__(self, other: object) -> bool:
+         if isinstance(other, IssueSeverity):
+             return self._rank > other._rank
+         return NotImplemented
+ 
+-    def __ge__(self, other) -> bool:
++    def __ge__(self, other: object) -> bool:
+         if isinstance(other, IssueSeverity):
+             return self._rank >= other._rank
+         return NotImplemented
+diff --git a/mlflow/entities/logged_model.py b/mlflow/entities/logged_model.py
+index cb96efbde9046..e0137a7c7ad9c 100644
+--- a/mlflow/entities/logged_model.py
++++ b/mlflow/entities/logged_model.py
+@@ -28,7 +28,7 @@ def __init__(
+         tags: list[LoggedModelTag] | dict[str, str] | None = None,
+         params: list[LoggedModelParameter] | dict[str, str] | None = None,
+         metrics: list[Metric] | None = None,
+-    ):
++    ) -> None:
+         super().__init__()
+         self._experiment_id: str = experiment_id
+         self._model_id: str = model_id
+@@ -76,7 +76,7 @@ def experiment_id(self) -> str:
+         return self._experiment_id
+ 
+     @experiment_id.setter
+-    def experiment_id(self, new_experiment_id: str):
++    def experiment_id(self, new_experiment_id: str) -> None:
+         self._experiment_id = new_experiment_id
+ 
+     @property
+@@ -85,7 +85,7 @@ def model_id(self) -> str:
+         return self._model_id
+ 
+     @model_id.setter
+-    def model_id(self, new_model_id: str):
++    def model_id(self, new_model_id: str) -> None:
+         self._model_id = new_model_id
+ 
+     @property
+@@ -94,7 +94,7 @@ def name(self) -> str:
+         return self._name
+ 
+     @name.setter
+-    def name(self, new_name: str):
++    def name(self, new_name: str) -> None:
+         self._name = new_name
+ 
+     @property
+@@ -103,7 +103,7 @@ def artifact_location(self) -> str:
+         return self._artifact_location
+ 
+     @artifact_location.setter
+-    def artifact_location(self, new_artifact_location: str):
++    def artifact_location(self, new_artifact_location: str) -> None:
+         self._artifact_location = new_artifact_location
+ 
+     @property
+@@ -119,7 +119,7 @@ def last_updated_timestamp(self) -> int:
+         return self._last_updated_timestamp
+ 
+     @last_updated_timestamp.setter
+-    def last_updated_timestamp(self, updated_timestamp: int):
++    def last_updated_timestamp(self, updated_timestamp: int) -> None:
+         self._last_updated_timestamp = updated_timestamp
+ 
+     @property
+@@ -128,7 +128,7 @@ def model_type(self) -> str | None:
+         return self._model_type
+ 
+     @model_type.setter
+-    def model_type(self, new_model_type: str | None):
++    def model_type(self, new_model_type: str | None) -> None:
+         self._model_type = new_model_type
+ 
+     @property
+@@ -142,7 +142,7 @@ def status(self) -> LoggedModelStatus:
+         return self._status
+ 
+     @status.setter
+-    def status(self, updated_status: str):
++    def status(self, updated_status: LoggedModelStatus) -> None:
+         self._status = updated_status
+ 
+     @property
+@@ -165,15 +165,15 @@ def metrics(self) -> list[Metric] | None:
+         """List of metrics associated with this Model."""
+         return self._metrics
+ 
++    @metrics.setter
++    def metrics(self, new_metrics: list[Metric] | None) -> None:
++        self._metrics = new_metrics
++
+     @property
+     def model_uri(self) -> str:
+         """URI of the model."""
+         return self._model_uri
+ 
+-    @metrics.setter
+-    def metrics(self, new_metrics: list[Metric] | None):
+-        self._metrics = new_metrics
+-
+     @classmethod
+     def _properties(cls) -> list[str]:
+         # aggregate with base class properties since cls.__dict__ does not do it automatically
+@@ -189,7 +189,7 @@ def to_dictionary(self) -> dict[str, Any]:
+         del model_dict["model_uri"]
+         return model_dict
+ 
+-    def to_proto(self):
++    def to_proto(self) -> pb2.LoggedModel:
+         return pb2.LoggedModel(
+             info=pb2.LoggedModelInfo(
+                 experiment_id=self.experiment_id,
+@@ -210,7 +210,7 @@ def to_proto(self):
+         )
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: pb2.LoggedModel) -> "LoggedModel":
+         return cls(
+             experiment_id=proto.info.experiment_id,
+             model_id=proto.info.model_id,
+diff --git a/mlflow/entities/mcp_access_endpoint.py b/mlflow/entities/mcp_access_endpoint.py
+index 212183d917d98..b7661404bb469 100644
+--- a/mlflow/entities/mcp_access_endpoint.py
++++ b/mlflow/entities/mcp_access_endpoint.py
+@@ -28,7 +28,7 @@ class MCPAccessEndpoint:
+     creation_timestamp: int | None = None
+     last_updated_timestamp: int | None = None
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         self.workspace = resolve_entity_workspace_name(self.workspace)
+ 
+     @classmethod
+diff --git a/mlflow/entities/mcp_server_version.py b/mlflow/entities/mcp_server_version.py
+index c0ccde58ae5c7..de289fba68b85 100644
+--- a/mlflow/entities/mcp_server_version.py
++++ b/mlflow/entities/mcp_server_version.py
+@@ -33,7 +33,7 @@ class MCPServerVersion:
+     creation_timestamp: int | None = None
+     last_updated_timestamp: int | None = None
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         self.workspace = resolve_entity_workspace_name(self.workspace)
+ 
+     @classmethod
+diff --git a/mlflow/entities/metric.py b/mlflow/entities/metric.py
+index c4f01a1403246..f2246edd0170e 100644
+--- a/mlflow/entities/metric.py
++++ b/mlflow/entities/metric.py
+@@ -1,3 +1,7 @@
++from __future__ import annotations
++
++from typing import Any, cast
++
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.exceptions import MlflowException
+ from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
+@@ -12,15 +16,15 @@ class Metric(_MlflowObject):
+ 
+     def __init__(
+         self,
+-        key,
+-        value,
+-        timestamp,
+-        step,
++        key: str,
++        value: float,
++        timestamp: int,
++        step: int,
+         model_id: str | None = None,
+         dataset_name: str | None = None,
+         dataset_digest: str | None = None,
+         run_id: str | None = None,
+-    ):
++    ) -> None:
+         if (dataset_name, dataset_digest).count(None) == 1:
+             raise MlflowException(
+                 "Both dataset_name and dataset_digest must be provided if one is provided",
+@@ -37,27 +41,27 @@ def __init__(
+         self._run_id = run_id
+ 
+     @property
+-    def key(self):
++    def key(self) -> str:
+         """String key corresponding to the metric name."""
+         return self._key
+ 
+     @property
+-    def value(self):
++    def value(self) -> float:
+         """Float value of the metric."""
+         return self._value
+ 
+     @property
+-    def timestamp(self):
++    def timestamp(self) -> int:
+         """Metric timestamp as an integer (milliseconds since the Unix epoch)."""
+         return self._timestamp
+ 
+     @property
+-    def step(self):
++    def step(self) -> int:
+         """Integer metric step (x-coordinate)."""
+         return self._step
+ 
+     @property
+-    def model_id(self):
++    def model_id(self) -> str | None:
+         """ID of the Model associated with the metric."""
+         return self._model_id
+ 
+@@ -76,7 +80,7 @@ def run_id(self) -> str | None:
+         """String. Run ID associated with the metric."""
+         return self._run_id
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoMetric:
+         metric = ProtoMetric()
+         metric.key = self.key
+         metric.value = self.value
+@@ -93,7 +97,7 @@ def to_proto(self):
+         return metric
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoMetric) -> Metric:
+         return cls(
+             proto.key,
+             proto.value,
+@@ -105,13 +109,13 @@ def from_proto(cls, proto):
+             run_id=proto.run_id or None,
+         )
+ 
+-    def __eq__(self, __o):
++    def __eq__(self, __o: object) -> bool:
+         if isinstance(__o, self.__class__):
+             return self.__dict__ == __o.__dict__
+ 
+         return False
+ 
+-    def __hash__(self):
++    def __hash__(self) -> int:
+         return hash((
+             self._key,
+             self._value,
+@@ -123,7 +127,7 @@ def __hash__(self):
+             self._run_id,
+         ))
+ 
+-    def to_dictionary(self):
++    def to_dictionary(self) -> dict[str, Any]:
+         """
+         Convert the Metric object to a dictionary.
+ 
+@@ -142,7 +146,7 @@ def to_dictionary(self):
+         }
+ 
+     @classmethod
+-    def from_dictionary(cls, metric_dict):
++    def from_dictionary(cls, metric_dict: dict[str, Any]) -> Metric:
+         """
+         Create a Metric object from a dictionary.
+ 
+@@ -163,7 +167,7 @@ def from_dictionary(cls, metric_dict):
+ 
+ 
+ class MetricWithRunId(Metric):
+-    def __init__(self, metric: Metric, run_id):
++    def __init__(self, metric: Metric, run_id: str) -> None:
+         super().__init__(
+             key=metric.key,
+             value=metric.value,
+@@ -173,10 +177,12 @@ def __init__(self, metric: Metric, run_id):
+         self._run_id = run_id
+ 
+     @property
+-    def run_id(self):
+-        return self._run_id
++    def run_id(self) -> str:
++        # `_run_id` is always set to a string by this subclass's `__init__`, while the
++        # attribute is inherited with an optional type from `Metric`, hence the cast.
++        return cast(str, self._run_id)
+ 
+-    def to_dict(self):
++    def to_dict(self) -> dict[str, Any]:
+         return {
+             "key": self.key,
+             "value": self.value,
+@@ -185,7 +191,7 @@ def to_dict(self):
+             "run_id": self.run_id,
+         }
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoMetricWithRunId:
+         metric = ProtoMetricWithRunId()
+         metric.key = self.key
+         metric.value = self.value
+diff --git a/mlflow/entities/run.py b/mlflow/entities/run.py
+index f44bf7a9eb7ac..3e44a6a97b31b 100644
+--- a/mlflow/entities/run.py
++++ b/mlflow/entities/run.py
+@@ -1,3 +1,5 @@
++from __future__ import annotations
++
+ from typing import Any
+ 
+ from mlflow.entities._mlflow_object import _MlflowObject
+@@ -47,7 +49,7 @@ def data(self) -> RunData:
+         return self._data
+ 
+     @property
+-    def inputs(self) -> RunInputs:
++    def inputs(self) -> RunInputs | None:
+         """
+         The run inputs, including dataset inputs.
+ 
+@@ -56,7 +58,7 @@ def inputs(self) -> RunInputs:
+         return self._inputs
+ 
+     @property
+-    def outputs(self) -> RunOutputs:
++    def outputs(self) -> RunOutputs | None:
+         """
+         The run outputs, including model outputs.
+ 
+@@ -64,7 +66,7 @@ def outputs(self) -> RunOutputs:
+         """
+         return self._outputs
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoRun:
+         run = ProtoRun()
+         run.info.MergeFrom(self.info.to_proto())
+         if self.data:
+@@ -76,7 +78,7 @@ def to_proto(self):
+         return run
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoRun) -> Run:
+         return cls(
+             RunInfo.from_proto(proto.info),
+             RunData.from_proto(proto.data),
+diff --git a/mlflow/entities/run_data.py b/mlflow/entities/run_data.py
+index b2f2e6c845fc1..3816b02691d3d 100644
+--- a/mlflow/entities/run_data.py
++++ b/mlflow/entities/run_data.py
+@@ -1,3 +1,7 @@
++from __future__ import annotations
++
++from typing import Any
++
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.entities.metric import Metric
+ from mlflow.entities.param import Param
+@@ -12,7 +16,12 @@ class RunData(_MlflowObject):
+     Run data (metrics and parameters).
+     """
+ 
+-    def __init__(self, metrics=None, params=None, tags=None):
++    def __init__(
++        self,
++        metrics: list[Metric] | None = None,
++        params: list[Param] | None = None,
++        tags: list[RunTag] | None = None,
++    ) -> None:
+         """Construct a new mlflow.entities.RunData instance.
+ 
+         Args:
+@@ -29,7 +38,7 @@ def __init__(self, metrics=None, params=None, tags=None):
+         self._tags = {tag.key: tag.value for tag in (tags or [])}
+ 
+     @property
+-    def metrics(self):
++    def metrics(self) -> dict[str, float]:
+         """
+         Dictionary of string key -> metric value for the current run.
+         For each metric key, the metric value with the latest timestamp is returned. In case there
+@@ -38,12 +47,12 @@ def metrics(self):
+         return self._metrics
+ 
+     @property
+-    def params(self):
++    def params(self) -> dict[str, str]:
+         """Dictionary of param key (string) -> param value for the current run."""
+         return self._params
+ 
+     @property
+-    def tags(self):
++    def tags(self) -> dict[str, str]:
+         """Dictionary of tag key (string) -> tag value for the current run."""
+         return self._tags
+ 
+@@ -57,14 +66,14 @@ def _add_param(self, param):
+     def _add_tag(self, tag):
+         self._tags[tag.key] = tag.value
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoRunData:
+         run_data = ProtoRunData()
+         run_data.metrics.extend([m.to_proto() for m in self._metric_objs])
+         run_data.params.extend([ProtoParam(key=key, value=val) for key, val in self.params.items()])
+         run_data.tags.extend([ProtoRunTag(key=key, value=val) for key, val in self.tags.items()])
+         return run_data
+ 
+-    def to_dictionary(self):
++    def to_dictionary(self) -> dict[str, Any]:
+         return {
+             "metrics": self.metrics,
+             "params": self.params,
+@@ -72,7 +81,7 @@ def to_dictionary(self):
+         }
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoRunData) -> RunData:
+         run_data = cls()
+         # iterate proto and add metrics, params, and tags
+         for proto_metric in proto.metrics:
+diff --git a/mlflow/entities/run_info.py b/mlflow/entities/run_info.py
+index 518f9f0a35106..f84db542b4918 100644
+--- a/mlflow/entities/run_info.py
++++ b/mlflow/entities/run_info.py
+@@ -1,12 +1,17 @@
++from __future__ import annotations
++
++from typing import cast
++
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.entities.lifecycle_stage import LifecycleStage
+ from mlflow.entities.run_status import RunStatus
+ from mlflow.exceptions import MlflowException
+ from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
+ from mlflow.protos.service_pb2 import RunInfo as ProtoRunInfo
++from mlflow.protos.service_pb2 import RunStatus as ProtoRunStatus
+ 
+ 
+-def check_run_is_active(run_info):
++def check_run_is_active(run_info: RunInfo) -> None:
+     if run_info.lifecycle_stage != LifecycleStage.ACTIVE:
+         raise MlflowException(
+             f"The run {run_info.run_id} must be in 'active' lifecycle_stage.",
+@@ -33,16 +38,16 @@ class RunInfo(_MlflowObject):
+ 
+     def __init__(
+         self,
+-        run_id,
+-        experiment_id,
+-        user_id,
+-        status,
+-        start_time,
+-        end_time,
+-        lifecycle_stage,
+-        artifact_uri=None,
+-        run_name=None,
+-    ):
++        run_id: str,
++        experiment_id: str,
++        user_id: str,
++        status: str,
++        start_time: int,
++        end_time: int | None,
++        lifecycle_stage: str,
++        artifact_uri: str | None = None,
++        run_name: str | None = None,
++    ) -> None:
+         if experiment_id is None:
+             raise Exception("experiment_id cannot be None")
+         if user_id is None:
+@@ -61,7 +66,7 @@ def __init__(
+         self._artifact_uri = artifact_uri
+         self._run_name = run_name
+ 
+-    def __eq__(self, other):
++    def __eq__(self, other: object) -> bool:
+         if type(other) is type(self):
+             # TODO deep equality here?
+             return self.__dict__ == other.__dict__
+@@ -81,17 +86,17 @@ def _copy_with_overrides(self, status=None, end_time=None, lifecycle_stage=None,
+         return RunInfo.from_proto(proto)
+ 
+     @searchable_attribute
+-    def run_id(self):
++    def run_id(self) -> str:
+         """String containing run id."""
+         return self._run_id
+ 
+     @property
+-    def experiment_id(self):
++    def experiment_id(self) -> str:
+         """String ID of the experiment for the current run."""
+         return self._experiment_id
+ 
+     @searchable_attribute
+-    def run_name(self):
++    def run_name(self) -> str | None:
+         """String containing run name."""
+         return self._run_name
+ 
+@@ -99,12 +104,12 @@ def _set_run_name(self, new_name):
+         self._run_name = new_name
+ 
+     @searchable_attribute
+-    def user_id(self):
++    def user_id(self) -> str:
+         """String ID of the user who initiated this run."""
+         return self._user_id
+ 
+     @searchable_attribute
+-    def status(self):
++    def status(self) -> str:
+         """
+         One of the values in :py:class:`mlflow.entities.RunStatus`
+         describing the status of the run.
+@@ -112,29 +117,29 @@ def status(self):
+         return self._status
+ 
+     @searchable_attribute
+-    def start_time(self):
++    def start_time(self) -> int:
+         """Start time of the run, in number of milliseconds since the UNIX epoch."""
+         return self._start_time
+ 
+     @searchable_attribute
+-    def end_time(self):
++    def end_time(self) -> int | None:
+         """End time of the run, in number of milliseconds since the UNIX epoch."""
+         return self._end_time
+ 
+     @searchable_attribute
+-    def artifact_uri(self):
++    def artifact_uri(self) -> str | None:
+         """String root artifact URI of the run."""
+         return self._artifact_uri
+ 
+     @property
+-    def lifecycle_stage(self):
++    def lifecycle_stage(self) -> str:
+         """
+         One of the values in :py:class:`mlflow.entities.lifecycle_stage.LifecycleStage`
+         describing the lifecycle stage of the run.
+         """
+         return self._lifecycle_stage
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoRunInfo:
+         proto = ProtoRunInfo()
+         proto.run_uuid = self.run_id
+         proto.run_id = self.run_id
+@@ -142,7 +147,9 @@ def to_proto(self):
+             proto.run_name = self.run_name
+         proto.experiment_id = self.experiment_id
+         proto.user_id = self.user_id
+-        proto.status = RunStatus.from_string(self.status)
++        # The proto field is typed as the protobuf enum wrapper (an int subclass), while
++        # `RunStatus.from_string` returns a plain `int`, hence the cast.
++        proto.status = cast(ProtoRunStatus, RunStatus.from_string(self.status))
+         proto.start_time = self.start_time
+         if self.end_time:
+             proto.end_time = self.end_time
+@@ -152,8 +159,8 @@ def to_proto(self):
+         return proto
+ 
+     @classmethod
+-    def from_proto(cls, proto):
+-        end_time = proto.end_time
++    def from_proto(cls, proto: ProtoRunInfo) -> RunInfo:
++        end_time: int | None = proto.end_time
+         # The proto2 default scalar value of zero indicates that the run's end time is absent.
+         # An absent end time is represented with a NoneType in the `RunInfo` class
+         if end_time == 0:
+@@ -171,13 +178,13 @@ def from_proto(cls, proto):
+         )
+ 
+     @classmethod
+-    def get_searchable_attributes(cls):
++    def get_searchable_attributes(cls) -> list[str]:
+         return sorted([
+             p for p in cls.__dict__ if isinstance(getattr(cls, p), searchable_attribute)
+         ])
+ 
+     @classmethod
+-    def get_orderable_attributes(cls):
++    def get_orderable_attributes(cls) -> list[str]:
+         # Note that all searchable attributes are also orderable.
+         return sorted([
+             p
+diff --git a/mlflow/entities/scorer.py b/mlflow/entities/scorer.py
+index d1e327ebdd25b..5b29f49d1fe54 100644
+--- a/mlflow/entities/scorer.py
++++ b/mlflow/entities/scorer.py
+@@ -1,9 +1,13 @@
+ import json
+ from functools import cached_property
++from typing import TYPE_CHECKING
+ 
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.protos.service_pb2 import Scorer as ProtoScorer
+ 
++if TYPE_CHECKING:
++    from mlflow.genai.scorers.base import SerializedScorer
++
+ 
+ class ScorerVersion(_MlflowObject):
+     """
+@@ -54,7 +58,7 @@ def __init__(
+         serialized_scorer: str,
+         creation_time: int,
+         scorer_id: str | None = None,
+-    ):
++    ) -> None:
+         self._experiment_id = experiment_id
+         self._scorer_name = scorer_name
+         self._scorer_version = scorer_version
+@@ -63,7 +67,7 @@ def __init__(
+         self._scorer_id = scorer_id
+ 
+     @property
+-    def experiment_id(self):
++    def experiment_id(self) -> str:
+         """
+         The ID of the experiment this scorer belongs to.
+ 
+@@ -73,7 +77,7 @@ def experiment_id(self):
+         return self._experiment_id
+ 
+     @property
+-    def scorer_name(self):
++    def scorer_name(self) -> str:
+         """
+         The name identifier for the scorer.
+ 
+@@ -83,7 +87,7 @@ def scorer_name(self):
+         return self._scorer_name
+ 
+     @property
+-    def scorer_version(self):
++    def scorer_version(self) -> int:
+         """
+         The version number of this scorer instance.
+ 
+@@ -94,7 +98,7 @@ def scorer_version(self):
+         return self._scorer_version
+ 
+     @cached_property
+-    def serialized_scorer(self):
++    def serialized_scorer(self) -> "SerializedScorer":
+         """
+         The deserialized scorer object containing metadata and function code.
+ 
+@@ -118,7 +122,7 @@ def serialized_scorer(self):
+         return SerializedScorer.from_dict(json.loads(self._serialized_scorer))
+ 
+     @property
+-    def creation_time(self):
++    def creation_time(self) -> int:
+         """
+         The timestamp when this scorer version was created.
+ 
+@@ -129,7 +133,7 @@ def creation_time(self):
+         return self._creation_time
+ 
+     @property
+-    def scorer_id(self):
++    def scorer_id(self) -> str | None:
+         """
+         The unique identifier for the scorer.
+ 
+@@ -139,7 +143,7 @@ def scorer_id(self):
+         return self._scorer_id
+ 
+     @classmethod
+-    def from_proto(cls, proto):
++    def from_proto(cls, proto: ProtoScorer) -> "ScorerVersion":
+         """
+         Create a ScorerVersion instance from a protobuf message.
+ 
+@@ -158,7 +162,8 @@ def from_proto(cls, proto):
+             and should not typically be called directly by users.
+         """
+         return cls(
+-            experiment_id=proto.experiment_id,
++            # The proto stores experiment IDs as integers while the entity contract is str
++            experiment_id=proto.experiment_id,  # type: ignore[arg-type]
+             scorer_name=proto.scorer_name,
+             scorer_version=proto.scorer_version,
+             serialized_scorer=proto.serialized_scorer,
+@@ -166,7 +171,7 @@ def from_proto(cls, proto):
+             scorer_id=proto.scorer_id if proto.HasField("scorer_id") else None,
+         )
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoScorer:
+         """
+         Convert this ScorerVersion instance to a protobuf message.
+ 
+@@ -191,7 +196,7 @@ def to_proto(self):
+             proto.scorer_id = self.scorer_id
+         return proto
+ 
+-    def __repr__(self):
++    def __repr__(self) -> str:
+         """
+         Return a string representation of the ScorerVersion instance.
+ 
+diff --git a/mlflow/entities/span_status.py b/mlflow/entities/span_status.py
+index 4ad7ad62305b3..23b1effd1e0dd 100644
+--- a/mlflow/entities/span_status.py
++++ b/mlflow/entities/span_status.py
+@@ -23,7 +23,8 @@ def to_otel_proto_status_code_name(self) -> str:
+         Convert the SpanStatusCode to the corresponding OpenTelemetry protobuf enum name.
+         """
+         proto_code = OtelStatus.StatusCode
+-        mapping = {
++        # `EnumTypeWrapper.Name` is untyped upstream, hence the explicit value type.
++        mapping: dict[SpanStatusCode, str] = {
+             SpanStatusCode.UNSET: proto_code.Name(proto_code.STATUS_CODE_UNSET),
+             SpanStatusCode.OK: proto_code.Name(proto_code.STATUS_CODE_OK),
+             SpanStatusCode.ERROR: proto_code.Name(proto_code.STATUS_CODE_ERROR),
+@@ -67,7 +68,7 @@ class SpanStatus:
+     status_code: SpanStatusCode
+     description: str = ""
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         """
+         If user provides a string status code, validate it and convert to
+         the corresponding enum value.
+@@ -115,7 +116,7 @@ def from_otel_status(cls, otel_status: trace_api.Status) -> SpanStatus:
+             )
+         return cls(status_code, otel_status.description or "")
+ 
+-    def to_otel_proto_status(self):
++    def to_otel_proto_status(self) -> OtelStatus:
+         """
+         Convert to OpenTelemetry protobuf Status for OTLP export.
+ 
+@@ -135,7 +136,7 @@ def to_otel_proto_status(self):
+         return status
+ 
+     @classmethod
+-    def from_otel_proto_status(cls, otel_proto_status) -> SpanStatus:
++    def from_otel_proto_status(cls, otel_proto_status: OtelStatus) -> SpanStatus:
+         """
+         Create a SpanStatus from an OpenTelemetry protobuf Status.
+ 
+diff --git a/mlflow/entities/trace_data.py b/mlflow/entities/trace_data.py
+index ed3d862b49322..964d76399bde8 100644
+--- a/mlflow/entities/trace_data.py
++++ b/mlflow/entities/trace_data.py
+@@ -1,6 +1,6 @@
+ from collections import Counter
+ from dataclasses import dataclass, field
+-from typing import Any
++from typing import Any, cast
+ 
+ from mlflow.entities import Span
+ from mlflow.tracing.constant import SpanAttributeKey
+@@ -19,11 +19,11 @@ class TraceData:
+ 
+     # NB: Custom constructor to allow passing additional kwargs for backward compatibility for
+     # DBX agent evaluator. Once they migrates to trace V3 schema, we can remove this.
+-    def __init__(self, spans: list[Span] | None = None, **kwargs):
++    def __init__(self, spans: list[Span] | None = None, **kwargs: Any):
+         self.spans = spans or []
+ 
+     @classmethod
+-    def from_dict(cls, d):
++    def from_dict(cls, d: dict[str, Any]) -> "TraceData":
+         if not isinstance(d, dict):
+             raise TypeError(f"TraceData.from_dict() expects a dictionary. Got: {type(d).__name__}")
+         return cls(spans=[Span.from_dict(span) for span in d.get("spans", [])])
+@@ -33,7 +33,7 @@ def to_dict(self) -> dict[str, Any]:
+ 
+     # TODO: remove this property in 3.7.0
+     @property
+-    @deprecated(since="3.6.0", alternative="trace.search_spans(name=...)")
++    @deprecated(since="3.6.0", alternative="trace.search_spans(name=...)")  # type: ignore[misc]
+     def intermediate_outputs(self) -> dict[str, Any] | None:
+         """
+         .. deprecated:: 3.6.0
+@@ -51,9 +51,9 @@ def intermediate_outputs(self) -> dict[str, Any] | None:
+             return root_span.get_attribute(SpanAttributeKey.INTERMEDIATE_OUTPUTS)
+ 
+         if len(self.spans) > 1:
+-            result = {}
++            result: dict[str, Any] = {}
+             # spans may have duplicate names, so deduplicate the names by appending an index number.
+-            span_name_counter = Counter(span.name for span in self.spans)
++            span_name_counter: dict[str, int] = Counter(span.name for span in self.spans)
+             span_name_counter = {name: 1 for name, count in span_name_counter.items() if count > 1}
+             for span in self.spans:
+                 span_name = span.name
+@@ -63,23 +63,27 @@ def intermediate_outputs(self) -> dict[str, Any] | None:
+                 if span.parent_id and span.outputs is not None:
+                     result[span_name] = span.outputs
+             return result
++        return None
+ 
+     def _get_root_span(self) -> Span | None:
+         for span in self.spans:
+             if span.parent_id is None:
+                 return span
++        return None
+ 
+     # `request` and `response` are preserved for backward compatibility with v2
+     @property
+     def request(self) -> str | None:
+         if span := self._get_root_span():
+             # Accessing the OTel span directly get serialized value directly.
+-            return span._span.attributes.get(SpanAttributeKey.INPUTS)
++            attributes = cast("dict[str, str]", span._span.attributes)
++            return attributes.get(SpanAttributeKey.INPUTS)
+         return None
+ 
+     @property
+     def response(self) -> str | None:
+         if span := self._get_root_span():
+             # Accessing the OTel span directly get serialized value directly.
+-            return span._span.attributes.get(SpanAttributeKey.OUTPUTS)
++            attributes = cast("dict[str, str]", span._span.attributes)
++            return attributes.get(SpanAttributeKey.OUTPUTS)
+         return None
+diff --git a/mlflow/entities/trace_info_v2.py b/mlflow/entities/trace_info_v2.py
+index 93aa78bc08ec7..aefa764023985 100644
+--- a/mlflow/entities/trace_info_v2.py
++++ b/mlflow/entities/trace_info_v2.py
+@@ -1,5 +1,5 @@
+ from dataclasses import asdict, dataclass, field
+-from typing import Any
++from typing import Any, cast
+ 
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.entities.assessment import Assessment
+@@ -8,6 +8,7 @@
+ from mlflow.entities.trace_status import TraceStatus
+ from mlflow.protos.service_pb2 import TraceInfo as ProtoTraceInfo
+ from mlflow.protos.service_pb2 import TraceRequestMetadata as ProtoTraceRequestMetadata
++from mlflow.protos.service_pb2 import TraceStatus as ProtoTraceStatus
+ from mlflow.protos.service_pb2 import TraceTag as ProtoTraceTag
+ 
+ 
+@@ -57,9 +58,10 @@ class TraceInfoV2(_MlflowObject):
+     tags: dict[str, str] = field(default_factory=dict)
+     assessments: list[Assessment] = field(default_factory=list)
+ 
+-    def __eq__(self, other):
++    def __eq__(self, other: object) -> bool:
+         if type(other) is type(self):
+-            return self.__dict__ == other.__dict__
++            # `type(other) is type(self)` guarantees `other` has the same attribute layout.
++            return self.__dict__ == cast("TraceInfoV2", other).__dict__
+         return False
+ 
+     @property
+@@ -67,7 +69,7 @@ def trace_id(self) -> str:
+         """Returns the trace ID of the trace info."""
+         return self.request_id
+ 
+-    def to_proto(self):
++    def to_proto(self) -> ProtoTraceInfo:
+         proto = ProtoTraceInfo()
+         proto.request_id = self.request_id
+         proto.experiment_id = self.experiment_id
+@@ -76,7 +78,8 @@ def to_proto(self):
+         # so we substitute None with 0 for execution_time_ms. This should be not too confusing
+         # as we only put None when starting a trace i.e. the execution time is actually 0.
+         proto.execution_time_ms = self.execution_time_ms or 0
+-        proto.status = self.status.to_proto()
++        # The proto enum field is typed as its EnumTypeWrapper class; cast the raw int back.
++        proto.status = cast(ProtoTraceStatus, self.status.to_proto())
+ 
+         request_metadata = []
+         for key, value in _truncate_request_metadata(self.request_metadata).items():
+@@ -97,7 +100,9 @@ def to_proto(self):
+         return proto
+ 
+     @classmethod
+-    def from_proto(cls, proto, assessments=None):
++    def from_proto(
++        cls, proto: ProtoTraceInfo, assessments: list[Assessment] | None = None
++    ) -> "TraceInfoV2":
+         return cls(
+             request_id=proto.request_id,
+             experiment_id=proto.experiment_id,
+@@ -109,7 +114,7 @@ def from_proto(cls, proto, assessments=None):
+             assessments=assessments or [],
+         )
+ 
+-    def to_dict(self):
++    def to_dict(self) -> dict[str, Any]:
+         """
+         Convert trace info to a dictionary for persistence.
+         Update status field to the string value for serialization.
+@@ -122,7 +127,7 @@ def to_dict(self):
+         return trace_info_dict
+ 
+     @classmethod
+-    def from_dict(cls, trace_info_dict):
++    def from_dict(cls, trace_info_dict: dict[str, Any]) -> "TraceInfoV2":
+         """
+         Convert trace info dictionary to TraceInfo object.
+         """
+@@ -149,7 +154,8 @@ def to_v3(self, request: str | None = None, response: str | None = None) -> Trac
+     def from_v3(cls, trace_info: TraceInfo) -> "TraceInfoV2":
+         return cls(
+             request_id=trace_info.trace_id,
+-            experiment_id=trace_info.experiment_id,
++            # A v3 TraceInfo always carries an experiment location, so the ID is set in practice.
++            experiment_id=cast(str, trace_info.experiment_id),
+             timestamp_ms=trace_info.request_time,
+             execution_time_ms=trace_info.execution_duration,
+             status=TraceStatus.from_state(trace_info.state),
+diff --git a/mlflow/entities/trace_metrics.py b/mlflow/entities/trace_metrics.py
+index 1b2e189ecb144..ebe211e03948e 100644
+--- a/mlflow/entities/trace_metrics.py
++++ b/mlflow/entities/trace_metrics.py
+@@ -1,5 +1,6 @@
+ from dataclasses import dataclass
+ from enum import Enum
++from typing import cast
+ 
+ from mlflow.entities._mlflow_object import _MlflowObject
+ from mlflow.protos import service_pb2 as pb
+@@ -13,8 +14,9 @@ class MetricViewType(str, Enum):
+     def __str__(self) -> str:
+         return self.value
+ 
+-    def to_proto(self):
+-        return pb.MetricViewType.Value(self)
++    def to_proto(self) -> int:
++        # `EnumTypeWrapper.Value` is untyped upstream, hence the cast.
++        return cast(int, pb.MetricViewType.Value(self))
+ 
+     @classmethod
+     def from_proto(cls, proto: int) -> "MetricViewType":
+@@ -32,8 +34,9 @@ class AggregationType(str, Enum):
+     def __str__(self) -> str:
+         return self.value
+ 
+-    def to_proto(self):
+-        return pb.AggregationType.Value(self)
++    def to_proto(self) -> int:
++        # `EnumTypeWrapper.Value` is untyped upstream, hence the cast.
++        return cast(int, pb.AggregationType.Value(self))
+ 
+ 
+ @dataclass
+@@ -41,7 +44,7 @@ class MetricAggregation(_MlflowObject):
+     aggregation_type: AggregationType
+     percentile_value: float | None = None
+ 
+-    def __post_init__(self):
++    def __post_init__(self) -> None:
+         if self.aggregation_type == AggregationType.PERCENTILE:
+             if self.percentile_value is None:
+                 raise ValueError("Percentile value is required for PERCENTILE aggregation")
+@@ -62,7 +65,8 @@ def __str__(self) -> str:
+ 
+     def to_proto(self) -> pb.MetricAggregation:
+         proto = pb.MetricAggregation()
+-        proto.aggregation_type = self.aggregation_type.to_proto()
++        # The proto enum field is typed as its EnumTypeWrapper class; cast the raw int back.
++        proto.aggregation_type = cast(pb.AggregationType, self.aggregation_type.to_proto())
+         if self.percentile_value is not None:
+             proto.percentile_value = self.percentile_value
+         return proto

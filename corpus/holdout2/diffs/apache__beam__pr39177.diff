@@ -1,0 +1,550 @@
+diff --git a/.github/workflows/README.md b/.github/workflows/README.md
+index 41287872ee25..3ff1aa5a10b4 100644
+--- a/.github/workflows/README.md
++++ b/.github/workflows/README.md
+@@ -556,4 +556,3 @@ PostCommit Jobs run in a schedule against master branch and generally do not get
+ | [ Modify the GCP User Roles according to the infra/users.yml file ](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_UsersPermissions.yml) | N/A | [![.github/workflows/beam_Infrastructure_UsersPermissions.yml](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_UsersPermissions.yml/badge.svg?event=schedule)](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_UsersPermissions.yml?query=event%3Aschedule) |
+ | [ Service Account Keys Management ](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_ServiceAccountKeys.yml) | N/A | [![.github/workflows/beam_Infrastructure_ServiceAccountKeys.yml](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_ServiceAccountKeys.yml/badge.svg?event=schedule)](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_ServiceAccountKeys.yml?query=event%3Aschedule) |
+ | [ Upgrade GCP Libraries BOM ](https://github.com/apache/beam/actions/workflows/beam_Upgrade_GCP_BOM.yml) | N/A | [![.github/workflows/beam_Upgrade_GCP_BOM.yml](https://github.com/apache/beam/actions/workflows/beam_Upgrade_GCP_BOM.yml/badge.svg?event=schedule)](https://github.com/apache/beam/actions/workflows/beam_Upgrade_GCP_BOM.yml?query=event%3Aschedule) |
+-| [ Unmanaged Service Accounts Keys Audit ](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_AuditUnmanagedKeys.yml) | N/A | [![.github/workflows/beam_Infrastructure_AuditUnmanagedKeys.yml](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_AuditUnmanagedKeys.yml/badge.svg?event=schedule)](https://github.com/apache/beam/actions/workflows/beam_Infrastructure_AuditUnmanagedKeys.yml?query=event%3Aschedule) |
+diff --git a/.github/workflows/beam_Infrastructure_AuditUnmanagedKeys.yml b/.github/workflows/beam_Infrastructure_AuditUnmanagedKeys.yml
+deleted file mode 100644
+index 37d6ecbd362c..000000000000
+--- a/.github/workflows/beam_Infrastructure_AuditUnmanagedKeys.yml
++++ /dev/null
+@@ -1,76 +0,0 @@
+-# Licensed to the Apache Software Foundation (ASF) under one
+-# or more contributor license agreements.  See the NOTICE file
+-# distributed with this work for additional information
+-# regarding copyright ownership.  The ASF licenses this file
+-# to you under the Apache License, Version 2.0 (the
+-# "License"); you may not use this file except in compliance
+-# with the License.  You may obtain a copy of the License at
+-#
+-#   http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing,
+-# software distributed under the License is distributed on an
+-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+-# KIND, either express or implied.  See the License for the
+-# specific language governing permissions and limitations
+-# under the License.
+-
+-# This workflow works with the GCP security log analyzer to
+-# generate weekly security reports and initialize log sinks
+-
+-name: Unmanaged Service Accounts Keys Audit
+-
+-on:
+-    workflow_dispatch:
+-    schedule:
+-      # Every day at 00:00 UTC
+-      - cron: '0 0 * * *'
+-
+-concurrency:
+-  group: ${{ github.workflow }}
+-  cancel-in-progress: false
+-
+-permissions:
+-  contents: read
+-  issues: write
+-  id-token: write
+-
+-jobs:
+-  beam_UnmanagedKeysAudit:
+-    name: Audit Unmanaged Service Account Keys
+-    runs-on: [self-hosted, ubuntu-24.04, main]
+-    timeout-minutes: 30
+-    steps:
+-    - uses: actions/checkout@v7
+-      with:
+-        persist-credentials: true
+-
+-    - name: Setup gcloud
+-      uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+-
+-    - name: Setup Python
+-      uses: actions/setup-python@v7
+-      with:
+-        python-version: '3.13'
+-
+-    - name: Install Python dependencies
+-      working-directory: ./infra/enforcement
+-      run: |
+-        python -m pip install --upgrade pip
+-        pip install -r requirements.txt
+-
+-    - name: Run Unmanaged Service Account Keys Audit
+-      working-directory: ./infra/enforcement
+-      env:
+-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        GITHUB_REPOSITORY: ${{ github.repository }}
+-        SMTP_SERVER: smtp.gmail.com
+-        SMTP_PORT: 465
+-        EMAIL_ADDRESS: ${{ secrets.ISSUE_REPORT_SENDER_EMAIL_ADDRESS }}
+-        EMAIL_PASSWORD: ${{ secrets.ISSUE_REPORT_SENDER_EMAIL_PASSWORD }}
+-        EMAIL_RECIPIENT: "dev@beam.apache.org"
+-      run: python account_keys.py --action announce
+-
+-
+-
+-
+diff --git a/.github/workflows/beam_Infrastructure_PolicyEnforcer.yml b/.github/workflows/beam_Infrastructure_PolicyEnforcer.yml
+index 52f851d2cdaa..730d45cf992f 100644
+--- a/.github/workflows/beam_Infrastructure_PolicyEnforcer.yml
++++ b/.github/workflows/beam_Infrastructure_PolicyEnforcer.yml
+@@ -35,6 +35,7 @@ concurrency:
+ permissions:
+   contents: read
+   issues: write
++  id-token: write
+ 
+ jobs:
+   beam_Infrastructure_PolicyEnforcer:
+@@ -45,21 +46,21 @@ jobs:
+       - uses: actions/checkout@v7
+         with:
+           persist-credentials: false
+-      
++
+       - name: Setup Python
+         uses: actions/setup-python@v7
+         with:
+           python-version: '3.13'
+-          
++
+       - name: Install Python dependencies
+         working-directory: ./infra/enforcement
+         run: |
+           python -m pip install --upgrade pip
+           pip install -r requirements.txt
+-          
++
+       - name: Setup gcloud
+         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+-          
++
+       - name: Run IAM Policy Enforcement
+         working-directory: ./infra/enforcement
+         env:
+@@ -70,7 +71,7 @@ jobs:
+           EMAIL_ADDRESS: ${{ secrets.ISSUE_REPORT_SENDER_EMAIL_ADDRESS }}
+           EMAIL_PASSWORD: ${{ secrets.ISSUE_REPORT_SENDER_EMAIL_PASSWORD }}
+           EMAIL_RECIPIENT: "dev@beam.apache.org"
+-        run: python iam.py --action print
++        run: python iam.py --action announce
+ 
+       - name: Run Account Keys Policy Enforcement
+         working-directory: ./infra/enforcement
+@@ -82,4 +83,4 @@ jobs:
+           EMAIL_ADDRESS: ${{ secrets.ISSUE_REPORT_SENDER_EMAIL_ADDRESS }}
+           EMAIL_PASSWORD: ${{ secrets.ISSUE_REPORT_SENDER_EMAIL_PASSWORD }}
+           EMAIL_RECIPIENT: "dev@beam.apache.org"
+-        run: python account_keys.py --action print
++        run: python account_keys.py --action announce
+diff --git a/infra/enforcement/README.md b/infra/enforcement/README.md
+index 6d883f7e6806..b92e5f7e1802 100644
+--- a/infra/enforcement/README.md
++++ b/infra/enforcement/README.md
+@@ -134,16 +134,18 @@ The enforcement tools are integrated with GitHub Actions to provide automated co
+ 
+ ### Workflow Configuration
+ 
+-The repository includes workflows for different security domains:
+-- **IAM Policy Enforcer** (`.github/workflows/beam_Infrastructure_PolicyEnforcer.yml`): Runs weekly on Mondays at 9:00 AM UTC.
+-- **Unmanaged Keys Audit** (`.github/workflows/beam_Infrastructure_AuditUnmanagedKeys.yml`): Runs daily at 00:00 UTC. It manages the continuous execution of the `account_keys.py` script to swiftly detect rogue service account keys generated outside the official rotation system.
+-- **Manual trigger**: Can be triggered manually via `workflow_dispatch`
+-- **Actions**: Runs both IAM and Account Keys enforcement with the `announce` action
++The enforcement tools are consolidated into a single daily workflow (`.github/workflows/beam_Infrastructure_PolicyEnforcer.yml`) that runs automatically at 00:00 UTC.
++
++This unified workflow executes both security domains sequentially:
++- **IAM Policy Enforcement:** Validates user bindings against the defined policies.
++- **Unmanaged Keys Audit:** Detects rogue service account keys generated outside the official rotation system.
+ 
+ **Note**:
+-- The email service is configured to use gmail
+-- The recipient email is set to `dev@beam.apache.org` for Apache Beam project notifications
+-- The `GITHUB_TOKEN` is automatically provided by GitHub Actions and doesn't need to be configured manually
++- **Manual trigger**: The workflow can also be triggered manually via `workflow_dispatch`.
++- **Actions**: It executes the respective Python scripts using the `announce` action.
++- The email service is configured to use gmail.
++- The recipient email is set to `dev@beam.apache.org` for Apache Beam project notifications.
++- The `GITHUB_TOKEN` is automatically provided by GitHub Actions and doesn't need to be configured manually.
+ 
+ ## Account Keys
+ 
+diff --git a/infra/enforcement/account_keys.py b/infra/enforcement/account_keys.py
+index 56ccbf654b03..a1248e3ee09c 100644
+--- a/infra/enforcement/account_keys.py
++++ b/infra/enforcement/account_keys.py
+@@ -19,6 +19,7 @@
+ import yaml
+ import argparse
+ import os
++from datetime import datetime, timezone
+ from typing import List, Dict, TypedDict, Optional
+ from google.cloud import secretmanager
+ from google.cloud import iam_admin_v1
+@@ -26,6 +27,7 @@
+ from sending import SendingClient
+ 
+ SECRET_MANAGER_LABEL = "beam-infra-secret-manager"
++IAC_DRIFT_SA_KEY = "IAC_DRIFT_SA_KEY"
+ 
+ class AuthorizedUser(TypedDict):
+     email: str
+@@ -312,22 +314,24 @@ def check_compliance(self) -> List[str]:
+ 
+         # Check that all service accounts that exist are declared
+         for service_account in live_service_accounts:
++
+             if self._denormalize_account_email(service_account) not in [account["account_id"] for account in file_service_accounts]:
+                 msg = f"Service account '{service_account}' is not declared in the service account keys file."
+                 compliance_issues.append(msg)
+                 self.logger.warning(msg)
+-            else:
+-                iam_keys = self._get_user_managed_keys_from_iam(service_account)
+-                if iam_keys:
+-                    secret_name = f"{self._denormalize_account_email(service_account)}-key"
+-                    legal_keys = []
+-                    if secret_name in managed_secrets:
+-                        legal_keys = self._get_verified_keys_from_secret_manager(secret_name)
+-                    unmanaged_keys = set(iam_keys) - set(legal_keys)
+-                    for unmanaged_key in unmanaged_keys:
+-                        msg = f"SECURITY ALERT: Unmanaged key '{unmanaged_key}' detected on account '{service_account}'. This key was created outside of Beam's service account management system. "
+-                        compliance_issues.append(msg)
+-                        self.logger.warning(msg)
++
++            iam_keys = self._get_user_managed_keys_from_iam(service_account)
++
++            if iam_keys:
++                secret_name = f"{self._denormalize_account_email(service_account)}-key"
++                legal_keys = []
++                if secret_name in managed_secrets:
++                    legal_keys = self._get_verified_keys_from_secret_manager(secret_name)
++                unmanaged_keys = set(iam_keys) - set(legal_keys)
++                for unmanaged_key in unmanaged_keys:
++                    msg = f"IAC_DRIFT_SA_KEY: Unmanaged key '{unmanaged_key}' detected on account '{service_account}'. This key was created outside of Beam's service account management system. "
++                    compliance_issues.append(msg)
++                    self.logger.warning(msg)
+ 
+         extracted_secrets = [f"{self._denormalize_account_email(account['account_id'])}-key" for account in file_service_accounts]
+ 
+@@ -376,13 +380,14 @@ def create_announcement(self, recipient: str) -> None:
+             self.logger.info("No compliance issues found, no announcement will be created.")
+             return
+ 
+-        unmanaged_keys_issues = [issue for issue in diff if "SECURITY ALERT" in issue]
+-        general_issues = [issue for issue in diff if "SECURITY ALERT" not in issue]
++        unmanaged_keys_issues = [issue for issue in diff if IAC_DRIFT_SA_KEY in issue]
++        general_issues = [issue for issue in diff if IAC_DRIFT_SA_KEY not in issue]
+ 
+         if general_issues:
+             self.logger.info(f"Found {len(general_issues)} general compliance issues. Triggering announcement...")
+-            title = f"Account Keys Compliance Issue Detected"
+-            body = f"Account keys for project {self.project_id} are not compliant with the defined policies on {self.service_account_keys_file}\n\n"
++            title = f"[{IAC_DRIFT_SA_KEY}] Action Required: Unauthorized Service Accounts Detected"
++            body = f"Unauthorized Service Accounts Report\n\n"
++            body += f"Account keys for project {self.project_id} are not compliant with the defined policies on {self.service_account_keys_file}\n\n"
+             for issue in general_issues:
+                 body += f"- {issue}\n"
+ 
+@@ -406,23 +411,44 @@ def print_announcement(self, recipient: str) -> None:
+         """
+         if not self.sending_client:
+             raise ValueError("SendingClient is required for printing announcements")
+-            
++
+         diff = self.check_compliance()
+ 
+         if not diff:
+             self.logger.info("No compliance issues found, no announcement will be printed.")
+             return
+ 
+-        title = f"Account Keys Compliance Issue Detected"
+-        body = f"Account keys for project {self.project_id} are not compliant with the defined policies on {self.service_account_keys_file}\n\n"
+-        for issue in diff:
+-            body += f"- {issue}\n"
++        unmanaged_keys_issues = [issue for issue in diff if IAC_DRIFT_SA_KEY in issue]
++        general_issues = [issue for issue in diff if IAC_DRIFT_SA_KEY not in issue]
+ 
+-        announcement = f"Dear team,\n\nThis is an automated notification about compliance issues detected in the Account Keys policy for project {self.project_id}.\n\n"
+-        announcement += f"We found {len(diff)} compliance issue(s) that need your attention.\n"
+-        announcement += f"\nPlease check the GitHub issue for detailed information and take appropriate action to resolve these compliance violations."
++        if general_issues:
++            self.logger.info("Printing general compliance announcement...")
++            title = f"[IAC_DRIFT_SA_KEY] Action Required: Unauthorized Service Accounts Detected"
++            body = f"Unauthorized Service Accounts Report\n\n"
++            body += f"Account keys for project {self.project_id} are not compliant with the defined policies on {self.service_account_keys_file}\n\n"
++            for issue in general_issues:
++                body += f"- {issue}\n"
+ 
+-        self.sending_client.print_announcement(title, body, recipient, announcement)
++            announcement = f"Dear team,\n\nThis is an automated notification about compliance issues detected in the Account Keys policy for project {self.project_id}.\n\n"
++            announcement += f"We found {len(general_issues)} compliance issue(s) that need your attention.\n"
++            announcement += f"\nPlease check the GitHub issue for detailed information and take appropriate action to resolve these compliance violations."
++
++            self.sending_client.print_announcement(title, body, recipient, announcement)
++
++        if unmanaged_keys_issues:
++            self.logger.info("Printing security dashboard update for unmanaged keys...")
++            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
++            print("\n" + "="*60)
++            print("SIMULATING GITHUB SECURITY ISSUE CREATION/UPDATE")
++            print("="*60)
++            print(f"Title: [{IAC_DRIFT_SA_KEY}] Action Required: Unmanaged Service Account Keys Detected\n")
++            print(f"Body:\n### Unmanaged Keys Audit Report ({timestamp})")
++            print(f"The following unauthorized or unmanaged keys were detected in `{self.project_id}`:\n")
++            for issue in unmanaged_keys_issues:
++                print(f"- {issue}")
++            print("\n*Please investigate and revoke these keys if they are not part of the official rotation system.*\n")
++            print("### History\n<details>\n<summary>Click to expand</summary>\n\n[... Previous reports would be collapsed here ...]\n</details>")
++            print("="*60 + "\n")
+ 
+     def generate_compliance(self) -> None:
+         """
+diff --git a/infra/enforcement/iam.py b/infra/enforcement/iam.py
+index c4c65c7c679c..14dbf455a256 100644
+--- a/infra/enforcement/iam.py
++++ b/infra/enforcement/iam.py
+@@ -21,10 +21,12 @@
+ import yaml
+ from google.api_core import exceptions
+ from google.cloud import resourcemanager_v3
+-from typing import Optional, List, Dict, Tuple
++from typing import Optional, List, Dict
+ from sending import SendingClient
++from datetime import datetime, timezone
+ 
+ CONFIG_FILE = "config.yml"
++IAC_DRIFT_IAM_USER = "IAC_DRIFT_IAM_USER"
+ 
+ class IAMPolicyComplianceChecker:
+ 
+@@ -214,7 +216,7 @@ def check_compliance(self) -> List[str]:
+             self.logger.info(error_msg)
+             raise RuntimeError(error_msg)
+ 
+-        differences = []        
++        differences = []
+ 
+         all_emails = set(current_users.keys()) | set(existing_users.keys())
+ 
+@@ -223,7 +225,7 @@ def check_compliance(self) -> List[str]:
+             existing_user = existing_users.get(email)
+ 
+             if current_user and not existing_user:
+-                differences.append(f"User {email} not found in existing policy.")
++                differences.append(f"IAC_DRIFT_IAM_USER: Unauthorized user '{email}' detected in GCP but not found in existing policy.")
+             elif not current_user and existing_user:
+                 differences.append(f"User {email} found in policy file but not in GCP.")
+             elif current_user and existing_user:
+@@ -247,51 +249,86 @@ def create_announcement(self, recipient: str) -> None:
+         """
+         if not self.sending_client:
+             raise ValueError("SendingClient is required for creating announcements")
+-            
+         diff = self.check_compliance()
+ 
+         if not diff:
+             self.logger.info("No compliance issues found, no announcement will be created.")
+             return
+ 
+-        title = f"IAM Policy Non-Compliance Detected"
+-        body = f"IAM policy for project {self.project_id} is not compliant with the defined policies on {self.users_file}\n\n"
+-        for issue in diff:
+-            body += f"- {issue}\n"
++        iam_drift_issues = [issue for issue in diff if IAC_DRIFT_IAM_USER in issue]
++        general_issues = [issue for issue in diff if IAC_DRIFT_IAM_USER not in issue]
++
++        if general_issues:
++            self.logger.info(f"Found {len(general_issues)} general IAM compliance issues. Triggering announcement...")
++            title = f"IAM Policy Non-Compliance Detected"
++            body = f"IAM policy for project {self.project_id} is not compliant with the defined policies on {self.users_file}\n\n"
++            for issue in general_issues:
++                body += f"- {issue}\n"
++
++            announcement = f"Dear team,\n\nThis is an automated notification about compliance issues detected in the IAM policy for project {self.project_id}.\n\n"
++            announcement += f"We found {len(general_issues)} compliance issue(s) that need your attention.\n"
++            announcement += f"\nPlease check the GitHub issue for detailed information and take appropriate action to resolve these compliance violations."
++
++            self.sending_client.create_announcement(title, body, recipient, announcement)
+ 
+-        announcement = f"Dear team,\n\nThis is an automated notification about compliance issues detected in the IAM policy for project {self.project_id}.\n\n"
+-        announcement += f"We found {len(diff)} compliance issue(s) that need your attention.\n"
+-        announcement += f"\nPlease check the GitHub issue for detailed information and take appropriate action to resolve these compliance violations."
++        if iam_drift_issues:
++            self.logger.info(f"Found {len(iam_drift_issues)} critical IAM security alerts. Dispatching to GitHub security issue...")
++            title = f"[{IAC_DRIFT_IAM_USER}] Action Required: Unauthorized IAM Users Detected"
++            body = f"Critical security violations detected in IAM policies for project {self.project_id}:\n\n"
++            for issue in iam_drift_issues:
++                body += f"- {issue}\n"
+ 
+-        self.sending_client.create_announcement(title, body, recipient, announcement)
++            announcement = f"URGENT: Dear team,\n\nThis is an automated security alert regarding unauthorized IAM access in project {self.project_id}.\n\n"
++            announcement += f"We found {len(iam_drift_issues)} critical security alert(s) that require IMMEDIATE attention.\n"
++            announcement += f"\nPlease check the GitHub issue for detailed information and revoke unauthorized access immediately."
++
++            self.sending_client.create_announcement(title, body, recipient, announcement)
+ 
+     def print_announcement(self, recipient: str) -> None:
+         """
+         Prints announcement details instead of sending them (for testing purposes).
+-        
++
+         Args:
+             recipient (str): The email address of the announcement recipient.
+         """
+         if not self.sending_client:
+             raise ValueError("SendingClient is required for printing announcements")
+-            
++
+         diff = self.check_compliance()
+ 
+         if not diff:
+             self.logger.info("No compliance issues found, no announcement will be printed.")
+             return
+ 
+-        title = f"IAM Policy Non-Compliance Detected"
+-        body = f"IAM policy for project {self.project_id} is not compliant with the defined policies on {self.users_file}\n\n"
+-        for issue in diff:
+-            body += f"- {issue}\n"
++        iam_drift_issues = [issue for issue in diff if IAC_DRIFT_IAM_USER in issue]
++        general_issues = [issue for issue in diff if IAC_DRIFT_IAM_USER not in issue]
+ 
+-        announcement = f"Dear team,\n\nThis is an automated notification about compliance issues detected in the IAM policy for project {self.project_id}.\n\n"
+-        announcement += f"We found {len(diff)} compliance issue(s) that need your attention.\n"
+-        announcement += f"\nPlease check the GitHub issue for detailed information and take appropriate action to resolve these compliance violations."
++        if general_issues:
++            self.logger.info(f"Found {len(general_issues)} general IAM compliance issues. Printing announcement...")
++            title = f"IAM Policy Non-Compliance Detected"
++            body = f"IAM policy for project {self.project_id} is not compliant with the defined policies on {self.users_file}\n\n"
++            for issue in general_issues:
++                body += f"- {issue}\n"
++
++            announcement = f"Dear team,\n\nThis is an automated notification about compliance issues detected in the IAM policy for project {self.project_id}.\n\n"
++            announcement += f"We found {len(general_issues)} compliance issue(s) that need your attention.\n"
++            announcement += f"\nPlease check the GitHub issue for detailed information and take appropriate action to resolve these compliance violations."
++
++            self.sending_client.print_announcement(title, body, recipient, announcement)
++
++        if iam_drift_issues:
++            self.logger.info("Printing security dashboard update for IAM vulnerabilities...")
++            title = f"[{IAC_DRIFT_IAM_USER}] Action Required: Unauthorized IAM Users Detected"
++            body = f"Critical security violations detected in IAM policies for project {self.project_id}:\n\n"
++            for issue in iam_drift_issues:
++                body += f"- {issue}\n"
++
++            announcement = f"URGENT: Dear team,\n\nThis is an automated security alert regarding unauthorized IAM access in project {self.project_id}.\n\n"
++            announcement += f"We found {len(iam_drift_issues)} critical security alert(s) that require IMMEDIATE attention.\n"
++            announcement += f"\nPlease check the GitHub issue for detailed information and revoke unauthorized access immediately."
++
++            self.sending_client.print_announcement(title, body, recipient, announcement)
+ 
+-        self.sending_client.print_announcement(title, body, recipient, announcement)
+-    
+     def generate_compliance(self) -> None:
+         """
+         Modifies the users file to match the current IAM policy.
+diff --git a/infra/enforcement/sending.py b/infra/enforcement/sending.py
+index bd9787b6ce87..9d24a816fbc3 100644
+--- a/infra/enforcement/sending.py
++++ b/infra/enforcement/sending.py
+@@ -18,6 +18,7 @@
+ import smtplib, ssl
+ from typing import List, Optional
+ from dataclasses import dataclass
++from datetime import datetime, timezone
+ 
+ @dataclass
+ class GitHubIssue:
+@@ -229,7 +230,7 @@ def report_unmanaged_keys(self, project_id: str, compilance_issues: List[str]) -
+ 
+         issue_title = "[SECURITY] Action Required: Unmanaged Service Account Keys Detected"
+         #markdown body
+-        timestamp = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
++        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+         new_report = f"### Unmanaged Keys Audit Report ({timestamp})\n"
+         new_report += f"The following unauthorized or unmanaged keys were detected in `{project_id}`:\n\n"
+ 
+@@ -248,10 +249,13 @@ def report_unmanaged_keys(self, project_id: str, compilance_issues: List[str]) -
+ 
+             if history_marker in old_body:
+                 # If history already exists, append the new report to it
+-                headed = old_body.split(history_marker)
++                headed = old_body.split(history_marker, 1)
+                 last_report = headed[0].strip()
+                 old_history = headed[1].replace("</details>", "").strip()
+ 
++                if old_history.endswith("</details>"):
++                    old_history = old_history[:-10].rstrip()
++
+                 combined_history = f"{last_report}\n\n---\n\n{old_history}"
+             else:
+                 combined_history = old_body.strip()
+@@ -294,18 +298,40 @@ def create_announcement(self, title: str, body: str, recipient: str, announcemen
+         """
+         open_issues = self._get_open_issues(title)
+         open_issues.sort(key=lambda x: x.updated_at, reverse=True)
++
++        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
++        new_report = f"### Compliance Audit Report ({timestamp})\n{body}"
++
+         if open_issues:
+-            self.logger.info(f"Issue with title '{title}' already exists: #{open_issues[0].number}")
+-            announcement += f"\n\nRelated GitHub Issue: {open_issues[0].html_url}"
++            target_issue = open_issues[0]
++            self.logger.info(f"Issue with title '{title}' already exists: #{target_issue.number}")
++            announcement += f"\n\nRelated GitHub Issue: {target_issue.html_url}"
++
++            old_body = target_issue.body or ""
++            history_marker = "### History\n<details>\n<summary>Click to expand</summary>\n\n"
+ 
+-            if open_issues[0].body != body:
+-                self.logger.info(f"Updating body of issue #{open_issues[0].number}")
+-                self.update_issue_body(open_issues[0].number, body)
++            if history_marker in old_body:
++                # If history already exists, append the new report to it
++                headed = old_body.split(history_marker, 1)
++                last_report = headed[0].strip()
++                old_history = headed[1].rstrip()
++
++                if old_history.endswith("</details>"):
++                    old_history = old_history[:-10].rstrip()
++
++                combined_history = f"{last_report}\n\n---\n\n{old_history}"
+             else:
+-                self.logger.info(f"No changes detected for issue #{open_issues[0].number}")
++                # First time updating, turn the entire old body into history
++                combined_history = old_body.strip()
++
++            final_body = f"{new_report}\n\n{history_marker}{combined_history}\n</details>"
++
++            self.logger.info(f"Appending report and archiving history to existing issue #{target_issue.number}")
++            self.update_issue_body(target_issue.number, final_body)
+             self._send_email(title, announcement, recipient)
+         else:
+-            new_issue = self.create_issue(title, body)
++            self.logger.info(f"Creating new compliance issue for: {title}")
++            new_issue = self.create_issue(title, new_report)
+             announcement += f"\n\nRelated GitHub Issue: {new_issue.html_url}"
+             self._send_email(title, announcement, recipient)
+ 
+@@ -319,6 +345,13 @@ def print_announcement(self, title: str, body: str, recipient: str, announcement
+         print(f"Recipient: {recipient}")
+         print(f"Announcement: {announcement}")
+ 
+-        print("\nSimulating GitHub issue creation...")
+-        print(f"Title: {title}")
+-        print(f"Body: {body}")
++        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
++
++        print("\n" + "="*60)
++        print("SIMULATING GITHUB GENERAL ISSUE CREATION/UPDATE")
++        print("="*60)
++        print(f"Title: {title}\n")
++        print(f"Body:\n### Compliance Audit Report ({timestamp})")
++        print(body)
++        print("### History\n<details>\n<summary>Click to expand</summary>\n\n[... Previous reports would be collapsed here ...]\n</details>")
++        print("="*60 + "\n")
+\ No newline at end of file

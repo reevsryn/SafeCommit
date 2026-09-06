@@ -1,0 +1,393 @@
+diff --git a/python_modules/libraries/dagster-cloud-cli/dagster_cloud_cli_tests/conftest.py b/python_modules/libraries/dagster-cloud-cli/dagster_cloud_cli_tests/conftest.py
+index 7deb9a50f0cb4..b3d695a1907b9 100644
+--- a/python_modules/libraries/dagster-cloud-cli/dagster_cloud_cli_tests/conftest.py
++++ b/python_modules/libraries/dagster-cloud-cli/dagster_cloud_cli_tests/conftest.py
+@@ -23,9 +23,7 @@ def create_template_file(tmpdir: str, filename: str, text: str) -> Generator[str
+ 
+ @pytest.fixture
+ def empty_config(monkeypatch):
+-    # ensure no defaults are read from the local config
+     monkeypatch.setenv("DAGSTER_CLOUD_CLI_CONFIG", "/tmp/nosuchpath")
+-    # also clear any environment variables that might be set
+     monkeypatch.delenv("DAGSTER_CLOUD_ORGANIZATION", raising=False)
+     monkeypatch.delenv("DAGSTER_CLOUD_API_TOKEN", raising=False)
+     monkeypatch.delenv("DAGSTER_CLOUD_DEPLOYMENT", raising=False)
+diff --git a/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/commands.py b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/commands.py
+index 57c7ef0eb1306..9970e4b7b8b8b 100644
+--- a/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/commands.py
++++ b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/commands.py
+@@ -141,6 +141,11 @@ def _get_deployment(input_deployment: Optional[str], plus_config: DagsterPlusCli
+         ]
+     ),
+ )
++@click.option(
++    "--skip-validation",
++    is_flag=True,
++    help="Skip configuration validation checks (not recommended).",
++)
+ @dg_editable_dagster_options
+ @dg_path_options
+ @dg_global_options
+@@ -159,6 +164,7 @@ def deploy_group(
+     target_path: Path,
+     status_url: Optional[str],
+     snapshot_base_condition_str: Optional[str],
++    skip_validation: bool,
+     **global_options: object,
+ ) -> None:
+     """Deploy a project or workspace to Dagster Plus. Handles all state management for the deploy
+@@ -211,6 +217,7 @@ def deploy_group(
+         location_names,
+         status_url,
+         snapshot_base_condition,
++        skip_validation,
+     )
+ 
+     build_artifact(
+@@ -281,6 +288,11 @@ def _validate_location_names(
+         ]
+     ),
+ )
++@click.option(
++    "--skip-validation",
++    is_flag=True,
++    help="Skip configuration validation checks (not recommended).",
++)
+ @dg_global_options
+ @cli_telemetry_wrapper
+ def start_deploy_session_command(
+@@ -294,6 +306,7 @@ def start_deploy_session_command(
+     target_path: Path,
+     status_url: Optional[str],
+     snapshot_base_condition_str: Optional[str],
++    skip_validation: bool,
+     **global_options: object,
+ ) -> None:
+     """Start a new deploy session. Determines which code locations will be deployed and what
+@@ -329,6 +342,7 @@ def start_deploy_session_command(
+         location_names,
+         status_url,
+         snapshot_base_condition,
++        skip_validation,
+     )
+ 
+ 
+diff --git a/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/deploy_session.py b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/deploy_session.py
+index fa4c3232871c7..6624b81ad3bac 100644
+--- a/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/deploy_session.py
++++ b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/deploy_session.py
+@@ -127,6 +127,7 @@ def init_deploy_session(
+     location_names: tuple[str],
+     status_url: Optional[str],
+     snapshot_base_condition: Optional["SnapshotBaseDeploymentCondition"],
++    skip_validation: bool = False,
+ ):
+     deployment_type = (
+         input_deployment_type
+@@ -144,7 +145,14 @@ def init_deploy_session(
+ 
+     dagster_cloud_yaml_file = create_temp_dagster_cloud_yaml_file(dg_context, statedir)
+ 
+-    # Lazy import for test mocking and performance
++    from dagster_dg_cli.cli.plus.deploy.validation import validate_deploy_configuration
++
++    if not skip_validation:
++        validate_deploy_configuration(
++            dagster_cloud_yaml_path=dagster_cloud_yaml_file,
++            organization=organization,
++        )
++
+     from dagster_cloud_cli.commands.ci import init_impl
+ 
+     init_impl(
+diff --git a/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/validation.py b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/validation.py
+new file mode 100644
+index 0000000000000..bbd1a7adec9b2
+--- /dev/null
++++ b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli/cli/plus/deploy/validation.py
+@@ -0,0 +1,68 @@
++"""Validation for dg plus deploy commands."""
++
++import pathlib
++from typing import Optional
++
++import click
++from dagster_cloud_cli.commands.ci import checks
++from dagster_cloud_cli.config_utils import get_org_url
++from dagster_shared.plus.config import DagsterPlusCliConfig
++
++
++def _extract_dagster_env_from_url(url: Optional[str]) -> Optional[str]:
++    """Extract dagster_env from a DagsterPlusCliConfig URL.
++
++    Args:
++        url: Base URL like "https://eu.dagster.cloud" or None
++
++    Returns:
++        "eu" if EU region, None otherwise
++    """
++    if url and "eu.dagster.cloud" in url:
++        return "eu"
++    return None
++
++
++def validate_deploy_configuration(
++    dagster_cloud_yaml_path: str,
++    organization: str,
++) -> None:
++    """Validate deployment configuration before starting deploy session.
++
++    Performs:
++    - YAML schema validation (structure, required fields, build directories)
++    - API connectivity check (token + GraphQL query)
++
++    Args:
++        dagster_cloud_yaml_path: Path to the dagster_cloud.yaml file to validate
++        organization: Dagster Cloud organization name
++
++    Raises:
++        click.ClickException: If validation fails
++    """
++    yaml_path = pathlib.Path(dagster_cloud_yaml_path)
++
++    yaml_result = checks.check_dagster_cloud_yaml(yaml_path)
++
++    dagster_env = None
++    if DagsterPlusCliConfig.exists():
++        config = DagsterPlusCliConfig.get()
++        dagster_env = _extract_dagster_env_from_url(config.url)
++
++    url = get_org_url(organization, dagster_env)
++    connect_result = checks.check_connect_dagster_cloud(url)
++
++    all_errors = yaml_result.errors + connect_result.errors
++
++    if all_errors:
++        click.echo(click.style("\nConfiguration validation failed:", fg="red", bold=True))
++        click.echo()
++        for error in all_errors:
++            click.echo(f"  • {error}")
++        click.echo()
++        click.echo(
++            click.style("Fix the errors above or use --skip-validation to bypass.", dim=True)
++        )
++        raise click.ClickException("Deploy configuration validation failed")
++
++    click.echo("Configuration validated")
+diff --git a/python_modules/libraries/dagster-dg-cli/dagster_dg_cli_tests/cli_tests/plus_tests/test_plus_deploy_command.py b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli_tests/cli_tests/plus_tests/test_plus_deploy_command.py
+index 2460d7f7048dc..2a6fd6e10ba67 100644
+--- a/python_modules/libraries/dagster-dg-cli/dagster_dg_cli_tests/cli_tests/plus_tests/test_plus_deploy_command.py
++++ b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli_tests/cli_tests/plus_tests/test_plus_deploy_command.py
+@@ -226,9 +226,14 @@ def mock_external_dagster_cloud_cli_command() -> Generator[MockedCloudCliCommand
+         patch(
+             "dagster_cloud_cli.commands.ci.set_build_output",
+         ) as mock_set_build_output_command,
++        patch(
++            "dagster_dg_cli.cli.plus.deploy.validation.validate_deploy_configuration",
++        ) as mock_validation,
+     ):
+         # Ensure deploy_impl mock returns successfully without checking build state
+         mock_deploy_command.return_value = None
++        # Skip validation in tests
++        mock_validation.return_value = None
+         yield MockedCloudCliCommands(
+             init=mock_init_command,
+             build=mock_build_command,
+diff --git a/python_modules/libraries/dagster-dg-cli/dagster_dg_cli_tests/cli_tests/plus_tests/test_plus_deploy_validation.py b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli_tests/cli_tests/plus_tests/test_plus_deploy_validation.py
+new file mode 100644
+index 0000000000000..a28de43285867
+--- /dev/null
++++ b/python_modules/libraries/dagster-dg-cli/dagster_dg_cli_tests/cli_tests/plus_tests/test_plus_deploy_validation.py
+@@ -0,0 +1,192 @@
++"""Tests for validation in dg plus deploy commands."""
++
++import tempfile
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++import responses
++from dagster_shared.plus.config import DagsterPlusCliConfig
++from dagster_test.dg_utils.utils import ProxyRunner, isolated_example_project_foo_bar
++
++
++@pytest.fixture
++def logged_in_dg_cli_config(empty_dg_cli_config, monkeypatch):
++    """Config with organization and token set."""
++    config = DagsterPlusCliConfig(
++        organization="hooli",
++        user_token="fake-user-token",
++        default_deployment="prod",
++    )
++    config.write()
++    monkeypatch.setenv("DAGSTER_CLOUD_API_TOKEN", "fake-api-token")
++    yield
++
++
++@pytest.fixture
++def empty_dg_cli_config(monkeypatch):
++    """Empty config with no credentials."""
++    with tempfile.TemporaryDirectory() as tmp_dg_dir:
++        config_path = Path(tmp_dg_dir) / "dg.toml"
++        monkeypatch.setenv("DG_CLI_CONFIG", config_path)
++        monkeypatch.delenv("DG_USE_EDITABLE_DAGSTER", raising=False)
++        monkeypatch.delenv("DAGSTER_CLOUD_ORGANIZATION", raising=False)
++        monkeypatch.delenv("DAGSTER_CLOUD_API_TOKEN", raising=False)
++        monkeypatch.delenv("DAGSTER_CLOUD_DEPLOYMENT", raising=False)
++        yield
++
++
++@pytest.fixture(scope="module")
++def runner():
++    """CLI test runner."""
++    with ProxyRunner.test(use_fixed_test_components=True) as the_runner:
++        yield the_runner
++
++
++@pytest.fixture
++def project(runner):
++    """Create an isolated test project."""
++    with isolated_example_project_foo_bar(runner) as project_dir:
++        yield project_dir
++
++
++@responses.activate
++def test_deploy_start_validates_yaml_schema(logged_in_dg_cli_config, project: Path, runner):
++    """Test that valid configuration passes validation."""
++    # Mock successful API connectivity check
++    responses.add(
++        responses.POST,
++        "https://hooli.dagster.cloud/graphql",
++        json={"data": {"organizationSettings": {"settings": "{}"}}},
++    )
++
++    # Mock init_impl to avoid actual deployment
++    with patch("dagster_cloud_cli.commands.ci.init_impl"):
++        result = runner.invoke("plus", "deploy", "start", "--yes")
++        assert result.exit_code == 0, result.output
++        assert "Configuration validated" in result.output
++
++
++@responses.activate
++def test_deploy_start_fails_on_invalid_yaml(logged_in_dg_cli_config, project: Path, runner):
++    """Test that invalid YAML schema fails validation."""
++    # Mock the temp YAML generation to create invalid YAML
++    with patch(
++        "dagster_dg_cli.cli.utils.create_temp_dagster_cloud_yaml_file",
++        side_effect=lambda ctx, statedir: _create_invalid_yaml(statedir),
++    ):
++        result = runner.invoke("plus", "deploy", "start", "--yes")
++        assert result.exit_code != 0
++        assert "Configuration validation failed" in result.output
++
++
++def test_deploy_start_fails_on_missing_api_token(empty_dg_cli_config, project: Path, runner):
++    """Test that missing API token fails validation."""
++    result = runner.invoke(
++        "plus", "deploy", "start", "--organization=hooli", "--deployment=prod", "--yes"
++    )
++    assert result.exit_code != 0
++    assert "Configuration validation failed" in result.output
++    assert "DAGSTER_CLOUD_API_TOKEN" in result.output
++
++
++@responses.activate
++def test_deploy_start_fails_on_invalid_api_token(logged_in_dg_cli_config, project: Path, runner):
++    """Test that invalid API token fails validation."""
++    # Mock API returning authentication error
++    responses.add(
++        responses.POST,
++        "https://hooli.dagster.cloud/graphql",
++        json={"errors": [{"message": "Unauthorized"}]},
++        status=401,
++    )
++
++    result = runner.invoke("plus", "deploy", "start", "--yes")
++    assert result.exit_code != 0
++    assert "Configuration validation failed" in result.output
++
++
++@responses.activate
++def test_deploy_start_succeeds_with_valid_config(logged_in_dg_cli_config, project: Path, runner):
++    """Test that valid configuration passes all checks."""
++    responses.add(
++        responses.POST,
++        "https://hooli.dagster.cloud/graphql",
++        json={"data": {"organizationSettings": {"settings": "{}"}}},
++    )
++
++    with patch("dagster_cloud_cli.commands.ci.init_impl"):
++        result = runner.invoke("plus", "deploy", "start", "--yes")
++        assert result.exit_code == 0, result.output
++        assert "Configuration validated" in result.output
++
++
++@responses.activate
++def test_deploy_start_eu_region_url(empty_dg_cli_config, project: Path, runner, monkeypatch):
++    """Test that EU region uses correct URL format."""
++    config = DagsterPlusCliConfig(
++        organization="hooli",
++        user_token="fake-user-token",
++        default_deployment="prod",
++        url="https://eu.dagster.cloud",
++    )
++    config.write()
++    monkeypatch.setenv("DAGSTER_CLOUD_API_TOKEN", "fake-api-token")
++
++    responses.add(
++        responses.POST,
++        "https://hooli.eu.dagster.cloud/graphql",
++        json={"data": {"organizationSettings": {"settings": "{}"}}},
++    )
++
++    with patch("dagster_cloud_cli.commands.ci.init_impl"):
++        result = runner.invoke("plus", "deploy", "start", "--yes")
++        assert result.exit_code == 0, result.output
++        assert "Configuration validated" in result.output
++
++
++@responses.activate
++def test_deploy_start_skip_validation_bypasses_checks(
++    logged_in_dg_cli_config, project: Path, runner
++):
++    """Test that --skip-validation bypasses all validation checks."""
++    with patch("dagster_cloud_cli.commands.ci.init_impl"):
++        result = runner.invoke("plus", "deploy", "start", "--yes", "--skip-validation")
++        assert result.exit_code == 0, result.output
++        assert "Configuration validated" not in result.output
++
++
++def test_deploy_start_skip_validation_with_missing_token(
++    empty_dg_cli_config, project: Path, runner
++):
++    """Test that --skip-validation works even with missing API token."""
++    with patch("dagster_cloud_cli.commands.ci.init_impl"):
++        result = runner.invoke(
++            "plus",
++            "deploy",
++            "start",
++            "--organization=hooli",
++            "--deployment=prod",
++            "--yes",
++            "--skip-validation",
++        )
++        assert result.exit_code == 0, result.output
++
++
++def test_validation_errors_are_actionable(empty_dg_cli_config, project: Path, runner):
++    """Test that error messages provide clear guidance."""
++    result = runner.invoke(
++        "plus", "deploy", "start", "--organization=hooli", "--deployment=prod", "--yes"
++    )
++    assert result.exit_code != 0
++    assert "Configuration validation failed:" in result.output
++    assert "DAGSTER_CLOUD_API_TOKEN" in result.output
++    assert "--skip-validation" in result.output
++
++
++def _create_invalid_yaml(statedir: str) -> str:
++    """Create an invalid dagster_cloud.yaml file."""
++    yaml_path = Path(statedir) / "dagster_cloud.yaml"
++    # Write YAML with invalid structure (missing required 'locations' field)
++    yaml_path.write_text("invalid: yaml\nstructure: true\n")
++    return str(yaml_path)

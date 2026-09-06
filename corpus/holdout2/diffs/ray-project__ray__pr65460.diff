@@ -1,0 +1,311 @@
+diff --git a/doc/requirements-doc.txt b/doc/requirements-doc.txt
+index 29a996c12ea..8bba6041e85 100644
+--- a/doc/requirements-doc.txt
++++ b/doc/requirements-doc.txt
+@@ -1,13 +1,16 @@
+ # Production requirements. This is what readthedocs.com picks up
+ 
+-# Declared explicitly because Python 3.12 and later no longer ship setuptools,
+-# and sphinxcontrib-redoc imports pkg_resources at module load.
+-# Don't bump to 82 or later: setuptools 82.0.0 removed pkg_resources, and the
+-# docs build then fails at extension load with
+-# "Could not import extension sphinxcontrib.redoc".
+-# No released sphinxcontrib-redoc fixes this. 1.6.0 is the latest release and
+-# dates from 2020; the 2.0.0a1 alpha still imports pkg_resources. Lifting this
+-# ceiling means replacing or vendoring that extension.
++# Declared explicitly because Python 3.12 and later no longer ship setuptools.
++#
++# The <82 ceiling this pin used to carry is gone. It existed because
++# sphinxcontrib-redoc imported pkg_resources at module load and setuptools
++# 82.0.0 removed it; replacing that extension with sphinxcontrib-openapi (which
++# needs neither) removed the constraint. Verified by importing every extension
++# conf.py loads in an environment with no setuptools and no importable
++# pkg_resources: all of them succeed.
++#
++# The version is still pinned rather than unpinned outright, because that's a
++# separate change with its own resolve to verify. A follow-up can lift it.
+ setuptools==80.9.0
+ 
+ # Syntax highlighting
+@@ -20,7 +23,7 @@ sphinx-copybutton==0.5.2
+ sphinxemoji>=0.3.2
+ sphinx-jsonschema==1.19.2
+ sphinx-sitemap==2.9.0
+-sphinxcontrib-redoc==1.6.0
++sphinxcontrib-openapi==0.9.0
+ sphinx-remove-toctrees==0.0.3
+ sphinx_design==0.7.0
+ sphinx-autobuild==2024.4.16
+diff --git a/doc/source/cluster/running-applications/job-submission/api.md b/doc/source/cluster/running-applications/job-submission/api.md
+new file mode 100644
+index 00000000000..1a8277fd3b8
+--- /dev/null
++++ b/doc/source/cluster/running-applications/job-submission/api.md
+@@ -0,0 +1,26 @@
++---
++myst:
++  html_meta:
++    description: "The OpenAPI specification for the Ray Jobs REST API, with every endpoint, request body, and response schema."
++---
++
++(ray-job-rest-api-openapi)=
++
++# Ray Jobs REST API specification
++
++This page documents every endpoint of the Ray Jobs REST API, generated from the [OpenAPI specification](ray-job-rest-api-spec). For request examples and a walkthrough, see [](ray-job-rest-api).
++
++% Request and response examples are deliberately not enabled here, and can't be until two upstream bugs are fixed. sphinxcontrib-openapi's :generate-examples-from-schemas: crashes on this spec with "ValueError: dictionary update sequence element #0 has length 1; 2 is required" (sphinx-contrib/openapi#166), because example generation can't handle an allOf that targets a non-object schema, which is how JobDetails attaches descriptions to the JobType and JobStatus string enums. The :response-examples-for: option is rejected outright as an unknown option (sphinx-contrib/openapi#165). Re-check both before adding either option.
++
++% The openapi directive has to be wrapped in eval-rst. sphinxcontrib-openapi emits
++% reStructuredText into a ViewList and hands it to nested_parse, but MyST's
++% nested_parse renders that content as Markdown. A bare ```{openapi}``` fence
++% therefore builds green with zero warnings and silently degrades the whole page:
++% every ".. http:get::" and ":resjson:" line renders as literal text, so there are
++% no httpdomain objects, no field lists, no anchors, and no search or
++% cross-referencing. eval-rst parses the content with a real rST parser and
++% produces output identical to the .rst page this replaced.
++
++```{eval-rst}
++.. openapi:: openapi.yml
++```
+diff --git a/doc/source/cluster/running-applications/job-submission/index.md b/doc/source/cluster/running-applications/job-submission/index.md
+index 0c164a43443..8d0692a0b84 100644
+--- a/doc/source/cluster/running-applications/job-submission/index.md
++++ b/doc/source/cluster/running-applications/job-submission/index.md
+@@ -46,5 +46,6 @@ sdk
+ jobs-package-ref
+ cli
+ rest
++api
+ ray-client
+ ```
+diff --git a/doc/source/cluster/running-applications/job-submission/openapi.yml b/doc/source/cluster/running-applications/job-submission/openapi.yml
+index 4c2cd7a2526..2fa1f212a49 100644
+--- a/doc/source/cluster/running-applications/job-submission/openapi.yml
++++ b/doc/source/cluster/running-applications/job-submission/openapi.yml
+@@ -10,8 +10,7 @@ info:
+ paths:
+   /api/version:
+     get:
+-      summary: |
+-        Get Version
++      summary: Get Version
+       description: |
+         Get the Ray Jobs API version and the Ray version running on the cluster.
+       responses:
+@@ -34,8 +33,7 @@ paths:
+                     type: string
+   /api/jobs:
+     post:
+-      summary: |
+-        Submit Job
++      summary: Submit Job
+       description: |
+         Submit a job to the cluster.
+       requestBody:
+diff --git a/doc/source/cluster/running-applications/job-submission/rest.rst b/doc/source/cluster/running-applications/job-submission/rest.rst
+index 4693e7c6074..f1dc59d9913 100644
+--- a/doc/source/cluster/running-applications/job-submission/rest.rst
++++ b/doc/source/cluster/running-applications/job-submission/rest.rst
+@@ -91,4 +91,4 @@ OpenAPI Documentation (Beta)
+ 
+ We provide an OpenAPI specification for the Ray Job API. You can use this to generate client libraries for other languages.
+ 
+-View the `Ray Jobs REST API OpenAPI documentation <api.html>`_.
++For the full generated reference, covering every endpoint, request body, and response schema, see :ref:`ray-job-rest-api-openapi`.
+diff --git a/doc/source/conf.py b/doc/source/conf.py
+index 3fabd4a1a10..586fbf415e6 100644
+--- a/doc/source/conf.py
++++ b/doc/source/conf.py
+@@ -72,7 +72,7 @@
+     "sphinx.ext.coverage",
+     "sphinx.ext.autosummary",
+     "sphinxcontrib.autodoc_pydantic",
+-    "sphinxcontrib.redoc",
++    "sphinxcontrib.openapi",
+     "sphinx_remove_toctrees",
+     "sphinx_design",
+     "sphinx.ext.intersphinx",
+@@ -216,10 +216,6 @@
+ # so it doesn't cause a build failure under -W (warnings-as-errors).
+ suppress_warnings = [
+     "config.cache",
+-    # sphinxcontrib-redoc (unmaintained, 1.6.0) redundantly copies its bundled
+-    # redoc.js asset; Sphinx 8's new copy_overwrite check flags the second copy over
+-    # the existing (identical) file. Benign and not fixable upstream.
+-    "misc.copy_overwrite",
+ ]
+ # Disable autodoc_pydantic features that can produce empty raw directives
+ # (e.g. when schema JSON fails for models with non-serializable fields)
+@@ -797,24 +793,17 @@ def mark_orphans(app, docname, _source):
+     app.connect("source-read", apply_ipython3_lexer)
+ 
+ 
+-redoc = [
+-    {
+-        "name": "Ray Jobs API",
+-        "page": "cluster/running-applications/job-submission/api",
+-        "spec": "cluster/running-applications/job-submission/openapi.yml",
+-        "embed": True,
+-    },
+-]
+-
+-# Pin the ReDoc bundle version rather than tracking the CDN's `latest` tag.
+-# sphinxcontrib-redoc injects this script instead of bundling a renderer, so the
+-# Jobs API page is rendered client-side at page-view time by whatever this URL
+-# serves. On `latest`, a breaking change in the bundle degrades the published page
+-# with no build-time signal, because the Sphinx build never executes it.
+-# When bumping this, load the api.html page in the Read the Docs PR preview and
+-# confirm the three-panel layout and the endpoint list still render. A green
+-# Sphinx build proves nothing about this page.
+-redoc_uri = "https://cdn.redoc.ly/redoc/v2.5.3/bundles/redoc.standalone.js"
++# Render the Jobs API OpenAPI spec with sphinxcontrib-openapi's httpdomain
++# renderer, selected here rather than per-directive.
++#
++# Two notes for anyone changing this. The default renderer is "httpdomain:old",
++# which silently renders no request or response schemas at all -- just paths,
++# parameters, and status codes -- so leaving this unset would quietly drop most
++# of the reference content. And selecting the renderer through this config value
++# rather than by writing `.. openapi:httpdomain::` in the page avoids an
++# "unknown directive name" warning, which matters because .readthedocs.yaml sets
++# fail_on_warning: true.
++openapi_default_renderer = "httpdomain"
+ 
+ autosummary_filename_map = AUTOSUMMARY_FILENAME_MAP
+ 
+diff --git a/python/deplocks/docs/docbuild_depset_py3.11.lock b/python/deplocks/docs/docbuild_depset_py3.11.lock
+index ac789e23224..dfc2eecece0 100644
+--- a/python/deplocks/docs/docbuild_depset_py3.11.lock
++++ b/python/deplocks/docs/docbuild_depset_py3.11.lock
+@@ -252,6 +252,10 @@ decorator==5.3.1 \
+     --hash=sha256:4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82 \
+     --hash=sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c
+     # via ipython
++deepmerge==2.1.0 \
++    --hash=sha256:07ca7a7b8935df596c512fa8161877c0487ac61f691c07766e7d71d2b23bdd2f \
++    --hash=sha256:8f148339a91d680a75ecb74ade235d9e759a93df373a0b04e9d31c8666cfeb75
++    # via sphinxcontrib-openapi
+ docutils==0.21.2 \
+     --hash=sha256:3a6b18732edf182daa3cd12775bbb338cf5691468f91eeeb109deff6ebfa986f \
+     --hash=sha256:dafca5b9e384f0e419294eb4d2ff9fa826435bf15f15b7bd45723e8ad76811b2
+@@ -261,6 +265,7 @@ docutils==0.21.2 \
+     #   sphinx
+     #   sphinx-click
+     #   sphinx-jsonschema
++    #   sphinx-mdinclude
+ executing==2.2.1 \
+     --hash=sha256:3632cc370565f6648cc328b32435bd120a1e4ebb20c77e3fdde9a13cd1e533c4 \
+     --hash=sha256:760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017
+@@ -522,7 +527,6 @@ jinja2==3.1.6 \
+     #   myst-parser
+     #   sphinx
+     #   sphinx-collections
+-    #   sphinxcontrib-redoc
+ jmespath==1.1.0 \
+     --hash=sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d \
+     --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
+@@ -538,7 +542,7 @@ jsonschema==4.26.0 \
+     --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
+     # via
+     #   nbformat
+-    #   sphinxcontrib-redoc
++    #   sphinxcontrib-openapi
+ jsonschema-specifications==2025.9.1 \
+     --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe \
+     --hash=sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d
+@@ -702,6 +706,10 @@ mdurl==0.1.2 \
+     --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8 \
+     --hash=sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba
+     # via markdown-it-py
++mistune==3.3.4 \
++    --hash=sha256:58b5c96d6fcb61190dfe5fae498d2b2065f99cf61e9649418fd54cf1ada86dfe \
++    --hash=sha256:ee015381e955e370962968befe1d729ab60fafb6a715ac6751763fbce38c8d4a
++    # via sphinx-mdinclude
+ ml-dtypes==0.5.4 \
+     --hash=sha256:0d2ffd05a2575b1519dc928c0b93c06339eb67173ff53acb00724502cda231cf \
+     --hash=sha256:11942cbf2cf92157db91e5022633c0d9474d4dfd813a909383bd23ce828a4b7d \
+@@ -979,6 +987,10 @@ pexpect==4.9.0 ; sys_platform != 'emscripten' and sys_platform != 'win32' \
+     --hash=sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523 \
+     --hash=sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f
+     # via ipython
++picobox==4.0.0 \
++    --hash=sha256:114da1b5606b2f615e8b0eb68d04198ad9de75af5adbcf5b36fe4f664ab927b6 \
++    --hash=sha256:4c27eb689fe45dabd9e64c382e04418147d0b746d155b4e80057dbb7ff82027e
++    # via sphinxcontrib-openapi
+ pillow==12.2.0 \
+     --hash=sha256:00a2865911330191c0b818c59103b58a5e697cae67042366970a6b6f1b20b7f9 \
+     --hash=sha256:01afa7cf67f74f09523699b4e88c73fb55c13346d212a59a2db1f86b0a63e8c5 \
+@@ -1318,6 +1330,7 @@ pygments==2.18.0 \
+     #   pydata-sphinx-theme
+     #   rich
+     #   sphinx
++    #   sphinx-mdinclude
+ python-dateutil==2.9.0.post0 \
+     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
+     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+@@ -1408,7 +1421,7 @@ pyyaml==6.0.3 \
+     #   myst-nb
+     #   myst-parser
+     #   sphinx-jsonschema
+-    #   sphinxcontrib-redoc
++    #   sphinxcontrib-openapi
+ pyzmq==27.1.0 \
+     --hash=sha256:01c0e07d558b06a60773744ea6251f769cd79a41a97d11b8bf4ab8f034b0424d \
+     --hash=sha256:01f9437501886d3a1dd4b02ef59fb8cc384fa718ce066d52f175ee49dd5b7ed8 \
+@@ -1683,7 +1696,6 @@ six==1.17.0 \
+     #   astunparse
+     #   google-pasta
+     #   python-dateutil
+-    #   sphinxcontrib-redoc
+     #   tensorflow
+ smmap==5.0.3 \
+     --hash=sha256:4d9debb8b99007ae47165abc08670bd74cb74b5227dda7f643eccc4e9eb5642c \
+@@ -1713,8 +1725,10 @@ sphinx==8.2.3 \
+     #   sphinx-design
+     #   sphinx-docsearch
+     #   sphinx-last-updated-by-git
++    #   sphinx-mdinclude
+     #   sphinx-remove-toctrees
+-    #   sphinxcontrib-redoc
++    #   sphinxcontrib-httpdomain
++    #   sphinxcontrib-openapi
+     #   sphinxemoji
+     #   sphinxext-opengraph
+ sphinx-autobuild==2024.4.16 \
+@@ -1748,6 +1762,10 @@ sphinx-last-updated-by-git==0.3.8 \
+     --hash=sha256:6382c8285ac1f222483a58569b78c0371af5e55f7fbf9c01e5e8a72d6fdfa499 \
+     --hash=sha256:c145011f4609d841805b69a9300099fc02fed8f5bb9e5bcef77d97aea97b7761
+     # via sphinx-sitemap
++sphinx-mdinclude==0.6.2 \
++    --hash=sha256:447462e82cb8be61404a2204227f920769eb923d2f57608e3325f3bb88286b4c \
++    --hash=sha256:648e78edb067c0e4bffc22943278d49d54a0714494743592032fa3ad82a86984
++    # via sphinxcontrib-openapi
+ sphinx-remove-toctrees==0.0.3 \
+     --hash=sha256:1077ebc00652f8a896ce27404d31cb5bdde9eeaefc80ada72d95a7a0a7b99a9d \
+     --hash=sha256:e4792cc4e5d25ceb1a44dd1490c45d578e6b36f1b1e385ede659e4c324b98cba
+@@ -1768,17 +1786,22 @@ sphinxcontrib-htmlhelp==2.1.0 \
+     --hash=sha256:166759820b47002d22914d64a075ce08f4c46818e17cfc9470a9786b759b19f8 \
+     --hash=sha256:c9e2916ace8aad64cc13a0d233ee22317f2b9025b9cf3295249fa985cc7082e9
+     # via sphinx
++sphinxcontrib-httpdomain==2.0.0 \
++    --hash=sha256:9e4e8733bf41ee4d9d5f9eb4dbf3cc2c22a665221ba42c5c3ae181b98af8855d \
++    --hash=sha256:e968775c9994f8139cb6ff91e1f6a8557396a2cc08073997eed10d9b39f96df3
++    # via sphinxcontrib-openapi
+ sphinxcontrib-jsmath==1.0.1 \
+     --hash=sha256:2ec2eaebfb78f3f2078e73666b1415417a116cc848b72e5172e596c871103178 \
+     --hash=sha256:a9925e4a4587247ed2191a22df5f6970656cb8ca2bd6284309578f2153e0c4b8
+     # via sphinx
++sphinxcontrib-openapi==0.9.0 \
++    --hash=sha256:19037dc091e741b2f84e9c17ff201f70f2ac5c192c883e055bb2d96e9facfbdf \
++    --hash=sha256:c3c445a13c99706d8837b21b78e1caa8be5eb16b8f83a297a1fdf19f1c31d487
++    # via -r doc/requirements-doc.txt
+ sphinxcontrib-qthelp==2.0.0 \
+     --hash=sha256:4fe7d0ac8fc171045be623aba3e2a8f613f8682731f9153bb2e40ece16b9bbab \
+     --hash=sha256:b18a828cdba941ccd6ee8445dbe72ffa3ef8cbe7505d8cd1fa0d42d3f2d5f3eb
+     # via sphinx
+-sphinxcontrib-redoc==1.6.0 \
+-    --hash=sha256:e358edbe23927d36432dde748e978cf897283a331a03e93d3ef02e348dee4561
+-    # via -r doc/requirements-doc.txt
+ sphinxcontrib-serializinghtml==2.0.0 \
+     --hash=sha256:6e2cb0eef194e10c27ec0023bfeb25badbbb5868244cf5bc5bdc04e4464bf331 \
+     --hash=sha256:e9d912827f872c029017a53f0ef2180b327c3f7fd23c87229f7a8e8b70031d4d

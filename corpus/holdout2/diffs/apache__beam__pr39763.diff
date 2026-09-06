@@ -1,0 +1,1260 @@
+diff --git a/sdks/java/io/amazon-web-services2/src/main/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisReadSchemaTransformProvider.java b/sdks/java/io/amazon-web-services2/src/main/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisReadSchemaTransformProvider.java
+new file mode 100644
+index 000000000000..90f28a5a4a5d
+--- /dev/null
++++ b/sdks/java/io/amazon-web-services2/src/main/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisReadSchemaTransformProvider.java
+@@ -0,0 +1,315 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.beam.sdk.io.aws2.kinesis;
++
++import static org.apache.beam.sdk.io.aws2.kinesis.KinesisReadSchemaTransformProvider.KinesisReadSchemaTransformConfiguration;
++
++import com.google.auto.service.AutoService;
++import com.google.auto.value.AutoValue;
++import java.io.Serializable;
++import java.net.URI;
++import java.net.URISyntaxException;
++import java.util.Collections;
++import java.util.List;
++import org.apache.beam.sdk.io.aws2.common.ClientConfiguration;
++import org.apache.beam.sdk.schemas.AutoValueSchema;
++import org.apache.beam.sdk.schemas.Schema;
++import org.apache.beam.sdk.schemas.annotations.DefaultSchema;
++import org.apache.beam.sdk.schemas.annotations.SchemaFieldDescription;
++import org.apache.beam.sdk.schemas.transforms.SchemaTransform;
++import org.apache.beam.sdk.schemas.transforms.SchemaTransformProvider;
++import org.apache.beam.sdk.schemas.transforms.TypedSchemaTransformProvider;
++import org.apache.beam.sdk.transforms.DoFn;
++import org.apache.beam.sdk.transforms.ParDo;
++import org.apache.beam.sdk.values.PCollection;
++import org.apache.beam.sdk.values.PCollectionRowTuple;
++import org.apache.beam.sdk.values.Row;
++import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
++import org.checkerframework.checker.nullness.qual.Nullable;
++import org.joda.time.Duration;
++import org.joda.time.Instant;
++import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
++import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
++import software.amazon.awssdk.regions.Region;
++import software.amazon.kinesis.common.InitialPositionInStream;
++
++/** A {@link SchemaTransformProvider} for reading from Amazon Kinesis. */
++@AutoService(SchemaTransformProvider.class)
++@SuppressWarnings({
++  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
++})
++public class KinesisReadSchemaTransformProvider
++    extends TypedSchemaTransformProvider<KinesisReadSchemaTransformConfiguration> {
++
++  public static final String OUTPUT_TAG = "output";
++
++  static final Schema OUTPUT_SCHEMA =
++      Schema.builder()
++          .addByteArrayField("data")
++          .addStringField("stream_name")
++          .addStringField("partition_key")
++          .addStringField("sequence_number")
++          .addStringField("shard_id")
++          .addDateTimeField("approximate_arrival_timestamp")
++          .build();
++
++  @DefaultSchema(AutoValueSchema.class)
++  @AutoValue
++  public abstract static class KinesisReadSchemaTransformConfiguration implements Serializable {
++    public static Builder builder() {
++      return new AutoValue_KinesisReadSchemaTransformProvider_KinesisReadSchemaTransformConfiguration
++          .Builder();
++    }
++
++    @SchemaFieldDescription("Kinesis stream name to read from.")
++    public abstract String getStreamName();
++
++    @SchemaFieldDescription("AWS access key id.")
++    public abstract String getAwsAccessKey();
++
++    @SchemaFieldDescription("AWS secret access key.")
++    public abstract String getAwsSecretKey();
++
++    @SchemaFieldDescription("AWS region, for example us-east-1.")
++    public abstract String getRegion();
++
++    @SchemaFieldDescription("Optional custom Kinesis service endpoint URI.")
++    public abstract @Nullable String getServiceEndpoint();
++
++    @SchemaFieldDescription(
++        "Whether to verify TLS certificates. Defaults to true. Never disable in production.")
++    public abstract @Nullable Boolean getVerifyCertificate();
++
++    @SchemaFieldDescription(
++        "Maximum number of records to read. When set, the resulting PCollection is bounded.")
++    public abstract @Nullable Long getMaxNumRecords();
++
++    @SchemaFieldDescription(
++        "Maximum read time in milliseconds. When set, the resulting PCollection is bounded.")
++    public abstract @Nullable Long getMaxReadTime();
++
++    @SchemaFieldDescription(
++        "Where to start reading in the stream: LATEST, TRIM_HORIZON, or AT_TIMESTAMP.")
++    public abstract @Nullable String getInitialPositionInStream();
++
++    @SchemaFieldDescription(
++        "Epoch millis timestamp used when initial_position_in_stream is AT_TIMESTAMP.")
++    public abstract @Nullable Long getInitialTimestampInStream();
++
++    @SchemaFieldDescription("Max records returned by a single GetRecords call (1-10000).")
++    public abstract @Nullable Long getRequestRecordsLimit();
++
++    @SchemaFieldDescription(
++        "Threshold duration in milliseconds after which a shard is considered up to date.")
++    public abstract @Nullable Long getUpToDateThreshold();
++
++    @SchemaFieldDescription("Maximum number of records to hold in memory per shard.")
++    public abstract @Nullable Long getMaxCapacityPerShard();
++
++    @SchemaFieldDescription("Watermark policy: ARRIVAL_TIME or PROCESSING_TIME.")
++    public abstract @Nullable String getWatermarkPolicy();
++
++    @SchemaFieldDescription(
++        "Idle duration threshold in milliseconds for ARRIVAL_TIME watermark policy.")
++    public abstract @Nullable Long getWatermarkIdleDurationThreshold();
++
++    @SchemaFieldDescription("Fixed delay between GetRecords calls in milliseconds.")
++    public abstract @Nullable Long getRateLimit();
++
++    @AutoValue.Builder
++    public abstract static class Builder {
++      public abstract Builder setStreamName(String streamName);
++
++      public abstract Builder setAwsAccessKey(String awsAccessKey);
++
++      public abstract Builder setAwsSecretKey(String awsSecretKey);
++
++      public abstract Builder setRegion(String region);
++
++      public abstract Builder setServiceEndpoint(String serviceEndpoint);
++
++      public abstract Builder setVerifyCertificate(Boolean verifyCertificate);
++
++      public abstract Builder setMaxNumRecords(Long maxNumRecords);
++
++      public abstract Builder setMaxReadTime(Long maxReadTime);
++
++      public abstract Builder setInitialPositionInStream(String initialPositionInStream);
++
++      public abstract Builder setInitialTimestampInStream(Long initialTimestampInStream);
++
++      public abstract Builder setRequestRecordsLimit(Long requestRecordsLimit);
++
++      public abstract Builder setUpToDateThreshold(Long upToDateThreshold);
++
++      public abstract Builder setMaxCapacityPerShard(Long maxCapacityPerShard);
++
++      public abstract Builder setWatermarkPolicy(String watermarkPolicy);
++
++      public abstract Builder setWatermarkIdleDurationThreshold(
++          Long watermarkIdleDurationThreshold);
++
++      public abstract Builder setRateLimit(Long rateLimit);
++
++      public abstract KinesisReadSchemaTransformConfiguration build();
++    }
++  }
++
++  @Override
++  public String identifier() {
++    return "beam:schematransform:org.apache.beam:kinesis_read:v1";
++  }
++
++  @Override
++  public String description() {
++    return "Reads records from an Amazon Kinesis stream and outputs Beam Rows with "
++        + "`data` (bytes) plus stream metadata fields.";
++  }
++
++  @Override
++  public List<String> outputCollectionNames() {
++    return Collections.singletonList(OUTPUT_TAG);
++  }
++
++  @Override
++  protected SchemaTransform from(KinesisReadSchemaTransformConfiguration configuration) {
++    return new KinesisReadSchemaTransform(configuration);
++  }
++
++  static class KinesisReadSchemaTransform extends SchemaTransform {
++    private final KinesisReadSchemaTransformConfiguration config;
++
++    KinesisReadSchemaTransform(KinesisReadSchemaTransformConfiguration configuration) {
++      this.config = configuration;
++    }
++
++    @Override
++    public PCollectionRowTuple expand(PCollectionRowTuple input) {
++      Preconditions.checkState(
++          input.getAll().isEmpty(),
++          "Expected zero input PCollections for this source, but found: %s",
++          input.getAll().keySet());
++
++      AwsBasicCredentials creds =
++          AwsBasicCredentials.create(config.getAwsAccessKey(), config.getAwsSecretKey());
++      StaticCredentialsProvider provider = StaticCredentialsProvider.create(creds);
++
++      @Nullable URI endpoint = null;
++      if (config.getServiceEndpoint() != null) {
++        try {
++          endpoint = new URI(config.getServiceEndpoint());
++        } catch (URISyntaxException ex) {
++          throw new IllegalArgumentException(
++              String.format("Service endpoint must be a URI, got: %s", config.getServiceEndpoint()),
++              ex);
++        }
++      }
++
++      boolean verifyCertificate =
++          config.getVerifyCertificate() == null || config.getVerifyCertificate();
++
++      KinesisIO.Read readTransform =
++          KinesisIO.read()
++              .withStreamName(config.getStreamName())
++              .withClientConfiguration(
++                  ClientConfiguration.builder()
++                      .credentialsProvider(provider)
++                      .region(Region.of(config.getRegion()))
++                      .endpoint(endpoint)
++                      .skipCertificateVerification(!verifyCertificate)
++                      .build());
++
++      if (config.getMaxNumRecords() != null) {
++        readTransform = readTransform.withMaxNumRecords(config.getMaxNumRecords());
++      }
++      if (config.getMaxReadTime() != null) {
++        readTransform = readTransform.withMaxReadTime(Duration.millis(config.getMaxReadTime()));
++      }
++      if (config.getInitialPositionInStream() != null) {
++        readTransform =
++            readTransform.withInitialPositionInStream(
++                InitialPositionInStream.valueOf(config.getInitialPositionInStream()));
++      }
++      if (config.getInitialTimestampInStream() != null) {
++        readTransform =
++            readTransform.withInitialTimestampInStream(
++                Instant.ofEpochMilli(config.getInitialTimestampInStream()));
++      }
++      if (config.getRequestRecordsLimit() != null) {
++        readTransform =
++            readTransform.withRequestRecordsLimit(config.getRequestRecordsLimit().intValue());
++      }
++      if (config.getUpToDateThreshold() != null) {
++        readTransform =
++            readTransform.withUpToDateThreshold(Duration.millis(config.getUpToDateThreshold()));
++      }
++      if (config.getMaxCapacityPerShard() != null) {
++        readTransform =
++            readTransform.withMaxCapacityPerShard(config.getMaxCapacityPerShard().intValue());
++      }
++      if (config.getWatermarkPolicy() != null) {
++        switch (config.getWatermarkPolicy()) {
++          case "ARRIVAL_TIME":
++            readTransform =
++                config.getWatermarkIdleDurationThreshold() != null
++                    ? readTransform.withArrivalTimeWatermarkPolicy(
++                        Duration.millis(config.getWatermarkIdleDurationThreshold()))
++                    : readTransform.withArrivalTimeWatermarkPolicy();
++            break;
++          case "PROCESSING_TIME":
++            readTransform = readTransform.withProcessingTimeWatermarkPolicy();
++            break;
++          default:
++            throw new IllegalArgumentException(
++                "Unsupported watermark_policy: " + config.getWatermarkPolicy());
++        }
++      }
++      if (config.getRateLimit() != null) {
++        readTransform =
++            readTransform.withFixedDelayRateLimitPolicy(Duration.millis(config.getRateLimit()));
++      }
++
++      PCollection<Row> output =
++          input
++              .getPipeline()
++              .apply(readTransform)
++              .apply("KinesisRecordToRow", ParDo.of(new KinesisRecordToRowFn()))
++              .setRowSchema(OUTPUT_SCHEMA);
++
++      return PCollectionRowTuple.of(OUTPUT_TAG, output);
++    }
++  }
++
++  static class KinesisRecordToRowFn extends DoFn<KinesisRecord, Row> {
++    @ProcessElement
++    public void processElement(@Element KinesisRecord record, OutputReceiver<Row> out) {
++      Instant arrival = record.getApproximateArrivalTimestamp();
++      out.output(
++          Row.withSchema(OUTPUT_SCHEMA)
++              .withFieldValue("data", record.getDataAsBytes())
++              .withFieldValue("stream_name", record.getStreamName())
++              .withFieldValue("partition_key", record.getPartitionKey())
++              .withFieldValue("sequence_number", record.getSequenceNumber())
++              .withFieldValue("shard_id", record.getShardId())
++              .withFieldValue(
++                  "approximate_arrival_timestamp",
++                  arrival != null ? arrival.toDateTime() : Instant.EPOCH.toDateTime())
++              .build());
++    }
++  }
++}
+diff --git a/sdks/java/io/amazon-web-services2/src/main/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisWriteSchemaTransformProvider.java b/sdks/java/io/amazon-web-services2/src/main/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisWriteSchemaTransformProvider.java
+new file mode 100644
+index 000000000000..39c0cb91fade
+--- /dev/null
++++ b/sdks/java/io/amazon-web-services2/src/main/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisWriteSchemaTransformProvider.java
+@@ -0,0 +1,280 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.beam.sdk.io.aws2.kinesis;
++
++import static org.apache.beam.sdk.io.aws2.kinesis.KinesisWriteSchemaTransformProvider.KinesisWriteSchemaTransformConfiguration;
++
++import com.google.auto.service.AutoService;
++import com.google.auto.value.AutoValue;
++import java.io.Serializable;
++import java.net.URI;
++import java.net.URISyntaxException;
++import java.nio.charset.StandardCharsets;
++import java.util.Collections;
++import java.util.List;
++import org.apache.beam.sdk.io.aws2.common.ClientConfiguration;
++import org.apache.beam.sdk.schemas.AutoValueSchema;
++import org.apache.beam.sdk.schemas.Schema;
++import org.apache.beam.sdk.schemas.annotations.DefaultSchema;
++import org.apache.beam.sdk.schemas.annotations.SchemaFieldDescription;
++import org.apache.beam.sdk.schemas.transforms.SchemaTransform;
++import org.apache.beam.sdk.schemas.transforms.SchemaTransformProvider;
++import org.apache.beam.sdk.schemas.transforms.TypedSchemaTransformProvider;
++import org.apache.beam.sdk.transforms.DoFn;
++import org.apache.beam.sdk.transforms.ParDo;
++import org.apache.beam.sdk.transforms.SerializableFunction;
++import org.apache.beam.sdk.util.Preconditions;
++import org.apache.beam.sdk.values.KV;
++import org.apache.beam.sdk.values.PCollection;
++import org.apache.beam.sdk.values.PCollectionRowTuple;
++import org.apache.beam.sdk.values.Row;
++import org.checkerframework.checker.nullness.qual.Nullable;
++import org.joda.time.Duration;
++import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
++import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
++import software.amazon.awssdk.regions.Region;
++
++/** A {@link SchemaTransformProvider} for writing to Amazon Kinesis. */
++@AutoService(SchemaTransformProvider.class)
++@SuppressWarnings({
++  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
++})
++public class KinesisWriteSchemaTransformProvider
++    extends TypedSchemaTransformProvider<KinesisWriteSchemaTransformConfiguration> {
++
++  public static final String INPUT_TAG = "input";
++
++  @DefaultSchema(AutoValueSchema.class)
++  @AutoValue
++  public abstract static class KinesisWriteSchemaTransformConfiguration implements Serializable {
++    public static Builder builder() {
++      return new AutoValue_KinesisWriteSchemaTransformProvider_KinesisWriteSchemaTransformConfiguration
++          .Builder();
++    }
++
++    @SchemaFieldDescription("Kinesis stream name to write to.")
++    public abstract String getStreamName();
++
++    @SchemaFieldDescription("AWS access key id.")
++    public abstract String getAwsAccessKey();
++
++    @SchemaFieldDescription("AWS secret access key.")
++    public abstract String getAwsSecretKey();
++
++    @SchemaFieldDescription("AWS region, for example us-east-1.")
++    public abstract String getRegion();
++
++    @SchemaFieldDescription(
++        "Default partition key used when the input row does not contain a partition_key field.")
++    public abstract String getPartitionKey();
++
++    @SchemaFieldDescription("Optional custom Kinesis service endpoint URI.")
++    public abstract @Nullable String getServiceEndpoint();
++
++    @SchemaFieldDescription(
++        "Whether to verify TLS certificates. Defaults to true. Never disable in production.")
++    public abstract @Nullable Boolean getVerifyCertificate();
++
++    @SchemaFieldDescription("Enable KPL-compatible record aggregation.")
++    public abstract @Nullable Boolean getAggregationEnabled();
++
++    @SchemaFieldDescription("Max aggregated record size in bytes when aggregation is enabled.")
++    public abstract @Nullable Long getAggregationMaxBytes();
++
++    @SchemaFieldDescription(
++        "Max time in milliseconds to buffer records when aggregation is enabled.")
++    public abstract @Nullable Long getAggregationMaxBufferedTime();
++
++    @SchemaFieldDescription("Shard map refresh interval in minutes when aggregation is enabled.")
++    public abstract @Nullable Long getAggregationShardRefreshInterval();
++
++    @AutoValue.Builder
++    public abstract static class Builder {
++      public abstract Builder setStreamName(String streamName);
++
++      public abstract Builder setAwsAccessKey(String awsAccessKey);
++
++      public abstract Builder setAwsSecretKey(String awsSecretKey);
++
++      public abstract Builder setRegion(String region);
++
++      public abstract Builder setPartitionKey(String partitionKey);
++
++      public abstract Builder setServiceEndpoint(String serviceEndpoint);
++
++      public abstract Builder setVerifyCertificate(Boolean verifyCertificate);
++
++      public abstract Builder setAggregationEnabled(Boolean aggregationEnabled);
++
++      public abstract Builder setAggregationMaxBytes(Long aggregationMaxBytes);
++
++      public abstract Builder setAggregationMaxBufferedTime(Long aggregationMaxBufferedTime);
++
++      public abstract Builder setAggregationShardRefreshInterval(
++          Long aggregationShardRefreshInterval);
++
++      public abstract KinesisWriteSchemaTransformConfiguration build();
++    }
++  }
++
++  @Override
++  public String identifier() {
++    return "beam:schematransform:org.apache.beam:kinesis_write:v1";
++  }
++
++  @Override
++  public String description() {
++    return "Writes Beam Rows to an Amazon Kinesis stream. Each input row must include a "
++        + "`data` (bytes) field, or a `payload` string/bytes field. Optional per-row "
++        + "`partition_key` overrides the configured default partition key.";
++  }
++
++  @Override
++  public List<String> inputCollectionNames() {
++    return Collections.singletonList(INPUT_TAG);
++  }
++
++  @Override
++  protected SchemaTransform from(KinesisWriteSchemaTransformConfiguration configuration) {
++    return new KinesisWriteSchemaTransform(configuration);
++  }
++
++  static class KinesisWriteSchemaTransform extends SchemaTransform {
++    private final KinesisWriteSchemaTransformConfiguration config;
++
++    KinesisWriteSchemaTransform(KinesisWriteSchemaTransformConfiguration configuration) {
++      this.config = configuration;
++    }
++
++    @Override
++    public PCollectionRowTuple expand(PCollectionRowTuple input) {
++      PCollection<Row> inputRows = input.getSinglePCollection();
++      Schema schema = inputRows.getSchema();
++
++      final int dataFieldIndex = resolveDataFieldIndex(schema);
++      final boolean dataIsString = isStringField(schema, dataFieldIndex);
++      final Integer partitionKeyIndex =
++          schema.hasField("partition_key") ? schema.indexOf("partition_key") : null;
++
++      AwsBasicCredentials creds =
++          AwsBasicCredentials.create(config.getAwsAccessKey(), config.getAwsSecretKey());
++      StaticCredentialsProvider provider = StaticCredentialsProvider.create(creds);
++
++      @Nullable URI endpoint = null;
++      if (config.getServiceEndpoint() != null) {
++        try {
++          endpoint = new URI(config.getServiceEndpoint());
++        } catch (URISyntaxException ex) {
++          throw new IllegalArgumentException(
++              String.format("Service endpoint must be a URI, got: %s", config.getServiceEndpoint()),
++              ex);
++        }
++      }
++
++      boolean verifyCertificate =
++          config.getVerifyCertificate() == null || config.getVerifyCertificate();
++
++      SerializableFunction<KV<String, byte[]>, byte[]> serializer = KV::getValue;
++      KinesisIO.Write<KV<String, byte[]>> writeTransform =
++          KinesisIO.<KV<String, byte[]>>write()
++              .withStreamName(config.getStreamName())
++              .withClientConfiguration(
++                  ClientConfiguration.builder()
++                      .credentialsProvider(provider)
++                      .region(Region.of(config.getRegion()))
++                      .endpoint(endpoint)
++                      .skipCertificateVerification(!verifyCertificate)
++                      .build())
++              .withPartitioner(KV::getKey)
++              .withSerializer(serializer);
++
++      if (Boolean.TRUE.equals(config.getAggregationEnabled())) {
++        KinesisIO.RecordAggregation.Builder aggregation = KinesisIO.RecordAggregation.builder();
++        if (config.getAggregationMaxBytes() != null) {
++          aggregation.maxBytes(config.getAggregationMaxBytes().intValue());
++        }
++        if (config.getAggregationMaxBufferedTime() != null) {
++          aggregation.maxBufferedTime(Duration.millis(config.getAggregationMaxBufferedTime()));
++        }
++        if (config.getAggregationShardRefreshInterval() != null) {
++          aggregation.shardRefreshInterval(
++              Duration.standardMinutes(config.getAggregationShardRefreshInterval()));
++        }
++        writeTransform = writeTransform.withRecordAggregation(aggregation.build());
++      } else {
++        writeTransform = writeTransform.withRecordAggregationDisabled();
++      }
++
++      final String defaultPartitionKey = config.getPartitionKey();
++      inputRows
++          .apply(
++              "ExtractKinesisRecord",
++              ParDo.of(
++                  new DoFn<Row, KV<String, byte[]>>() {
++                    @ProcessElement
++                    public void processElement(
++                        @Element Row row, OutputReceiver<KV<String, byte[]>> out) {
++                      byte[] data;
++                      if (dataIsString) {
++                        String payload =
++                            Preconditions.checkStateNotNull(row.getString(dataFieldIndex));
++                        data = payload.getBytes(StandardCharsets.UTF_8);
++                      } else {
++                        data = Preconditions.checkStateNotNull(row.getBytes(dataFieldIndex));
++                      }
++                      String partitionKey = defaultPartitionKey;
++                      if (partitionKeyIndex != null) {
++                        String rowKey = row.getString(partitionKeyIndex);
++                        if (rowKey != null && !rowKey.isEmpty()) {
++                          partitionKey = rowKey;
++                        }
++                      }
++                      out.output(KV.of(partitionKey, data));
++                    }
++                  }))
++          .apply(writeTransform);
++
++      return PCollectionRowTuple.empty(inputRows.getPipeline());
++    }
++
++    private static int resolveDataFieldIndex(Schema schema) {
++      if (schema.hasField("data")
++          && schema.getField("data").getType().equals(Schema.FieldType.BYTES)) {
++        return schema.indexOf("data");
++      }
++      if (schema.hasField("payload")
++          && (schema.getField("payload").getType().equals(Schema.FieldType.BYTES)
++              || schema.getField("payload").getType().equals(Schema.FieldType.STRING))) {
++        return schema.indexOf("payload");
++      }
++      if (schema.getFieldCount() == 1
++          && (schema.getField(0).getType().equals(Schema.FieldType.BYTES)
++              || schema.getField(0).getType().equals(Schema.FieldType.STRING))) {
++        return 0;
++      }
++      throw new IllegalArgumentException(
++          "Expected input schema with a 'data' (BYTES) field, a 'payload' "
++              + "(BYTES/STRING) field, or a single bytes/string field, but got: "
++              + schema);
++    }
++
++    private static boolean isStringField(Schema schema, int index) {
++      return schema.getField(index).getType().equals(Schema.FieldType.STRING);
++    }
++  }
++}
+diff --git a/sdks/java/io/amazon-web-services2/src/test/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisSchemaTransformProviderTest.java b/sdks/java/io/amazon-web-services2/src/test/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisSchemaTransformProviderTest.java
+new file mode 100644
+index 000000000000..a5f28c94b51a
+--- /dev/null
++++ b/sdks/java/io/amazon-web-services2/src/test/java/org/apache/beam/sdk/io/aws2/kinesis/KinesisSchemaTransformProviderTest.java
+@@ -0,0 +1,221 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.beam.sdk.io.aws2.kinesis;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertThrows;
++import static org.junit.Assert.assertTrue;
++
++import java.util.List;
++import java.util.ServiceLoader;
++import java.util.stream.Collectors;
++import java.util.stream.StreamSupport;
++import org.apache.beam.sdk.io.aws2.kinesis.KinesisReadSchemaTransformProvider.KinesisReadSchemaTransformConfiguration;
++import org.apache.beam.sdk.io.aws2.kinesis.KinesisWriteSchemaTransformProvider.KinesisWriteSchemaTransformConfiguration;
++import org.apache.beam.sdk.options.PipelineOptionsFactory;
++import org.apache.beam.sdk.schemas.Schema;
++import org.apache.beam.sdk.schemas.transforms.SchemaTransform;
++import org.apache.beam.sdk.schemas.transforms.SchemaTransformProvider;
++import org.apache.beam.sdk.testing.TestPipeline;
++import org.apache.beam.sdk.transforms.Create;
++import org.apache.beam.sdk.values.PCollection;
++import org.apache.beam.sdk.values.PCollectionRowTuple;
++import org.apache.beam.sdk.values.Row;
++import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
++import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Sets;
++import org.junit.Rule;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.junit.runners.JUnit4;
++
++/**
++ * Tests for {@link KinesisReadSchemaTransformProvider} and {@link
++ * KinesisWriteSchemaTransformProvider}.
++ */
++@RunWith(JUnit4.class)
++public class KinesisSchemaTransformProviderTest {
++
++  @Rule
++  public final transient TestPipeline pipeline =
++      TestPipeline.fromOptions(PipelineOptionsFactory.create())
++          .enableAbandonedNodeEnforcement(false);
++
++  @Test
++  public void testReadFindTransform() {
++    ServiceLoader<SchemaTransformProvider> serviceLoader =
++        ServiceLoader.load(SchemaTransformProvider.class);
++    List<SchemaTransformProvider> providers =
++        StreamSupport.stream(serviceLoader.spliterator(), false)
++            .filter(provider -> provider.getClass() == KinesisReadSchemaTransformProvider.class)
++            .collect(Collectors.toList());
++    SchemaTransformProvider provider = providers.get(0);
++
++    assertEquals(Lists.newArrayList("output"), provider.outputCollectionNames());
++    assertEquals(Lists.newArrayList(), provider.inputCollectionNames());
++    assertEquals("beam:schematransform:org.apache.beam:kinesis_read:v1", provider.identifier());
++    assertNotNull(provider.description());
++
++    assertEquals(
++        Sets.newHashSet(
++            "stream_name",
++            "aws_access_key",
++            "aws_secret_key",
++            "region",
++            "service_endpoint",
++            "verify_certificate",
++            "max_num_records",
++            "max_read_time",
++            "initial_position_in_stream",
++            "initial_timestamp_in_stream",
++            "request_records_limit",
++            "up_to_date_threshold",
++            "max_capacity_per_shard",
++            "watermark_policy",
++            "watermark_idle_duration_threshold",
++            "rate_limit"),
++        provider.configurationSchema().getFields().stream()
++            .map(Schema.Field::getName)
++            .collect(Collectors.toSet()));
++  }
++
++  @Test
++  public void testReadBuildTransform() {
++    KinesisReadSchemaTransformConfiguration readConfig =
++        KinesisReadSchemaTransformConfiguration.builder()
++            .setStreamName("test-stream")
++            .setAwsAccessKey("access")
++            .setAwsSecretKey("secret")
++            .setRegion("us-east-1")
++            .setMaxNumRecords(100L)
++            .setMaxReadTime(5000L)
++            .setInitialPositionInStream("LATEST")
++            .build();
++
++    SchemaTransform transform = new KinesisReadSchemaTransformProvider().from(readConfig);
++    PCollectionRowTuple output = transform.expand(PCollectionRowTuple.empty(pipeline));
++
++    assertEquals(1, output.getAll().size());
++    assertTrue(output.has("output"));
++    assertEquals(
++        KinesisReadSchemaTransformProvider.OUTPUT_SCHEMA, output.get("output").getSchema());
++  }
++
++  @Test
++  public void testReadWithNonEmptyInputThrows() {
++    KinesisReadSchemaTransformConfiguration readConfig =
++        KinesisReadSchemaTransformConfiguration.builder()
++            .setStreamName("test-stream")
++            .setAwsAccessKey("access")
++            .setAwsSecretKey("secret")
++            .setRegion("us-east-1")
++            .build();
++    SchemaTransform transform = new KinesisReadSchemaTransformProvider().from(readConfig);
++
++    PCollection<Row> dummyInput =
++        pipeline.apply(
++            "CreateDummy", Create.empty(Schema.builder().addStringField("dummy").build()));
++    assertThrows(
++        IllegalStateException.class,
++        () -> transform.expand(PCollectionRowTuple.of("input", dummyInput)));
++  }
++
++  @Test
++  public void testReadInvalidWatermarkPolicyThrows() {
++    KinesisReadSchemaTransformConfiguration readConfig =
++        KinesisReadSchemaTransformConfiguration.builder()
++            .setStreamName("test-stream")
++            .setAwsAccessKey("access")
++            .setAwsSecretKey("secret")
++            .setRegion("us-east-1")
++            .setWatermarkPolicy("INVALID")
++            .build();
++    SchemaTransform transform = new KinesisReadSchemaTransformProvider().from(readConfig);
++    assertThrows(
++        IllegalArgumentException.class,
++        () -> transform.expand(PCollectionRowTuple.empty(pipeline)));
++  }
++
++  @Test
++  public void testWriteFindTransform() {
++    ServiceLoader<SchemaTransformProvider> serviceLoader =
++        ServiceLoader.load(SchemaTransformProvider.class);
++    List<SchemaTransformProvider> providers =
++        StreamSupport.stream(serviceLoader.spliterator(), false)
++            .filter(provider -> provider.getClass() == KinesisWriteSchemaTransformProvider.class)
++            .collect(Collectors.toList());
++    SchemaTransformProvider provider = providers.get(0);
++
++    assertEquals(Lists.newArrayList(), provider.outputCollectionNames());
++    assertEquals(Lists.newArrayList("input"), provider.inputCollectionNames());
++    assertEquals("beam:schematransform:org.apache.beam:kinesis_write:v1", provider.identifier());
++    assertNotNull(provider.description());
++
++    assertEquals(
++        Sets.newHashSet(
++            "stream_name",
++            "aws_access_key",
++            "aws_secret_key",
++            "region",
++            "partition_key",
++            "service_endpoint",
++            "verify_certificate",
++            "aggregation_enabled",
++            "aggregation_max_bytes",
++            "aggregation_max_buffered_time",
++            "aggregation_shard_refresh_interval"),
++        provider.configurationSchema().getFields().stream()
++            .map(Schema.Field::getName)
++            .collect(Collectors.toSet()));
++  }
++
++  @Test
++  public void testWriteBuildTransform() {
++    KinesisWriteSchemaTransformConfiguration writeConfig =
++        KinesisWriteSchemaTransformConfiguration.builder()
++            .setStreamName("test-stream")
++            .setAwsAccessKey("access")
++            .setAwsSecretKey("secret")
++            .setRegion("us-east-1")
++            .setPartitionKey("pk")
++            .build();
++    SchemaTransform transform = new KinesisWriteSchemaTransformProvider().from(writeConfig);
++    Schema schema = Schema.builder().addByteArrayField("data").build();
++    PCollection<Row> inputRows = pipeline.apply("CreateRows", Create.empty(schema));
++    PCollectionRowTuple output = transform.expand(PCollectionRowTuple.of("input", inputRows));
++    assertTrue(output.getAll().isEmpty());
++  }
++
++  @Test
++  public void testWriteInvalidSchemaThrows() {
++    KinesisWriteSchemaTransformConfiguration writeConfig =
++        KinesisWriteSchemaTransformConfiguration.builder()
++            .setStreamName("test-stream")
++            .setAwsAccessKey("access")
++            .setAwsSecretKey("secret")
++            .setRegion("us-east-1")
++            .setPartitionKey("pk")
++            .build();
++    SchemaTransform transform = new KinesisWriteSchemaTransformProvider().from(writeConfig);
++    Schema schema = Schema.builder().addStringField("foo").addStringField("bar").build();
++    PCollection<Row> inputRows = pipeline.apply("CreateInvalidRows", Create.empty(schema));
++    assertThrows(
++        IllegalArgumentException.class,
++        () -> transform.expand(PCollectionRowTuple.of("input", inputRows)));
++  }
++}
+diff --git a/sdks/python/apache_beam/yaml/extended_tests/messaging/kinesis.yaml b/sdks/python/apache_beam/yaml/extended_tests/messaging/kinesis.yaml
+new file mode 100644
+index 000000000000..2c6ec7c38670
+--- /dev/null
++++ b/sdks/python/apache_beam/yaml/extended_tests/messaging/kinesis.yaml
+@@ -0,0 +1,83 @@
++#
++# Licensed to the Apache Software Foundation (ASF) under one or more
++# contributor license agreements.  See the NOTICE file distributed with
++# this work for additional information regarding copyright ownership.
++# The ASF licenses this file to You under the Apache License, Version 2.0
++# (the "License"); you may not use this file except in compliance with
++# the License.  You may obtain a copy of the License at
++#
++#    http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++fixtures:
++  - name: kinesis_vars
++    type: "apache_beam.yaml.integration_tests.temp_kinesis_localstack"
++
++pipelines:
++  # Kinesis write pipeline
++  - pipeline:
++      type: chain
++      transforms:
++        - type: Create
++          config:
++            elements:
++              - {value: 123}
++              - {value: 456}
++              - {value: 789}
++        - type: MapToFields
++          config:
++            language: python
++            fields:
++              data:
++                callable: |
++                  lambda row: str(row.value).encode('utf-8')
++                output_type: bytes
++        - type: WriteToKinesis
++          config:
++            stream_name: '{kinesis_vars[STREAM_NAME]}'
++            aws_access_key: '{kinesis_vars[AWS_ACCESS_KEY]}'
++            aws_secret_key: '{kinesis_vars[AWS_SECRET_KEY]}'
++            region: '{kinesis_vars[REGION]}'
++            service_endpoint: '{kinesis_vars[SERVICE_ENDPOINT]}'
++            verify_certificate: false
++            partition_key: "1"
++
++  # Kinesis read pipeline. Separate from write so records are flushed first.
++  - pipeline:
++      type: chain
++      transforms:
++        - type: ReadFromKinesis
++          config:
++            stream_name: '{kinesis_vars[STREAM_NAME]}'
++            aws_access_key: '{kinesis_vars[AWS_ACCESS_KEY]}'
++            aws_secret_key: '{kinesis_vars[AWS_SECRET_KEY]}'
++            region: '{kinesis_vars[REGION]}'
++            service_endpoint: '{kinesis_vars[SERVICE_ENDPOINT]}'
++            verify_certificate: false
++            max_num_records: 3
++            max_read_time: 60000
++            initial_position_in_stream: TRIM_HORIZON
++            request_records_limit: 1000
++        - type: MapToFields
++          config:
++            language: python
++            fields:
++              value:
++                callable: |
++                  lambda row: row.data.decode('utf-8')
++                output_type: string
++        - type: AssertEqual
++          config:
++            elements:
++              - {value: "123"}
++              - {value: "456"}
++              - {value: "789"}
++
++    options:
++      streaming: true
+diff --git a/sdks/python/apache_beam/yaml/integration_tests.py b/sdks/python/apache_beam/yaml/integration_tests.py
+index c6d73df76e31..c6e33f8c6de3 100644
+--- a/sdks/python/apache_beam/yaml/integration_tests.py
++++ b/sdks/python/apache_beam/yaml/integration_tests.py
+@@ -697,6 +697,113 @@ def temp_iceberg_table_with_pk(table_data):
+     shutil.rmtree(temp_dir, ignore_errors=True)
+ 
+ 
++_LOCALSTACK_KINESIS_IMAGE = 'localstack/localstack:3.8.1'
++_LOCALSTACK_KINESIS_ACCESS_KEY = 'accesskey'
++_LOCALSTACK_KINESIS_SECRET_KEY = 'secretkey'
++_LOCALSTACK_KINESIS_REGION = 'us-east-1'
++
++
++def _create_kinesis_stream(kinesis_client, stream_name):
++  """Creates a Kinesis stream and waits until it is active."""
++  retries = 10
++  for attempt in range(retries):
++    try:
++      kinesis_client.create_stream(StreamName=stream_name, ShardCount=1)
++      time.sleep(2)
++      break
++    except Exception as exn:
++      if attempt == retries - 1:
++        _LOGGER.error('Could not create kinesis stream')
++        raise exn
++
++  for attempt in range(retries):
++    stream = kinesis_client.describe_stream(StreamName=stream_name)
++    if stream['StreamDescription']['StreamStatus'] == 'ACTIVE':
++      return
++    time.sleep(2)
++    if attempt == retries - 1:
++      raise RuntimeError(
++          'Unable to initialize Kinesis stream %s. Status: %s' % (
++              stream['StreamDescription']['StreamName'],
++              stream['StreamDescription']['StreamStatus']))
++
++
++@contextlib.contextmanager
++def temp_kinesis_localstack():
++  """Context manager to provide a temporary LocalStack Kinesis stream.
++
++  Starts a LocalStack container, creates a unique Kinesis stream, and yields
++  connection details for YAML Kinesis read/write transforms.
++
++  Yields:
++      dict: Keys include STREAM_NAME, AWS_ACCESS_KEY, AWS_SECRET_KEY, REGION,
++          SERVICE_ENDPOINT (https), and VERIFY_CERTIFICATE (False).
++  """
++  try:
++    import boto3
++  except ImportError as exn:
++    raise unittest.SkipTest('boto3 is not installed') from exn
++
++  _LOGGER.info('Setting up LocalStack Kinesis fixture...')
++  localstack = DockerContainer(_LOCALSTACK_KINESIS_IMAGE).with_bind_ports(
++      4566, 4566)
++  for port in range(4510, 4560):
++    localstack = localstack.with_bind_ports(port, port)
++
++  for attempt in range(4):
++    try:
++      localstack.start()
++      break
++    except Exception as exn:
++      if attempt == 3:
++        _LOGGER.error('Could not initialize localstack container')
++        raise exn
++
++  stream_name = f'yaml_kinesis_{uuid.uuid4().hex}'
++  kinesis_client = None
++  try:
++    host = localstack.get_container_host_ip()
++    port = localstack.get_exposed_port('4566')
++    service_endpoint = f'https://{host}:{port}'
++    http_endpoint = f'http://{host}:{port}'
++
++    kinesis_client = boto3.client(
++        service_name='kinesis',
++        region_name=_LOCALSTACK_KINESIS_REGION,
++        endpoint_url=http_endpoint,
++        aws_access_key_id=_LOCALSTACK_KINESIS_ACCESS_KEY,
++        aws_secret_access_key=_LOCALSTACK_KINESIS_SECRET_KEY,
++    )
++    _create_kinesis_stream(kinesis_client, stream_name)
++
++    _LOGGER.info(
++        'LocalStack Kinesis ready. Stream: [%s], endpoint: [%s]',
++        stream_name,
++        service_endpoint)
++
++    yield {
++        'STREAM_NAME': stream_name,
++        'AWS_ACCESS_KEY': _LOCALSTACK_KINESIS_ACCESS_KEY,
++        'AWS_SECRET_KEY': _LOCALSTACK_KINESIS_SECRET_KEY,
++        'REGION': _LOCALSTACK_KINESIS_REGION,
++        'SERVICE_ENDPOINT': service_endpoint,
++        'VERIFY_CERTIFICATE': False,
++    }
++  finally:
++    _LOGGER.info('Tearing down LocalStack Kinesis fixture...')
++    if kinesis_client is not None:
++      try:
++        kinesis_client.delete_stream(
++            StreamName=stream_name, EnforceConsumerDeletion=True)
++      except Exception:
++        _LOGGER.warning('Failed to delete kinesis stream [%s]', stream_name)
++    try:
++      localstack.stop()
++    except Exception:
++      _LOGGER.warning('Failed to stop localstack container')
++    _LOGGER.info('LocalStack Kinesis fixture stopped.')
++
++
+ @contextlib.contextmanager
+ def temp_kafka_server():
+   """Context manager to provide a temporary Kafka server for testing.
+diff --git a/sdks/python/apache_beam/yaml/standard_io.yaml b/sdks/python/apache_beam/yaml/standard_io.yaml
+index 796429b5bdfc..6bee9475df72 100644
+--- a/sdks/python/apache_beam/yaml/standard_io.yaml
++++ b/sdks/python/apache_beam/yaml/standard_io.yaml
+@@ -205,6 +205,50 @@
+       config:
+         gradle_target: 'sdks:java:io:debezium:expansion-service:shadowJar'
+ 
++# Kinesis
++- type: renaming
++  transforms:
++    'ReadFromKinesis': 'ReadFromKinesis'
++    'WriteToKinesis': 'WriteToKinesis'
++  config:
++    mappings:
++      'ReadFromKinesis':
++        stream_name: 'stream_name'
++        aws_access_key: 'aws_access_key'
++        aws_secret_key: 'aws_secret_key'
++        region: 'region'
++        service_endpoint: 'service_endpoint'
++        verify_certificate: 'verify_certificate'
++        max_num_records: 'max_num_records'
++        max_read_time: 'max_read_time'
++        initial_position_in_stream: 'initial_position_in_stream'
++        initial_timestamp_in_stream: 'initial_timestamp_in_stream'
++        request_records_limit: 'request_records_limit'
++        up_to_date_threshold: 'up_to_date_threshold'
++        max_capacity_per_shard: 'max_capacity_per_shard'
++        watermark_policy: 'watermark_policy'
++        watermark_idle_duration_threshold: 'watermark_idle_duration_threshold'
++        rate_limit: 'rate_limit'
++      'WriteToKinesis':
++        stream_name: 'stream_name'
++        aws_access_key: 'aws_access_key'
++        aws_secret_key: 'aws_secret_key'
++        region: 'region'
++        partition_key: 'partition_key'
++        service_endpoint: 'service_endpoint'
++        verify_certificate: 'verify_certificate'
++        aggregation_enabled: 'aggregation_enabled'
++        aggregation_max_bytes: 'aggregation_max_bytes'
++        aggregation_max_buffered_time: 'aggregation_max_buffered_time'
++        aggregation_shard_refresh_interval: 'aggregation_shard_refresh_interval'
++    underlying_provider:
++      type: beamJar
++      transforms:
++        'ReadFromKinesis': 'beam:schematransform:org.apache.beam:kinesis_read:v1'
++        'WriteToKinesis': 'beam:schematransform:org.apache.beam:kinesis_write:v1'
++      config:
++        gradle_target: 'sdks:java:io:amazon-web-services2:expansion-service:shadowJar'
++
+ # Databases
+ - type: renaming
+   transforms:
+diff --git a/sdks/python/build.gradle b/sdks/python/build.gradle
+index b50660978b2a..5e3ba546bc22 100644
+--- a/sdks/python/build.gradle
++++ b/sdks/python/build.gradle
+@@ -172,6 +172,7 @@ tasks.register("postCommitYamlIntegrationTests") {
+   dependsOn ":sdks:java:io:expansion-service:build"
+   dependsOn ":sdks:java:io:google-cloud-platform:expansion-service:build"
+   dependsOn ":sdks:java:io:debezium:expansion-service:shadowJar"
++  dependsOn ":sdks:java:io:amazon-web-services2:expansion-service:shadowJar"
+ 
+   doLast {
+     def testSetInput = project.findProperty('yamlTestSet') ?: 'data,databases,messaging'
+diff --git a/sdks/standard_external_transforms.yaml b/sdks/standard_external_transforms.yaml
+index b589448d64b5..d5401c92ec5e 100644
+--- a/sdks/standard_external_transforms.yaml
++++ b/sdks/standard_external_transforms.yaml
+@@ -19,7 +19,7 @@
+ # configuration in /sdks/standard_expansion_services.yaml.
+ # Refer to gen_xlang_wrappers.py for more info.
+ #
+-# Last updated on: 2026-07-22
++# Last updated on: 2026-08-15
+ 
+ - default_service: sdks:java:io:expansion-service:shadowJar
+   description: ''
+@@ -149,6 +149,138 @@
+     type: str
+   identifier: beam:schematransform:org.apache.beam:mongodb_write:v1
+   name: MongodbWrite
++- default_service: sdks:java:io:expansion-service:shadowJar
++  description: Reads records from an Amazon Kinesis stream and outputs Beam Rows
++    with `data` (bytes) plus stream metadata fields.
++  destinations:
++    python: apache_beam/io
++  fields:
++  - description: AWS access key id.
++    name: aws_access_key
++    nullable: false
++    type: str
++  - description: AWS secret access key.
++    name: aws_secret_key
++    nullable: false
++    type: str
++  - description: 'Where to start reading in the stream: LATEST, TRIM_HORIZON, or AT_TIMESTAMP.'
++    name: initial_position_in_stream
++    nullable: true
++    type: str
++  - description: Epoch millis timestamp used when initial_position_in_stream is AT_TIMESTAMP.
++    name: initial_timestamp_in_stream
++    nullable: true
++    type: int64
++  - description: Maximum number of records to hold in memory per shard.
++    name: max_capacity_per_shard
++    nullable: true
++    type: int64
++  - description: Maximum number of records to read. When set, the resulting PCollection
++      is bounded.
++    name: max_num_records
++    nullable: true
++    type: int64
++  - description: Maximum read time in milliseconds. When set, the resulting PCollection
++      is bounded.
++    name: max_read_time
++    nullable: true
++    type: int64
++  - description: Fixed delay between GetRecords calls in milliseconds.
++    name: rate_limit
++    nullable: true
++    type: int64
++  - description: AWS region, for example us-east-1.
++    name: region
++    nullable: false
++    type: str
++  - description: Max records returned by a single GetRecords call (1-10000).
++    name: request_records_limit
++    nullable: true
++    type: int64
++  - description: Optional custom Kinesis service endpoint URI.
++    name: service_endpoint
++    nullable: true
++    type: str
++  - description: Kinesis stream name to read from.
++    name: stream_name
++    nullable: false
++    type: str
++  - description: Threshold duration in milliseconds after which a shard is considered
++      up to date.
++    name: up_to_date_threshold
++    nullable: true
++    type: int64
++  - description: Whether to verify TLS certificates. Defaults to true. Never disable
++      in production.
++    name: verify_certificate
++    nullable: true
++    type: boolean
++  - description: Idle duration threshold in milliseconds for ARRIVAL_TIME watermark
++      policy.
++    name: watermark_idle_duration_threshold
++    nullable: true
++    type: int64
++  - description: 'Watermark policy: ARRIVAL_TIME or PROCESSING_TIME.'
++    name: watermark_policy
++    nullable: true
++    type: str
++  identifier: beam:schematransform:org.apache.beam:kinesis_read:v1
++  name: KinesisRead
++- default_service: sdks:java:io:expansion-service:shadowJar
++  description: Writes Beam Rows to an Amazon Kinesis stream. Each input row must include
++    a `data` (bytes) field, or a `payload` string/bytes field. Optional per-row `partition_key`
++    overrides the configured default partition key.
++  destinations:
++    python: apache_beam/io
++  fields:
++  - description: Enable KPL-compatible record aggregation.
++    name: aggregation_enabled
++    nullable: true
++    type: boolean
++  - description: Max time in milliseconds to buffer records when aggregation is enabled.
++    name: aggregation_max_buffered_time
++    nullable: true
++    type: int64
++  - description: Max aggregated record size in bytes when aggregation is enabled.
++    name: aggregation_max_bytes
++    nullable: true
++    type: int64
++  - description: Shard map refresh interval in minutes when aggregation is enabled.
++    name: aggregation_shard_refresh_interval
++    nullable: true
++    type: int64
++  - description: AWS access key id.
++    name: aws_access_key
++    nullable: false
++    type: str
++  - description: AWS secret access key.
++    name: aws_secret_key
++    nullable: false
++    type: str
++  - description: Default partition key used when the input row does not contain a
++      partition_key field.
++    name: partition_key
++    nullable: false
++    type: str
++  - description: AWS region, for example us-east-1.
++    name: region
++    nullable: false
++    type: str
++  - description: Optional custom Kinesis service endpoint URI.
++    name: service_endpoint
++    nullable: true
++    type: str
++  - description: Kinesis stream name to write to.
++    name: stream_name
++    nullable: false
++    type: str
++  - description: Whether to verify TLS certificates. Defaults to true. Never disable
++      in production.
++    name: verify_certificate
++    nullable: true
++    type: boolean
++  identifier: beam:schematransform:org.apache.beam:kinesis_write:v1
++  name: KinesisWrite
+ - default_service: sdks:java:io:expansion-service:shadowJar
+   description: ''
+   destinations:

@@ -1,0 +1,671 @@
+diff --git a/RELEASE.md b/RELEASE.md
+index 2ea5a88427..b54337d08c 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -2,6 +2,7 @@
+ ## Major features and improvements
+ * Added `--runner-params` to `kedro run`, allowing runner constructor keyword arguments such as `max_workers` to be passed from the CLI.
+ * Added the node function name to project inspection snapshots as `NodeSnapshot.func_name`.
++* Added node source location metadata (`NodeSnapshot.source`) to inspection snapshots for displaying node code.
+ 
+ ## Bug fixes and other changes
+ * Fixed a `RecursionError` when initialising a session with dynaconf-backed settings by converting `settings.SESSION_STORE_ARGS` to a plain `dict` before deepcopying it.
+diff --git a/docs/api/inspection/kedro.inspection.models.md b/docs/api/inspection/kedro.inspection.models.md
+index e744302a59..e81a73d455 100644
+--- a/docs/api/inspection/kedro.inspection.models.md
++++ b/docs/api/inspection/kedro.inspection.models.md
+@@ -12,6 +12,7 @@
+ | [`ProjectMetadataSnapshot`](#kedro.inspection.models.ProjectMetadataSnapshot) | Dataclass | Read-only snapshot of project metadata from `pyproject.toml`. |
+ | [`PipelineSnapshot`](#kedro.inspection.models.PipelineSnapshot) | Dataclass | Read-only snapshot of a registered pipeline. |
+ | [`NodeSnapshot`](#kedro.inspection.models.NodeSnapshot) | Dataclass | Read-only snapshot of a single pipeline node. |
++| [`NodeSourceSnapshot`](#kedro.inspection.models.NodeSourceSnapshot) | Dataclass | Source location metadata for a pipeline node's function. |
+ | [`DatasetSnapshot`](#kedro.inspection.models.DatasetSnapshot) | Dataclass | Read-only snapshot of a catalog dataset entry. |
+ 
+ ::: kedro.inspection.models.ProjectSnapshot
+@@ -30,6 +31,10 @@
+     options:
+       show_source: true
+ 
++::: kedro.inspection.models.NodeSourceSnapshot
++    options:
++      show_source: true
++
+ ::: kedro.inspection.models.DatasetSnapshot
+     options:
+       show_source: true
+diff --git a/docs/extend/serving.md b/docs/extend/serving.md
+index 5fa0f2ef31..d015eb4a34 100644
+--- a/docs/extend/serving.md
++++ b/docs/extend/serving.md
+@@ -85,7 +85,12 @@ curl http://127.0.0.1:8000/snapshot
+           "inputs": ["example_iris_data"],
+           "outputs": ["X_train", "X_test"],
+           "tags": [],
+-          "namespace": null
++          "namespace": null,
++          "source": {
++            "filepath": "src/my_project/pipelines/data_science/nodes.py",
++            "line_start": 12,
++            "line_end": 25
++          }
+         }
+       ],
+       "inputs": ["example_iris_data"],
+diff --git a/docs/inspect/inspect-project.md b/docs/inspect/inspect-project.md
+index c055ef6ccd..e317c6c086 100644
+--- a/docs/inspect/inspect-project.md
++++ b/docs/inspect/inspect-project.md
+@@ -95,9 +95,29 @@ for node in default_pipeline.nodes:
+     print("  inputs:   ", node.inputs)
+     print("  outputs:  ", node.outputs)
+     print("  tags:     ", node.tags)
++    if node.source:
++        print("  source:   ", node.source.filepath)
++        print("  lines:    ", node.source.line_start, "-", node.source.line_end)
+ ```
+ 
+-Each node is represented as a [`NodeSnapshot`][kedro.inspection.models.NodeSnapshot] with `name`, `func_name`, `namespace`, `inputs`, `outputs`, and `tags` fields.
++Each node is represented as a [`NodeSnapshot`][kedro.inspection.models.NodeSnapshot] with `name`, `func_name`, `namespace`, `inputs`, `outputs`, `tags`, and `source` fields.
++
++When present, `source` is a [`NodeSourceSnapshot`][kedro.inspection.models.NodeSourceSnapshot] with the project-relative path to the node's function and a 1-based inclusive line range. Use it to read the function definition from disk without importing the project package:
++
++```python
++from pathlib import Path
++
++project_path = Path("/path/to/my_project")
++
++if node.source:
++    source_file = project_path / node.source.filepath
++    lines = source_file.read_text().splitlines()
++    function_source = "\n".join(
++        lines[node.source.line_start - 1 : node.source.line_end]
++    )
++```
++
++`source` is `None` when the location cannot be resolved. For example, `functools.partial`, lambdas, built-ins, or functions defined outside the project root.
+ 
+ ## How to inspect catalog datasets
+ 
+diff --git a/kedro/inspection/models.py b/kedro/inspection/models.py
+index adbe45c243..855d1e5036 100644
+--- a/kedro/inspection/models.py
++++ b/kedro/inspection/models.py
+@@ -51,6 +51,21 @@ def from_config(cls, name: str, config: dict) -> DatasetSnapshot:
+         )
+ 
+ 
++@dataclass
++class NodeSourceSnapshot:
++    """Source location metadata for a pipeline node's underlying function.
++
++    Attributes:
++        filepath: Project-relative path to the source file.
++        line_start: 1-based line number of the first line of the definition.
++        line_end: 1-based line number of the last line of the definition.
++    """
++
++    filepath: str
++    line_start: int
++    line_end: int
++
++
+ @dataclass
+ class NodeSnapshot:
+     """Read-only snapshot of a single pipeline node.
+@@ -62,6 +77,8 @@ class NodeSnapshot:
+         tags: Sorted list of tags assigned to the node.
+         inputs: Ordered list of input dataset names.
+         outputs: Ordered list of output dataset names.
++        source: Source location of the node's underlying function, or ``None``
++            when the location cannot be resolved or lies outside the project.
+     """
+ 
+     name: str
+@@ -70,6 +87,7 @@ class NodeSnapshot:
+     tags: list[str] = field(default_factory=list)
+     inputs: list[str] = field(default_factory=list)
+     outputs: list[str] = field(default_factory=list)
++    source: NodeSourceSnapshot | None = None
+ 
+ 
+ @dataclass
+diff --git a/kedro/inspection/snapshot.py b/kedro/inspection/snapshot.py
+index 1e1a144198..aa4eb64743 100644
+--- a/kedro/inspection/snapshot.py
++++ b/kedro/inspection/snapshot.py
+@@ -2,8 +2,10 @@
+ 
+ from __future__ import annotations
+ 
++import inspect
+ import re
+ import warnings
++from functools import partial
+ from pathlib import Path
+ from typing import TYPE_CHECKING, Any
+ 
+@@ -18,6 +20,7 @@
+ from kedro.inspection.models import (
+     DatasetSnapshot,
+     NodeSnapshot,
++    NodeSourceSnapshot,
+     PipelineSnapshot,
+     ProjectMetadataSnapshot,
+     ProjectSnapshot,
+@@ -68,11 +71,64 @@ def _build_dataset_snapshots(
+     }
+ 
+ 
+-def _node_to_snapshot(node: Node) -> NodeSnapshot:
++def _resolve_node_source(
++    func: Any,
++    resolved_project_path: Path,
++) -> NodeSourceSnapshot | None:
++    """Resolve source location metadata for a node's underlying function.
++
++    Args:
++        func: The node's underlying callable.
++        resolved_project_path: Absolute, resolved path to the project root.
++
++    Returns:
++        Source location metadata, or ``None`` when the location cannot be
++        determined (for example, lambdas, ``functools.partial``, built-ins,
++        unreadable source files, or files outside the project root).
++    """
++    if (
++        isinstance(func, partial)
++        or inspect.isbuiltin(func)
++        or getattr(func, "__name__", None) == "<lambda>"
++    ):
++        return None
++
++    func = inspect.unwrap(func)
++
++    try:
++        source_file = inspect.getsourcefile(func)
++    except (OSError, TypeError):
++        return None
++
++    if source_file is None:
++        return None
++
++    resolved_path = Path(source_file).resolve()
++    if not resolved_path.is_relative_to(resolved_project_path):
++        return None
++
++    filepath = resolved_path.relative_to(resolved_project_path).as_posix()
++
++    try:
++        source_lines, line_start = inspect.getsourcelines(func)
++    except (OSError, TypeError):
++        return None
++
++    line_end = line_start + len(source_lines) - 1
++
++    return NodeSourceSnapshot(
++        filepath=filepath,
++        line_start=line_start,
++        line_end=line_end,
++    )
++
++
++def _node_to_snapshot(node: Node, resolved_project_path: Path) -> NodeSnapshot:
+     """Convert a live ``Node`` object to a ``NodeSnapshot``.
+ 
+     Args:
+         node: A Kedro pipeline node.
++        resolved_project_path: Absolute, resolved path to the project root.
+ 
+     Returns:
+         Read-only snapshot of the node's structural metadata.
+@@ -84,21 +140,25 @@ def _node_to_snapshot(node: Node) -> NodeSnapshot:
+         tags=sorted(node.tags),
+         inputs=node.inputs,
+         outputs=node.outputs,
++        source=_resolve_node_source(node.func, resolved_project_path),
+     )
+ 
+ 
+ def _build_pipeline_snapshots(
+     pipeline_dict: dict[str, Any],
++    project_path: Path,
+ ) -> list[PipelineSnapshot]:
+     """Build a ``PipelineSnapshot`` for every registered pipeline.
+ 
+     Args:
+         pipeline_dict: Dictionary of pipeline name to ``Pipeline`` object,
+             as returned by ``dict(kedro.framework.project.pipelines)``.
++        project_path: Absolute path to the project root directory.
+ 
+     Returns:
+         List of pipeline snapshots in registry iteration order.
+     """
++    resolved_project_path = project_path.resolve()
+     snapshots = []
+     for pipeline_id, pipeline in pipeline_dict.items():
+         if pipeline is None:
+@@ -106,7 +166,10 @@ def _build_pipeline_snapshots(
+         snapshots.append(
+             PipelineSnapshot(
+                 name=pipeline_id,
+-                nodes=[_node_to_snapshot(_node) for _node in pipeline.nodes],
++                nodes=[
++                    _node_to_snapshot(_node, resolved_project_path)
++                    for _node in pipeline.nodes
++                ],
+                 inputs=sorted(pipeline.inputs()),
+                 outputs=sorted(pipeline.outputs()),
+             )
+@@ -177,7 +240,9 @@ def _build_project_snapshot(
+         conf_catalog = {}
+ 
+     metadata_snapshot = _build_project_metadata_snapshot(metadata)
+-    pipeline_snapshots = _build_pipeline_snapshots(dict(pipelines))
++    pipeline_snapshots = _build_pipeline_snapshots(
++        dict(pipelines), effective_project_path
++    )
+     dataset_snapshots = _build_dataset_snapshots(conf_catalog)
+ 
+     # resolve factory patterns
+diff --git a/tests/inspection/test_node_pipeline_snapshot.py b/tests/inspection/test_node_pipeline_snapshot.py
+index b03ee4e324..b9b8054a62 100644
+--- a/tests/inspection/test_node_pipeline_snapshot.py
++++ b/tests/inspection/test_node_pipeline_snapshot.py
+@@ -2,17 +2,25 @@
+ 
+ from __future__ import annotations
+ 
++import importlib.util
++import inspect
+ from functools import partial
++from pathlib import Path
+ 
+ import pytest
+ 
+-from kedro.inspection.models import NodeSnapshot, PipelineSnapshot
+-from kedro.inspection.snapshot import _build_pipeline_snapshots, _node_to_snapshot
++from kedro.inspection.models import NodeSnapshot, NodeSourceSnapshot, PipelineSnapshot
++from kedro.inspection.snapshot import (
++    _build_pipeline_snapshots,
++    _node_to_snapshot,
++    _resolve_node_source,
++)
+ from kedro.pipeline import Pipeline, node
+ 
+ 
+-def _identity(x):
+-    return x
++@pytest.fixture
++def project_path(tmp_path):
++    return tmp_path.resolve()
+ 
+ 
+ @pytest.fixture
+@@ -37,11 +45,42 @@ def namespaced_node():
+     )
+ 
+ 
++@pytest.fixture
++def node_with_project_source(project_path):
++    func = _load_func_from_project(
++        project_path,
++        "def process(x):\n    return x\n",
++        "process",
++    )
++    return node(func, inputs="raw", outputs="processed", name="process_node")
++
++
+ @pytest.fixture
+ def simple_pipeline(simple_node):
+     return Pipeline([simple_node])
+ 
+ 
++@pytest.fixture
++def pipeline_with_project_source(node_with_project_source):
++    return Pipeline([node_with_project_source])
++
++
++def _identity(x):
++    return x
++
++
++def _load_func_from_project(project_path: Path, source: str, func_name: str):
++    """Load a function defined in a module file under ``project_path``."""
++    nodes_file = project_path / "src" / "pkg" / "nodes.py"
++    nodes_file.parent.mkdir(parents=True)
++    nodes_file.write_text(source)
++
++    spec = importlib.util.spec_from_file_location("nodes", nodes_file)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return getattr(module, func_name)
++
++
+ class TestNodeSnapshot:
+     def test_instantiation_defaults(self):
+         snapshot = NodeSnapshot(name="my_node", func_name="my_func")
+@@ -51,6 +90,7 @@ def test_instantiation_defaults(self):
+         assert snapshot.tags == []
+         assert snapshot.inputs == []
+         assert snapshot.outputs == []
++        assert snapshot.source is None
+ 
+     def test_func_name_is_keyword_only(self):
+         snapshot = NodeSnapshot("my_node", "my_namespace", func_name="my_func")
+@@ -61,27 +101,161 @@ def test_func_name_is_keyword_only(self):
+             NodeSnapshot("my_node", "my_namespace")
+ 
+ 
++class TestResolveNodeSource:
++    def test_returns_none_for_partial(self):
++        assert _resolve_node_source(partial(_identity), Path("/project")) is None
++
++    def test_returns_none_for_lambda(self):
++        assert _resolve_node_source(lambda x: x, Path("/project")) is None
++
++    def test_returns_none_for_builtin(self):
++        assert _resolve_node_source(len, Path("/project")) is None
++
++    def test_returns_none_when_getsourcelines_fails(self, mocker, project_path):
++        func = _load_func_from_project(
++            project_path,
++            "def my_func(x):\n    return x\n",
++            "my_func",
++        )
++        mocker.patch(
++            "kedro.inspection.snapshot.inspect.getsourcelines",
++            side_effect=OSError("no source"),
++        )
++        assert _resolve_node_source(func, project_path) is None
++
++    def test_returns_none_when_getsourcelines_raises_type_error(
++        self, mocker, project_path
++    ):
++        func = _load_func_from_project(
++            project_path,
++            "def my_func(x):\n    return x\n",
++            "my_func",
++        )
++        mocker.patch(
++            "kedro.inspection.snapshot.inspect.getsourcelines",
++            side_effect=TypeError("source code not available"),
++        )
++        assert _resolve_node_source(func, project_path) is None
++
++    def test_returns_none_when_source_file_cannot_be_resolved(
++        self, mocker, project_path
++    ):
++        mocker.patch(
++            "kedro.inspection.snapshot.inspect.getsourcefile", return_value=None
++        )
++        assert _resolve_node_source(_identity, project_path) is None
++
++    def test_returns_none_when_getsourcefile_raises(self, mocker, project_path):
++        mocker.patch(
++            "kedro.inspection.snapshot.inspect.getsourcefile",
++            side_effect=OSError("no file"),
++        )
++        assert _resolve_node_source(_identity, project_path) is None
++
++    def test_returns_none_for_callable_class_instance(self, project_path):
++        """Callable class instances are valid Node funcs but have no resolvable source."""
++        source = (
++            "class Processor:\n" "    def __call__(self, x):\n" "        return x\n"
++        )
++        nodes_file = project_path / "src" / "pkg" / "nodes.py"
++        nodes_file.parent.mkdir(parents=True)
++        nodes_file.write_text(source)
++
++        spec = importlib.util.spec_from_file_location("nodes", nodes_file)
++        module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(module)
++        processor = module.Processor()
++
++        assert _resolve_node_source(processor, project_path) is None
++
++    def test_filepath_is_project_relative_when_inside_project(self, project_path):
++        expected_source = "def my_func(x):\n    return x\n"
++        func = _load_func_from_project(project_path, expected_source, "my_func")
++
++        source = _resolve_node_source(func, project_path)
++        source_lines, line_start = inspect.getsourcelines(func)
++
++        assert source == NodeSourceSnapshot(
++            filepath="src/pkg/nodes.py",
++            line_start=line_start,
++            line_end=line_start + len(source_lines) - 1,
++        )
++        assert "".join(source_lines) == expected_source
++
++    def test_source_location_uses_unwrapped_function(self, project_path):
++        module_source = (
++            "import functools\n\n"
++            "def my_func(x):\n"
++            "    return x\n\n"
++            "def decorator(fn):\n"
++            "    @functools.wraps(fn)\n"
++            "    def wrapper(*args, **kwargs):\n"
++            "        return fn(*args, **kwargs)\n"
++            "    return wrapper\n\n"
++            "wrapped_my_func = decorator(my_func)\n"
++        )
++        nodes_file = project_path / "src" / "pkg" / "nodes.py"
++        nodes_file.parent.mkdir(parents=True)
++        nodes_file.write_text(module_source)
++
++        spec = importlib.util.spec_from_file_location("nodes", nodes_file)
++        module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(module)
++        wrapped_func = module.wrapped_my_func
++
++        source = _resolve_node_source(wrapped_func, project_path)
++        unwrapped_func = inspect.unwrap(wrapped_func)
++        source_lines, line_start = inspect.getsourcelines(unwrapped_func)
++
++        assert source == NodeSourceSnapshot(
++            filepath="src/pkg/nodes.py",
++            line_start=line_start,
++            line_end=line_start + len(source_lines) - 1,
++        )
++        assert "def my_func" in "".join(source_lines)
++
++    def test_returns_none_when_outside_project(self, project_path):
++        """Out-of-project functions return None rather than an absolute filepath."""
++        assert _resolve_node_source(_identity, project_path) is None
++
++
+ class TestNodeToSnapshot:
+-    def test_populates_all_fields(self, simple_node):
+-        snapshot = _node_to_snapshot(simple_node)
++    def test_populates_all_fields(self, simple_node, project_path):
++        snapshot = _node_to_snapshot(simple_node, project_path)
+         assert snapshot.name == simple_node.name
+         assert snapshot.func_name == "_identity"
+         assert snapshot.namespace == simple_node.namespace
+         assert snapshot.inputs == simple_node.inputs
+         assert snapshot.outputs == simple_node.outputs
+ 
+-    def test_tags_are_sorted(self, simple_node):
+-        snapshot = _node_to_snapshot(simple_node)
++    def test_tags_are_sorted(self, simple_node, project_path):
++        snapshot = _node_to_snapshot(simple_node, project_path)
+         assert snapshot.tags == sorted(simple_node.tags)
+ 
+-    def test_namespace_populated(self, namespaced_node):
+-        snapshot = _node_to_snapshot(namespaced_node)
++    def test_namespace_populated(self, namespaced_node, project_path):
++        snapshot = _node_to_snapshot(namespaced_node, project_path)
+         assert snapshot.namespace == "data_science"
+ 
+-    def test_returns_node_snapshot_instance(self, simple_node):
+-        assert isinstance(_node_to_snapshot(simple_node), NodeSnapshot)
++    def test_returns_node_snapshot_instance(self, simple_node, project_path):
++        assert isinstance(_node_to_snapshot(simple_node, project_path), NodeSnapshot)
++
++    def test_populates_source_when_function_is_in_project(
++        self, node_with_project_source, project_path
++    ):
++        snapshot = _node_to_snapshot(node_with_project_source, project_path)
++        assert snapshot.source == NodeSourceSnapshot(
++            filepath="src/pkg/nodes.py",
++            line_start=1,
++            line_end=2,
++        )
++
++    def test_source_is_none_for_out_of_project_function(
++        self, simple_node, project_path
++    ):
++        snapshot = _node_to_snapshot(simple_node, project_path)
++        assert snapshot.source is None
+ 
+-    def test_named_partial_func_name_warns(self):
++    def test_source_is_none_for_partial(self, project_path):
+         partial_node = node(
+             partial(_identity),
+             inputs="raw",
+@@ -90,10 +264,11 @@ def test_named_partial_func_name_warns(self):
+         )
+ 
+         with pytest.warns(UserWarning, match="made from a 'partial' function"):
+-            snapshot = _node_to_snapshot(partial_node)
++            snapshot = _node_to_snapshot(partial_node, project_path)
+ 
+         assert snapshot.name == "partial_node"
+         assert snapshot.func_name == "<partial>"
++        assert snapshot.source is None
+ 
+ 
+ class TestPipelineSnapshot:
+@@ -109,31 +284,48 @@ def test_instantiation(self):
+ 
+ 
+ class TestBuildPipelineSnapshots:
+-    def test_returns_correct_name(self, simple_pipeline):
+-        snapshots = _build_pipeline_snapshots({"data_processing": simple_pipeline})
++    def test_returns_correct_name(self, simple_pipeline, project_path):
++        snapshots = _build_pipeline_snapshots(
++            {"data_processing": simple_pipeline}, project_path
++        )
+         assert len(snapshots) == 1
+         assert snapshots[0].name == "data_processing"
+ 
+-    def test_nodes_in_execution_order(self):
++    def test_nodes_in_execution_order(self, project_path):
+         n1 = node(_identity, inputs="raw", outputs="intermediate", name="n1")
+         n2 = node(_identity, inputs="intermediate", outputs="final", name="n2")
+         pipeline = Pipeline([n2, n1])  # intentionally reversed
+ 
+-        snapshots = _build_pipeline_snapshots({"__default__": pipeline})
++        snapshots = _build_pipeline_snapshots({"__default__": pipeline}, project_path)
+         node_names = [n.name for n in snapshots[0].nodes]
+         assert node_names == [n.name for n in pipeline.nodes]
+ 
+-    def test_pipeline_inputs_and_outputs(self, simple_pipeline):
+-        snapshots = _build_pipeline_snapshots({"__default__": simple_pipeline})
++    def test_pipeline_inputs_and_outputs(self, simple_pipeline, project_path):
++        snapshots = _build_pipeline_snapshots(
++            {"__default__": simple_pipeline}, project_path
++        )
+         assert snapshots[0].inputs == sorted(simple_pipeline.inputs())
+         assert snapshots[0].outputs == sorted(simple_pipeline.outputs())
+ 
+-    def test_empty_registry_returns_empty_list(self):
+-        assert _build_pipeline_snapshots({}) == []
++    def test_empty_registry_returns_empty_list(self, project_path):
++        assert _build_pipeline_snapshots({}, project_path) == []
+ 
+-    def test_none_pipelines_are_skipped(self, simple_pipeline):
++    def test_none_pipelines_are_skipped(self, simple_pipeline, project_path):
+         snapshots = _build_pipeline_snapshots(
+-            {"__default__": simple_pipeline, "broken": None}
++            {"__default__": simple_pipeline, "broken": None},
++            project_path,
+         )
+         assert len(snapshots) == 1
+         assert snapshots[0].name == "__default__"
++
++    def test_nodes_include_source_metadata(
++        self, pipeline_with_project_source, project_path
++    ):
++        snapshots = _build_pipeline_snapshots(
++            {"__default__": pipeline_with_project_source}, project_path
++        )
++        assert snapshots[0].nodes[0].source == NodeSourceSnapshot(
++            filepath="src/pkg/nodes.py",
++            line_start=1,
++            line_end=2,
++        )
+diff --git a/tests/server/test_snapshot_endpoint.py b/tests/server/test_snapshot_endpoint.py
+index 8d41427a9d..e476a92f89 100644
+--- a/tests/server/test_snapshot_endpoint.py
++++ b/tests/server/test_snapshot_endpoint.py
+@@ -3,6 +3,7 @@
+ from kedro.inspection.models import (
+     DatasetSnapshot,
+     NodeSnapshot,
++    NodeSourceSnapshot,
+     PipelineSnapshot,
+     ProjectMetadataSnapshot,
+     ProjectSnapshot,
+@@ -45,6 +46,39 @@ def _make_snapshot() -> ProjectSnapshot:
+     )
+ 
+ 
++def _make_snapshot_with_node_source() -> ProjectSnapshot:
++    """Return a project snapshot whose node includes source location metadata."""
++    return ProjectSnapshot(
++        metadata=ProjectMetadataSnapshot(
++            project_name="test_project",
++            package_name="test_pkg",
++            kedro_version="1.0.0",
++        ),
++        pipelines=[
++            PipelineSnapshot(
++                name="__default__",
++                nodes=[
++                    NodeSnapshot(
++                        name="my_node",
++                        func_name="process_data",
++                        inputs=["raw_data"],
++                        outputs=["processed"],
++                        source=NodeSourceSnapshot(
++                            filepath="src/pkg/pipelines/nodes.py",
++                            line_start=10,
++                            line_end=25,
++                        ),
++                    )
++                ],
++                inputs=["raw_data"],
++                outputs=["processed"],
++            )
++        ],
++        datasets={},
++        parameters=[],
++    )
++
++
+ class TestSnapshotEndpoint:
+     """Test GET /snapshot via TestClient."""
+ 
+@@ -84,6 +118,21 @@ def test_snapshot_response_contains_all_fields(self, mocker, make_http_server):
+ 
+         assert payload["parameters"] == ["learning_rate", "epochs"]
+ 
++    def test_snapshot_serializes_node_source_metadata(self, mocker, make_http_server):
++        app = make_http_server()
++        mocker.patch(
++            "kedro.server.http_server.get_project_snapshot",
++            return_value=_make_snapshot_with_node_source(),
++        )
++        with TestClient(app) as client:
++            node = client.get("/snapshot").json()["pipelines"][0]["nodes"][0]
++
++        assert node["source"] == {
++            "filepath": "src/pkg/pipelines/nodes.py",
++            "line_start": 10,
++            "line_end": 25,
++        }
++
+     def test_snapshot_uses_server_env(self, mocker, make_http_server):
+         app = make_http_server(env="staging")
+         mock_get = mocker.patch(

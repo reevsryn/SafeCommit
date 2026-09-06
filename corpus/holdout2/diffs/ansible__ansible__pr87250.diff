@@ -1,0 +1,336 @@
+diff --git a/lib/ansible/module_utils/_internal/_logging.py b/lib/ansible/module_utils/_internal/_logging.py
+new file mode 100644
+index 00000000000000..a425cf62598a72
+--- /dev/null
++++ b/lib/ansible/module_utils/_internal/_logging.py
+@@ -0,0 +1,87 @@
++from __future__ import annotations
++
++import typing as t
++
++try:
++    import syslog
++
++    HAS_SYSLOG = True
++except ImportError:
++    HAS_SYSLOG = False
++
++try:
++    from systemd import journal, daemon as systemd_daemon
++
++    has_journal = hasattr(journal, "sendv") and systemd_daemon.booted()
++except (ImportError, AttributeError):
++    has_journal = False
++
++
++def _log_to_syslog(msg: str, module_name: str, syslog_facility: str) -> None:
++    if HAS_SYSLOG:
++        module = "ansible-%s" % module_name
++        facility = getattr(syslog, syslog_facility, syslog.LOG_USER)
++        syslog.openlog(str(module), 0, facility)
++        syslog.syslog(syslog.LOG_INFO, msg)
++
++
++def log_to_system(
++    msg: str,
++    *,
++    module_name: str,
++    log_args: dict[str, t.Any] | None = None,
++    syslog_facility: str = "LOG_USER",
++    target_log_info: str | None = None,
++) -> None:
++    """Log a message to the system logging service (systemd journal or syslog).
++
++    Dispatches to systemd journal when available, falling back to syslog.
++    The caller is responsible for sanitizing secrets from *msg* before calling.
++
++    The syslog identifier is built as ``ansible-<module_name>``.
++    When *target_log_info* is provided (typically remote host information), it is prepended to the message.
++    Extra key/value pairs in *log_args* are included as structured journal fields.
++    The *syslog_facility* should be a syslog facility name such as ``LOG_USER``.
++
++    Raises TypeError or ValueError if the underlying syslog call fails due to invalid input.
++    """
++    if log_args is None:
++        log_args = {}
++
++    module = "ansible-%s" % module_name
++
++    if target_log_info:
++        msg = " ".join([target_log_info, msg])
++
++    if has_journal:
++        journal_args = [("MODULE", module_name)]
++        for arg in log_args:
++            name, value = (arg.upper(), str(log_args[arg]))
++            if name in (
++                "PRIORITY",
++                "MESSAGE",
++                "MESSAGE_ID",
++                "CODE_FILE",
++                "CODE_LINE",
++                "CODE_FUNC",
++                "SYSLOG_FACILITY",
++                "SYSLOG_IDENTIFIER",
++                "SYSLOG_PID",
++            ):
++                name = "_%s" % name
++            journal_args.append((name, value))
++
++        try:
++            if HAS_SYSLOG:
++                facility = getattr(syslog, syslog_facility, syslog.LOG_USER) >> 3
++                journal.send(
++                    MESSAGE="%s %s" % (module, msg),
++                    SYSLOG_FACILITY=facility,
++                    **dict(journal_args),
++                )
++            else:
++                journal.send(MESSAGE="%s %s" % (module, msg), **dict(journal_args))
++        except OSError:
++            _log_to_syslog(msg, module_name, syslog_facility)
++    else:
++        _log_to_syslog(msg, module_name, syslog_facility)
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 3598c70f5d13d0..04420f21b1804e 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -57,24 +57,8 @@
+ )
+ from functools import reduce
+ 
+-try:
+-    import syslog
+-    HAS_SYSLOG = True
+-except ImportError:
+-    HAS_SYSLOG = False
+-
+ _UNSET = t.cast(t.Any, object())
+ 
+-try:
+-    from systemd import journal, daemon as systemd_daemon
+-    # Makes sure that systemd.journal has method sendv()
+-    # Double check that journal has method sendv (some packages don't)
+-    # check if the system is running under systemd
+-    has_journal = hasattr(journal, 'sendv') and systemd_daemon.booted()
+-except (ImportError, AttributeError):
+-    # AttributeError would be caused from use of .booted() if wrong systemd
+-    has_journal = False
+-
+ HAVE_SELINUX = False
+ try:
+     from ansible.module_utils.compat import selinux
+@@ -85,7 +69,9 @@
+ # Python2 & 3 way to get NoneType
+ NoneType = type(None)
+ 
+-from ._internal import _traceback, _errors, _debugging, _deprecator, _messages
++from ._internal import _traceback, _errors, _debugging, _deprecator, _messages, _logging
++# Re-export logging capability flags as public API for backward compatibility
++from ._internal._logging import HAS_SYSLOG, has_journal
+ 
+ from .common.text.converters import (
+     to_native,
+@@ -1250,86 +1236,38 @@ def _load_params(self):
+         # debug overrides to read args from file or cmdline
+         self.params = _load_params()
+ 
+-    def _log_to_syslog(self, msg):
+-        if HAS_SYSLOG:
+-            try:
+-                module = 'ansible-%s' % self._name
+-                facility = getattr(syslog, self._syslog_facility, syslog.LOG_USER)
+-                syslog.openlog(str(module), 0, facility)
+-                syslog.syslog(syslog.LOG_INFO, msg)
+-            except (TypeError, ValueError) as e:
+-                self.fail_json(
+-                    msg='Failed to log to syslog (%s). To proceed anyway, '
+-                        'disable syslog logging by setting no_target_syslog '
+-                        'to True in your Ansible config.' % to_native(e),
+-                    msg_to_log=msg,
+-                )
+-
+     def debug(self, msg):
+         if self._debug:
+             self.log('[debug] %s' % msg)
+ 
+     def log(self, msg, log_args=None):
+ 
+-        if not self.no_log:
+-
+-            if log_args is None:
+-                log_args = dict()
++        if self.no_log:
++            return
+ 
+-            module = 'ansible-%s' % self._name
+-            if isinstance(module, bytes):
+-                module = module.decode('utf-8', 'replace')
++        if not isinstance(msg, (bytes, str)):
++            raise TypeError("msg should be a string (got %s)" % type(msg))
+ 
+-            # 6655 - allow for accented characters
+-            if not isinstance(msg, (bytes, str)):
+-                raise TypeError("msg should be a string (got %s)" % type(msg))
++        if isinstance(msg, bytes):
++            msg = msg.decode('utf-8', 'replace')
+ 
+-            # We want journal to always take text type
+-            # syslog takes bytes on py2, text type on py3
+-            if isinstance(msg, bytes):
+-                journal_msg = msg.decode('utf-8', 'replace')
+-            else:
+-                # TODO: surrogateescape is a danger here on Py3
+-                journal_msg = msg
+-
+-            if self._target_log_info:
+-                journal_msg = ' '.join([self._target_log_info, journal_msg])
+-
+-            # ensure we clean up secrets!
+-            journal_msg = remove_values(journal_msg, self.no_log_values)
+-
+-            if has_journal:
+-                journal_args = [("MODULE", os.path.basename(__file__))]
+-                for arg in log_args:
+-                    name, value = (arg.upper(), str(log_args[arg]))
+-                    if name in (
+-                        'PRIORITY', 'MESSAGE', 'MESSAGE_ID',
+-                        'CODE_FILE', 'CODE_LINE', 'CODE_FUNC',
+-                        'SYSLOG_FACILITY', 'SYSLOG_IDENTIFIER',
+-                        'SYSLOG_PID',
+-                    ):
+-                        name = "_%s" % name
+-                    journal_args.append((name, value))
++        msg = remove_values(msg, self.no_log_values)
+ 
+-                try:
+-                    if HAS_SYSLOG:
+-                        # If syslog_facility specified, it needs to convert
+-                        #  from the facility name to the facility code, and
+-                        #  set it as SYSLOG_FACILITY argument of journal.send()
+-                        facility = getattr(syslog,
+-                                           self._syslog_facility,
+-                                           syslog.LOG_USER) >> 3
+-                        journal.send(MESSAGE=u"%s %s" % (module, journal_msg),
+-                                     SYSLOG_FACILITY=facility,
+-                                     **dict(journal_args))
+-                    else:
+-                        journal.send(MESSAGE=u"%s %s" % (module, journal_msg),
+-                                     **dict(journal_args))
+-                except OSError:
+-                    # fall back to syslog since logging to journal failed
+-                    self._log_to_syslog(journal_msg)
+-            else:
+-                self._log_to_syslog(journal_msg)
++        try:
++            _logging.log_to_system(
++                msg,
++                module_name=self._name,
++                log_args=log_args,
++                syslog_facility=self._syslog_facility,
++                target_log_info=self._target_log_info,
++            )
++        except (TypeError, ValueError) as e:
++            self.fail_json(
++                msg='Failed to log to syslog (%s). To proceed anyway, '
++                    'disable syslog logging by setting no_target_syslog '
++                    'to True in your Ansible config.' % to_native(e),
++                msg_to_log=msg,
++            )
+ 
+     def _log_invocation(self):
+         """ log that ansible ran the module """
+diff --git a/test/units/executor/module_common/test_recursive_finder.py b/test/units/executor/module_common/test_recursive_finder.py
+index 84ef6863d0ce59..308a04f00dd182 100644
+--- a/test/units/executor/module_common/test_recursive_finder.py
++++ b/test/units/executor/module_common/test_recursive_finder.py
+@@ -38,6 +38,7 @@
+                                       'ansible/module_utils/_internal/_deprecator.py',
+                                       'ansible/module_utils/_internal/_errors.py',
+                                       'ansible/module_utils/_internal/_event_utils.py',
++                                      'ansible/module_utils/_internal/_logging.py',
+                                       'ansible/module_utils/_internal/_json/__init__.py',
+                                       'ansible/module_utils/_internal/_json/_legacy_encoder.py',
+                                       'ansible/module_utils/_internal/_json/_profiles/__init__.py',
+diff --git a/test/units/module_utils/basic/test_imports.py b/test/units/module_utils/basic/test_imports.py
+index d0cfa1d53f3cae..2a811d27308375 100644
+--- a/test/units/module_utils/basic/test_imports.py
++++ b/test/units/module_utils/basic/test_imports.py
+@@ -33,17 +33,17 @@ def _mock_import(name, *args, **kwargs):
+             return realimport(name, *args, **kwargs)
+ 
+         with patch.object(builtins, '__import__', _mock_import):
+-            self.clear_modules(['syslog', 'ansible.module_utils.basic'])
+-            mod = builtins.__import__('ansible.module_utils.basic')
+-            self.assertTrue(mod.module_utils.basic.HAS_SYSLOG)
++            self.clear_modules(['syslog', 'ansible.module_utils._internal._logging', 'ansible.module_utils.basic'])
++            mod = builtins.__import__('ansible.module_utils._internal._logging')
++            self.assertTrue(mod.module_utils._internal._logging.HAS_SYSLOG)
+ 
+             present = False
+ 
+-            self.clear_modules(['syslog', 'ansible.module_utils.basic'])
+-            mod = builtins.__import__('ansible.module_utils.basic')
+-            self.assertFalse(mod.module_utils.basic.HAS_SYSLOG)
++            self.clear_modules(['syslog', 'ansible.module_utils._internal._logging', 'ansible.module_utils.basic'])
++            mod = builtins.__import__('ansible.module_utils._internal._logging')
++            self.assertFalse(mod.module_utils._internal._logging.HAS_SYSLOG)
+ 
+-            self.clear_modules(['syslog', 'ansible.module_utils.basic'])
++            self.clear_modules(['syslog', 'ansible.module_utils._internal._logging', 'ansible.module_utils.basic'])
+ 
+     def test_module_utils_basic_import_selinux(self):
+         present = True
+@@ -89,14 +89,14 @@ def _mock_import(name, *args, **kwargs):
+             return realimport(name, *args, **kwargs)
+ 
+         with patch.object(builtins, '__import__', _mock_import):
+-            self.clear_modules(['systemd', 'ansible.module_utils.basic'])
+-            mod = builtins.__import__('ansible.module_utils.basic')
+-            self.assertTrue(mod.module_utils.basic.has_journal)
++            self.clear_modules(['systemd', 'ansible.module_utils._internal._logging', 'ansible.module_utils.basic'])
++            mod = builtins.__import__('ansible.module_utils._internal._logging')
++            self.assertTrue(mod.module_utils._internal._logging.has_journal)
+ 
+             present = False
+ 
+-            self.clear_modules(['systemd', 'ansible.module_utils.basic'])
+-            mod = builtins.__import__('ansible.module_utils.basic')
+-            self.assertFalse(mod.module_utils.basic.has_journal)
++            self.clear_modules(['systemd', 'ansible.module_utils._internal._logging', 'ansible.module_utils.basic'])
++            mod = builtins.__import__('ansible.module_utils._internal._logging')
++            self.assertFalse(mod.module_utils._internal._logging.has_journal)
+ 
+-            self.clear_modules(['systemd', 'ansible.module_utils.basic'])
++            self.clear_modules(['systemd', 'ansible.module_utils._internal._logging', 'ansible.module_utils.basic'])
+diff --git a/test/units/module_utils/basic/test_log.py b/test/units/module_utils/basic/test_log.py
+index 5b423495c504ff..6469bd6746d438 100644
+--- a/test/units/module_utils/basic/test_log.py
++++ b/test/units/module_utils/basic/test_log.py
+@@ -21,7 +21,7 @@ def test_smoketest_syslog(self, am, mocker, msg):
+         # These talk to the live daemons on the system.  Need to do this to
+         # show that what we send doesn't cause an issue once it gets to the
+         # daemon.  These are just smoketests to test that we don't fail.
+-        mocker.patch('ansible.module_utils.basic.has_journal', False)
++        mocker.patch('ansible.module_utils._internal._logging.has_journal', False)
+ 
+         am.log(u'Text string')
+         am.log(u'Toshio くらとみ non-ascii test')
+@@ -46,7 +46,7 @@ class TestAnsibleModuleLogSyslog:
+     def test_no_log(self, am, mocker, no_log):
+         """Test that when no_log is set, logging does not occur"""
+         mock_syslog = mocker.patch('syslog.syslog', autospec=True)
+-        mocker.patch('ansible.module_utils.basic.has_journal', False)
++        mocker.patch('ansible.module_utils._internal._logging.has_journal', False)
+         am.no_log = no_log
+         am.log('unittest no_log')
+         if no_log:
+@@ -59,7 +59,7 @@ def test_no_log(self, am, mocker, no_log):
+                              indirect=['stdin'])
+     def test_output_matches(self, am, mocker, msg, param):
+         """Check that log messages are sent correctly"""
+-        mocker.patch('ansible.module_utils.basic.has_journal', False)
++        mocker.patch('ansible.module_utils._internal._logging.has_journal', False)
+         mock_syslog = mocker.patch('syslog.syslog', autospec=True)
+ 
+         am.log(msg)

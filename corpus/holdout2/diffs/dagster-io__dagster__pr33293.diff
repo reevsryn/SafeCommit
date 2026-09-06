@@ -1,0 +1,486 @@
+diff --git a/docs/docs/integrations/libraries/azure/component.md b/docs/docs/integrations/libraries/azure/component.md
+new file mode 100644
+index 0000000000000..474ede6ee6f3f
+--- /dev/null
++++ b/docs/docs/integrations/libraries/azure/component.md
+@@ -0,0 +1,66 @@
++---
++title: Azure Components
++sidebar_label: Components
++sidebar_position: 1
++description: Configuration-driven Azure resources using Dagster Components.
++tags: [dagster-supported, azure, components]
++---
++
++<p>{frontMatter.description}</p>
++
++The `dagster-azure` library provides a set of components that allow you to configure Azure resources directly in YAML. These components wrap existing `dagster-azure` resources, enabling faster setup and declarative infrastructure.
++
++## Installation
++
++<PackageInstallInstructions packageName="dagster-azure" />
++
++## Credentials configuration
++
++Unlike other libraries, Azure components utilize **Discriminated Unions** for credentials. This means you specify the `credential_type` inline within your YAML configuration to select the authentication method (SAS Token, Shared Key, DefaultCredential, or Anonymous).
++
++Supported credential types:
++
++- **`sas`**: Uses a Shared Access Signature token.
++- **`key`**: Uses a Storage Account Key.
++- **`default`**: Uses the environment's `DefaultAzureCredential` (supports Azure CLI, Managed Identity, etc.).
++- **`anonymous`**: For public resources.
++
++## Service Components
++
++### Azure Blob Storage
++
++Components for interacting with Azure Blob Storage.
++
++- **`AzureBlobStorageResourceComponent`**: Provides a standard `AzureBlobStorageResource`.
++
++### Azure Data Lake Storage Gen2 (ADLS2)
++
++Components for interacting with ADLS2.
++
++- **`ADLS2ResourceComponent`**: Provides an `ADLS2Resource`.
++
++## Examples
++
++### Blob Storage with SAS Token Connect using a SAS token.
++
++```yaml
++type: dagster_azure.AzureBlobStorageResourceComponent
++attributes:
++  account_url: '[https://myaccount.blob.core.windows.net](https://myaccount.blob.core.windows.net)'
++  credential:
++    credential_type: sas
++    token: '{{ env.AZURE_SAS_TOKEN }}'
++  resource_key: blob_storage
++```
++
++### ADLS2 with Shared Key Connect using a Storage Account Key.
++
++```yaml
++type: dagster_azure.ADLS2ResourceComponent
++attributes:
++  storage_account: mystorageaccount
++  credential:
++    credential_type: key
++    key: '{{ env.AZURE_STORAGE_KEY }}'
++  resource_key: adls2
++```
+diff --git a/docs/sphinx/sections/integrations/libraries/azure/dagster-azure.rst b/docs/sphinx/sections/integrations/libraries/azure/dagster-azure.rst
+index 0117cc31100d8..5dcd972f12068 100644
+--- a/docs/sphinx/sections/integrations/libraries/azure/dagster-azure.rst
++++ b/docs/sphinx/sections/integrations/libraries/azure/dagster-azure.rst
+@@ -7,6 +7,15 @@ Storage Gen 2 (ADLS2) but also contains some utilities for Azure Blob Storage.
+ 
+ .. currentmodule:: dagster_azure
+ 
++Components
++^^^^^^^^^^
++
++.. autoclass:: AzureBlobStorageResourceComponent
++   :members:
++
++.. autoclass:: ADLS2ResourceComponent
++   :members:
++
+ Resources
+ ^^^^^^^^^^
+ 
+diff --git a/python_modules/automation/automation/dagster_docs/exclude_lists.py b/python_modules/automation/automation/dagster_docs/exclude_lists.py
+index b46aff6176ef6..bd4a119229b13 100644
+--- a/python_modules/automation/automation/dagster_docs/exclude_lists.py
++++ b/python_modules/automation/automation/dagster_docs/exclude_lists.py
+@@ -88,6 +88,11 @@
+     # Component testing utils
+     "dagster.components.testing.utils.DefsFolderSandbox",
+     "dagster.components.testing.utils.create_defs_folder_sandbox",
++    # GCP components - new resource components pending RST documentation
++    "dagster_gcp.components.bigquery.BigQueryResourceComponent",
++    "dagster_gcp.components.dataproc.DataprocResourceComponent",
++    "dagster_gcp.components.gcs.GCSResourceComponent",
++    "dagster_gcp.components.gcs.GCSFileManagerResourceComponent",
+ }
+ 
+ # Symbols marked @public but not exported at top-level
+diff --git a/python_modules/libraries/dagster-azure/dagster_azure/__init__.py b/python_modules/libraries/dagster-azure/dagster_azure/__init__.py
+index 306cd941f7b87..26fe370468b01 100644
+--- a/python_modules/libraries/dagster-azure/dagster_azure/__init__.py
++++ b/python_modules/libraries/dagster-azure/dagster_azure/__init__.py
+@@ -1,5 +1,9 @@
+ from dagster_shared.libraries import DagsterLibraryRegistry
+ 
++from dagster_azure.components.adls2 import ADLS2ResourceComponent as ADLS2ResourceComponent
++from dagster_azure.components.blob import (
++    AzureBlobStorageResourceComponent as AzureBlobStorageResourceComponent,
++)
+ from dagster_azure.version import __version__
+ 
+ DagsterLibraryRegistry.register("dagster-azure", __version__)
+diff --git a/python_modules/libraries/dagster-azure/dagster_azure/adls2/resources.py b/python_modules/libraries/dagster-azure/dagster_azure/adls2/resources.py
+index 46a26582a62d2..617f5e5f68dd9 100644
+--- a/python_modules/libraries/dagster-azure/dagster_azure/adls2/resources.py
++++ b/python_modules/libraries/dagster-azure/dagster_azure/adls2/resources.py
+@@ -1,5 +1,6 @@
+-from typing import Any, Literal
++from typing import Any, Literal, Optional
+ 
++import dagster as dg
+ from azure.identity import DefaultAzureCredential
+ from azure.storage.filedatalake import DataLakeLeaseClient
+ from dagster import (
+@@ -22,17 +23,17 @@
+ from dagster_azure.blob.utils import BlobServiceClient, create_blob_client
+ 
+ 
+-class ADLS2SASToken(Config):
++class ADLS2SASToken(dg.Resolvable, Config):
+     credential_type: Literal["sas"] = "sas"
+-    token: str
++    token: Optional[str] = None  # noqa: UP045
+ 
+ 
+-class ADLS2Key(Config):
++class ADLS2Key(dg.Resolvable, Config):
+     credential_type: Literal["key"] = "key"
+-    key: str
++    key: Optional[str] = None  # noqa: UP045
+ 
+ 
+-class ADLS2DefaultAzureCredential(Config):
++class ADLS2DefaultAzureCredential(dg.Resolvable, Config):
+     credential_type: Literal["default_azure_credential"] = "default_azure_credential"
+     kwargs: dict[str, Any]
+ 
+diff --git a/python_modules/libraries/dagster-azure/dagster_azure/blob/resources.py b/python_modules/libraries/dagster-azure/dagster_azure/blob/resources.py
+index b4a21f63d01ad..449a402f4165d 100644
+--- a/python_modules/libraries/dagster-azure/dagster_azure/blob/resources.py
++++ b/python_modules/libraries/dagster-azure/dagster_azure/blob/resources.py
+@@ -1,31 +1,32 @@
+ from collections.abc import Generator
+ from contextlib import contextmanager
+-from typing import Any, Literal
++from typing import Any, Literal, Optional
+ 
++import dagster as dg
+ from azure.identity import DefaultAzureCredential
+ from azure.storage.blob import BlobServiceClient
+ from dagster import Config, ConfigurableResource
+ from pydantic import Field
+ 
+ 
+-class AzureBlobStorageSASTokenCredential(Config):
++class AzureBlobStorageSASTokenCredential(dg.Resolvable, Config):
+     """Authentication using an azure SAS token."""
+ 
+     credential_type: Literal["sas"] = "sas"
+ 
+-    token: str
++    token: Optional[str] = None  # noqa: UP045
+     "an azure SAS token"
+ 
+ 
+-class AzureBlobStorageKeyCredential(Config):
++class AzureBlobStorageKeyCredential(dg.Resolvable, Config):
+     """Authentication using an azure shared-key."""
+ 
+     credential_type: Literal["key"] = "key"
+-    key: str
++    key: Optional[str] = None  # noqa: UP045
+     "an azure shared-key"
+ 
+ 
+-class AzureBlobStorageDefaultCredential(Config):
++class AzureBlobStorageDefaultCredential(dg.Resolvable, Config):
+     """Authenticate using azure.identity.DefaultAzureCredential."""
+ 
+     credential_type: Literal["default_azure_credential"] = "default_azure_credential"
+@@ -35,7 +36,7 @@ class AzureBlobStorageDefaultCredential(Config):
+     ' e.g. AzureBlobStorageDefaultCredential(kwargs={"exclude_environment_credential": True})'
+ 
+ 
+-class AzureBlobStorageAnonymousCredential(Config):
++class AzureBlobStorageAnonymousCredential(dg.Resolvable, Config):
+     """For anonymous access to azure blob storage."""
+ 
+     credential_type: Literal["anonymous"] = "anonymous"
+diff --git a/python_modules/libraries/dagster-azure/dagster_azure/components/__init__.py b/python_modules/libraries/dagster-azure/dagster_azure/components/__init__.py
+new file mode 100644
+index 0000000000000..958a0e22c6878
+--- /dev/null
++++ b/python_modules/libraries/dagster-azure/dagster_azure/components/__init__.py
+@@ -0,0 +1,6 @@
++"""Dagster Azure Components - YAML-configurable resource components for Azure services."""
++
++from dagster_azure.components.adls2 import ADLS2ResourceComponent as ADLS2ResourceComponent
++from dagster_azure.components.blob import (
++    AzureBlobStorageResourceComponent as AzureBlobStorageResourceComponent,
++)
+diff --git a/python_modules/libraries/dagster-azure/dagster_azure/components/adls2.py b/python_modules/libraries/dagster-azure/dagster_azure/components/adls2.py
+new file mode 100644
+index 0000000000000..7c5ef98633569
+--- /dev/null
++++ b/python_modules/libraries/dagster-azure/dagster_azure/components/adls2.py
+@@ -0,0 +1,59 @@
++from typing import Optional
++
++import dagster as dg
++import dagster._check as check
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_azure.adls2.resources import (
++    ADLS2DefaultAzureCredential,
++    ADLS2Key,
++    ADLS2Resource,
++    ADLS2SASToken,
++)
++
++
++@public
++@preview
++class ADLS2ResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """Component for Azure Data Lake Storage Gen2 Resource.
++
++    Wraps ADLS2Resource for use in YAML-based configuration.
++
++    Example usage in YAML:
++
++    .. code-block:: YAML
++
++        resources:
++          - name: adls2
++            type: dagster_azure.ADLS2ResourceComponent
++            attributes:
++              storage_account: my_storage_account
++              credential:
++                credential_type: sas
++                token: "{{ env.ADLS2_SAS_TOKEN }}"
++              resource_key: adls2
++    """
++
++    storage_account: Optional[str] = Field(default=None, description="The storage account name")  # noqa: UP045
++
++    credential: ADLS2SASToken | ADLS2Key | ADLS2DefaultAzureCredential | None = Field(
++        default=None,
++        description="The credentials with which to authenticate",
++    )
++
++    resource_key: str | None = Field(
++        default=None, description="Resource key for binding to definitions"
++    )
++
++    @property
++    def resource(self) -> ADLS2Resource:
++        return ADLS2Resource(
++            storage_account=check.not_none(self.storage_account, "storage_account is required"),
++            credential=check.not_none(self.credential, "credential is required"),
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-azure/dagster_azure/components/blob.py b/python_modules/libraries/dagster-azure/dagster_azure/components/blob.py
+new file mode 100644
+index 0000000000000..a81dc3276a6c7
+--- /dev/null
++++ b/python_modules/libraries/dagster-azure/dagster_azure/components/blob.py
+@@ -0,0 +1,61 @@
++import dagster as dg
++import dagster._check as check
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_azure.blob.resources import (
++    AzureBlobStorageAnonymousCredential,
++    AzureBlobStorageDefaultCredential,
++    AzureBlobStorageKeyCredential,
++    AzureBlobStorageResource,
++    AzureBlobStorageSASTokenCredential,
++)
++
++
++@public
++@preview
++class AzureBlobStorageResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """Component for Azure Blob Storage Resource.
++
++    Wraps AzureBlobStorageResource for use in YAML-based configuration.
++
++    Example usage in YAML:
++
++    .. code-block:: YAML
++
++        resources:
++          - name: blob_storage
++            type: dagster_azure.AzureBlobStorageResourceComponent
++            attributes:
++              account_url: "https://myaccount.blob.core.windows.net"
++              credential:
++                credential_type: key
++                key: "{{ env.AZURE_STORAGE_ACCOUNT_KEY }}"
++              resource_key: blob_storage
++    """
++
++    account_url: str | None = Field(default=None, description="The URL to the blob storage account")
++
++    credential: (
++        AzureBlobStorageSASTokenCredential
++        | AzureBlobStorageKeyCredential
++        | AzureBlobStorageDefaultCredential
++        | AzureBlobStorageAnonymousCredential
++        | None
++    ) = Field(default=None, description="Azure credential configuration")
++
++    resource_key: str | None = Field(
++        default=None, description="Resource key for binding to definitions"
++    )
++
++    @property
++    def resource(self) -> AzureBlobStorageResource:
++        return AzureBlobStorageResource(
++            account_url=check.not_none(self.account_url, "account_url is required"),
++            credential=check.not_none(self.credential, "credential is required"),
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-azure/dagster_azure_tests/components_tests/__init__.py b/python_modules/libraries/dagster-azure/dagster_azure_tests/components_tests/__init__.py
+new file mode 100644
+index 0000000000000..e69de29bb2d1d
+diff --git a/python_modules/libraries/dagster-azure/dagster_azure_tests/components_tests/test_components.py b/python_modules/libraries/dagster-azure/dagster_azure_tests/components_tests/test_components.py
+new file mode 100644
+index 0000000000000..a6ccd1cb37db1
+--- /dev/null
++++ b/python_modules/libraries/dagster-azure/dagster_azure_tests/components_tests/test_components.py
+@@ -0,0 +1,112 @@
++from typing import get_args, get_origin
++
++import pytest
++from dagster._utils.test.definitions import scoped_definitions_load_context
++from dagster.components.testing import create_defs_folder_sandbox
++from dagster_azure.adls2.resources import ADLS2Resource
++from dagster_azure.blob.resources import AzureBlobStorageResource
++from dagster_azure.components.adls2 import ADLS2ResourceComponent
++from dagster_azure.components.blob import AzureBlobStorageResourceComponent
++
++
++@pytest.mark.parametrize(
++    "component_class, resource_class",
++    [
++        (AzureBlobStorageResourceComponent, AzureBlobStorageResource),
++        (ADLS2ResourceComponent, ADLS2Resource),
++    ],
++)
++def test_component_fields_sync_with_resource(component_class, resource_class):
++    """Verify that the component fields stay in sync with the underlying resource fields.
++    This prevents 'drift' where new fields added to the resource are missing from the component.
++    """
++    component_fields = set(component_class.model_fields.keys())
++
++    # If a credential field exists, include nested fields from the union of credentials
++    if "credential" in component_class.model_fields:
++        creds_field = component_class.model_fields["credential"]
++        creds_annotation = creds_field.annotation
++        origin = get_origin(creds_annotation)
++        if origin:
++            args = get_args(creds_annotation)
++            for arg in args:
++                if hasattr(arg, "model_fields"):
++                    component_fields.update(arg.model_fields.keys())
++        elif hasattr(creds_annotation, "model_fields"):
++            component_fields.update(creds_annotation.model_fields.keys())
++
++    # Remove technical component fields that are not present in the underlying resources
++    component_fields.discard("credential_type")
++    component_fields.discard("resource_key")
++    component_fields.discard("type")
++
++    resource_fields = set(resource_class.model_fields.keys())
++    resource_fields.discard("credential")
++
++    missing = resource_fields - component_fields
++    assert resource_fields.issubset(component_fields), (
++        f"Missing fields in {component_class.__name__}: {missing}"
++    )
++
++
++def test_blob_storage_component_integration(monkeypatch):
++    """Test YAML-based instantiation for the Azure Blob Storage component.
++    Ensures that credentials and URLs are correctly resolved from environment variables.
++    """
++    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_URL", "https://myaccount.blob.core.windows.net")
++    monkeypatch.setenv("AZURE_STORAGE_KEY", "fake-key")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=AzureBlobStorageResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_azure.AzureBlobStorageResourceComponent",
++                "attributes": {
++                    "account_url": "{{ env.AZURE_STORAGE_ACCOUNT_URL }}",
++                    "credential": {
++                        "credential_type": "key",
++                        "key": "{{ env.AZURE_STORAGE_KEY }}",
++                    },
++                    "resource_key": "my_blob",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (_, defs):
++                resources = defs.resources
++                # Assertions to satisfy Pyright and verify resource creation
++                assert resources is not None
++                assert "my_blob" in resources
++                resource = resources["my_blob"]
++                assert isinstance(resource, AzureBlobStorageResource)
++
++
++def test_adls2_component_integration(monkeypatch):
++    """Test YAML-based instantiation for the ADLS2 Resource component.
++    Verifies the handling of the ADLS2-specific credential union (SAS token).
++    """
++    monkeypatch.setenv("ADLS2_STORAGE_ACCOUNT", "myadlsaccount")
++    monkeypatch.setenv("ADLS2_SAS_TOKEN", "fake-sas-token")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=ADLS2ResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_azure.ADLS2ResourceComponent",
++                "attributes": {
++                    "storage_account": "{{ env.ADLS2_STORAGE_ACCOUNT }}",
++                    "credential": {
++                        "credential_type": "sas",
++                        "token": "{{ env.ADLS2_SAS_TOKEN }}",
++                    },
++                    "resource_key": "my_adls2",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (_, defs):
++                resources = defs.resources
++                assert resources is not None
++                assert "my_adls2" in resources
++                resource = resources["my_adls2"]
++                assert isinstance(resource, ADLS2Resource)
+diff --git a/python_modules/libraries/dagster-azure/pyproject.toml b/python_modules/libraries/dagster-azure/pyproject.toml
+index c68fdb9ed2704..3ec5f026f9aa7 100644
+--- a/python_modules/libraries/dagster-azure/pyproject.toml
++++ b/python_modules/libraries/dagster-azure/pyproject.toml
+@@ -31,3 +31,6 @@ Homepage = "https://github.com/dagster-io/dagster/tree/master/python_modules/lib
+ 
+ [project.scripts]
+ dagster-azure = "dagster_azure.cli.cli:main"
++
++[project.entry-points."dagster_dg_cli.registry_modules"]
++dagster_azure = "dagster_azure.components"
+\ No newline at end of file

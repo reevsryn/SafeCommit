@@ -1,0 +1,941 @@
+diff --git a/bokehjs/src/lib/models/annotations/base_color_bar.ts b/bokehjs/src/lib/models/annotations/base_color_bar.ts
+index cff229163a4..fcb9b683450 100644
+--- a/bokehjs/src/lib/models/annotations/base_color_bar.ts
++++ b/bokehjs/src/lib/models/annotations/base_color_bar.ts
+@@ -15,7 +15,8 @@ import {LinearScale} from "../scales"
+ import type {Range} from "../ranges"
+ import {Range1d} from "../ranges"
+ import {BaseText} from "../text/base_text"
+-import {Anchor, Orientation} from "core/enums"
++import {Anchor, Location, Orientation, TextAlign, VerticalAlign} from "core/enums"
++import type {Side} from "core/enums"
+ import type * as visuals from "core/visuals"
+ import * as mixins from "core/property_mixins"
+ import type * as p from "core/properties"
+@@ -29,6 +30,8 @@ import type {ChildView} from "core/build_views"
+ import {build_view} from "core/build_views"
+ import {BBox} from "core/util/bbox"
+ import {isString} from "core/util/types"
++import {Padding} from "../common/kinds"
++import * as resolve from "../common/resolve"
+ 
+ const MINOR_DIM = 25
+ const MAJOR_DIM_MIN_SCALAR = 0.3
+@@ -51,7 +54,8 @@ export abstract class BaseColorBarView extends AnnotationView {
+   protected _ticker: Ticker
+   protected _formatter: TickFormatter
+ 
+-  protected _inner_layout: BorderLayout
++  protected _inner_layout: BorderLayout | null = null
++  protected _outer_layout: Grid | null = null
+ 
+   protected _major_range: Range
+   protected _major_scale: Scale
+@@ -67,6 +71,16 @@ export abstract class BaseColorBarView extends AnnotationView {
+     return [...super.children_views(), this._axis_view, this._title_view]
+   }
+ 
++  private _title_location: Location
++  get title_location(): Location {
++    return this._title_location
++  }
++
++  private _title_orientation: Orientation
++  get title_orientation(): Orientation {
++    return this._title_orientation
++  }
++
+   override initialize(): void {
+     super.initialize()
+ 
+@@ -159,6 +173,8 @@ export abstract class BaseColorBarView extends AnnotationView {
+     const attrs: Partial<Title.Attrs> = {
+       text: this.model.title ?? "",
+       standoff: this.model.title_standoff,
++      align: this.model.title_text_halign,
++      vertical_align: this.model.title_text_valign,
+       // TODO: this needs strict typing
+       ...mixins.attrs_of(this.model, "title_", mixins.Text, false),
+     }
+@@ -170,7 +186,8 @@ export abstract class BaseColorBarView extends AnnotationView {
+     this.connect(this.model.change, () => {
+       this._apply_title_properties()
+       this._apply_axis_properties()
+-      // TODO?: this.plot_view.invalidate_layout()
++      this.update_layout()
++      this.plot_view.request_layout(true)
+     })
+     this.connect(this._ticker.change, () => this.request_paint())
+     this.connect(this._formatter.change, () => this.request_paint())
+@@ -239,6 +256,28 @@ export abstract class BaseColorBarView extends AnnotationView {
+       }
+     })()
+ 
++    const title_location = this._title_location = (() => {
++      const {title_location} = this.model
++      if (title_location == "auto") {
++        return orientation == "horizontal" ? "above" : "left"
++      } else {
++        return title_location
++      }
++    })()
++
++    const title_orientation = this._title_orientation = (() => {
++      const {title_orientation} = this.model
++      if (title_orientation == "auto") {
++        if (orientation == "horizontal" || title_location == "above" || title_location == "below") {
++          return "horizontal"
++        } else {
++          return "vertical"
++        }
++      } else {
++        return title_orientation
++      }
++    })()
++
+     this._update_frame()
+ 
+     const center_panel = new NodeLayout()
+@@ -255,7 +294,7 @@ export abstract class BaseColorBarView extends AnnotationView {
+ 
+     center_panel.on_resize((bbox) => this._frame_view.set_geometry(bbox))
+ 
+-    const layout = new BorderLayout()
++    const layout = this._inner_layout ?? new BorderLayout()
+     this._inner_layout = layout
+     layout.absolute = true
+ 
+@@ -265,7 +304,6 @@ export abstract class BaseColorBarView extends AnnotationView {
+     layout.left_panel   = left_panel
+     layout.right_panel  = right_panel
+ 
+-    const padding_box = {left: padding, right: padding, top: padding, bottom: padding}
+     const margin_box = (() => {
+       if (this.panel == null) {
+         if (isString(location)) {
+@@ -340,7 +378,7 @@ export abstract class BaseColorBarView extends AnnotationView {
+       }
+     })()
+ 
+-    layout.padding = padding_box
++    layout.padding = resolve.padding(padding)
+ 
+     let major_policy: SizingPolicy
+     let major_size: number | undefined
+@@ -393,17 +431,6 @@ export abstract class BaseColorBarView extends AnnotationView {
+     left_panel.set_sizing({width_policy: "min", height_policy: "fit"})
+     right_panel.set_sizing({width_policy: "min", height_policy: "fit"})
+ 
+-    const {_title_view} = this
+-    if (orientation == "horizontal") {
+-      _title_view.panel = new SidePanel("above")
+-      _title_view.update_layout()
+-      top_panel.children.push(_title_view.layout)
+-    } else {
+-      _title_view.panel = new SidePanel("left")
+-      _title_view.update_layout()
+-      left_panel.children.push(_title_view.layout)
+-    }
+-
+     const {panel} = this
+     const side = (() => {
+       if (panel != null && orientation == panel.orientation) {
+@@ -413,6 +440,30 @@ export abstract class BaseColorBarView extends AnnotationView {
+       }
+     })()
+ 
++    const title_direction: Side = (() => {
++      if (title_orientation == "horizontal") {
++        return "above"
++      } else if (title_location == "above" || title_location == "left") {
++        return "left"
++      } else {
++        return "right"
++      }
++    })()
++
++    const {_title_view} = this
++    _title_view.panel = new SidePanel(title_direction)
++    _title_view.update_layout()
++
++    if (title_location == "above") {
++      top_panel.children.push(_title_view.layout)
++    } else if (title_location == "below") {
++      bottom_panel.children.push(_title_view.layout)
++    } else if (title_location == "left") {
++      left_panel.children.push(_title_view.layout)
++    } else {
++      right_panel.children.push(_title_view.layout)
++    }
++
+     const stack = (() => {
+       switch (side) {
+         case "above":
+@@ -430,11 +481,16 @@ export abstract class BaseColorBarView extends AnnotationView {
+     _axis_view.panel = new SidePanel(side)
+     _axis_view.update_layout()
+     if (_axis_view.layout != null) {
+-      stack.children.push(_axis_view.layout)
++      if (title_location == side && (side == "right" || side == "below")) {
++        stack.children.unshift(_axis_view.layout)
++      } else {
++        stack.children.push(_axis_view.layout)
++      }
+     }
+ 
+     if (this.panel != null) {
+-      const outer = new Grid([{layout, row: 0, col: 0}])
++      const outer = this._outer_layout ??= new Grid()
++      outer.items = [{layout, row: 0, col: 0}]
+       outer.absolute = true
+ 
+       if (orientation == "horizontal") {
+@@ -445,7 +501,7 @@ export abstract class BaseColorBarView extends AnnotationView {
+ 
+       this.layout = outer
+     } else {
+-      this.layout = this._inner_layout
++      this.layout = layout
+     }
+ 
+     const {visible} = this.model
+@@ -480,8 +536,9 @@ export abstract class BaseColorBarView extends AnnotationView {
+ 
+   protected _paint(ctx: Context2d): void {
+     ctx.save()
+-    this._paint_bbox(ctx, this._inner_layout.bbox)
+-    this._paint_colors(ctx, this._inner_layout.center_panel.bbox)
++    const layout = this._inner_layout!
++    this._paint_bbox(ctx, layout.bbox)
++    this._paint_colors(ctx, layout.center_panel.bbox)
+     this._title_view.paint(ctx)
+     this._axis_view.paint(ctx)
+     ctx.restore()
+@@ -518,6 +575,10 @@ export namespace BaseColorBar {
+     orientation: p.Property<Orientation | "auto">
+     title: p.Property<string | BaseText | null>
+     title_standoff: p.Property<number>
++    title_location: p.Property<Location | "auto">
++    title_orientation: p.Property<Orientation | "auto">
++    title_text_halign: p.Property<TextAlign>
++    title_text_valign: p.Property<VerticalAlign>
+     width: p.Property<number | "auto">
+     height: p.Property<number | "auto">
+     ticker: p.Property<Ticker | "auto">
+@@ -526,7 +587,7 @@ export namespace BaseColorBar {
+     major_label_policy: p.Property<LabelingPolicy>
+     label_standoff: p.Property<number>
+     margin: p.Property<number>
+-    padding: p.Property<number>
++    padding: p.Property<Padding>
+     major_tick_in: p.Property<number>
+     major_tick_out: p.Property<number>
+     minor_tick_in: p.Property<number>
+@@ -582,6 +643,10 @@ export abstract class BaseColorBar extends Annotation {
+       orientation:           [ Or(Orientation, Auto), "auto" ],
+       title:                 [ Nullable(Or(Str, Ref(BaseText))), null ],
+       title_standoff:        [ Float, 2 ],
++      title_location:        [ Or(Location, Auto), "auto" ],
++      title_orientation:     [ Or(Orientation, Auto), "auto" ],
++      title_text_halign:     [ TextAlign, "left" ],
++      title_text_valign:     [ VerticalAlign, "bottom" ],
+       width:                 [ Or(Float, Auto), "auto" ],
+       height:                [ Or(Float, Auto), "auto" ],
+       ticker:                [ Or(Ref(Ticker), Auto), "auto" ],
+@@ -590,7 +655,7 @@ export abstract class BaseColorBar extends Annotation {
+       major_label_policy:    [ Ref(LabelingPolicy), () => new NoOverlap() ],
+       label_standoff:        [ Float, 5 ],
+       margin:                [ Float, 30 ],
+-      padding:               [ Float, 10 ],
++      padding:               [ Padding, 10 ],
+       major_tick_in:         [ Float, 5 ],
+       major_tick_out:        [ Float, 0 ],
+       minor_tick_in:         [ Float, 0 ],
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_asymmetric_padding.blf b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_asymmetric_padding.blf
+new file mode 100644
+index 00000000000..5907ad82712
+--- /dev/null
++++ b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_asymmetric_padding.blf
+@@ -0,0 +1,17 @@
++GridBox bbox=[0, 0, 680, 320]
++  Figure bbox=[0, 0, 340, 320]
++    Canvas bbox=[0, 0, 340, 320]
++    CartesianFrame bbox=[5, 5, 330, 310]
++    LinearAxis bbox=[5, 315, 330, 0]
++    LinearAxis bbox=[5, 5, 0, 310]
++    ColorBar bbox=[98, 30, 145, 260]
++      LinearAxis bbox=[133, 50, 23, 160]
++      Title bbox=[156, 50, 17, 160]
++  Figure bbox=[340, 0, 340, 320]
++    Canvas bbox=[0, 0, 340, 320]
++    CartesianFrame bbox=[5, 5, 330, 310]
++    LinearAxis bbox=[5, 315, 330, 0]
++    LinearAxis bbox=[5, 5, 0, 310]
++    ColorBar bbox=[50, 81, 240, 158]
++      LinearAxis bbox=[60, 143, 160, 16]
++      Title bbox=[60, 101, 160, 17]
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_asymmetric_padding.png b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_asymmetric_padding.png
+new file mode 100644
+index 00000000000..68244094584
+Binary files /dev/null and b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_asymmetric_padding.png differ
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_display_cutoffs__update_Linear.blf b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_display_cutoffs__update_Linear.blf
+index c010b399736..14d0421e9eb 100644
+--- a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_display_cutoffs__update_Linear.blf
++++ b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_display_cutoffs__update_Linear.blf
+@@ -1,19 +1,19 @@
+ Figure bbox=[0, 0, 400, 400]
+   Canvas bbox=[0, 0, 400, 400]
+-  CartesianFrame bbox=[26, 5, 52, 373]
+-  GlyphRenderer bbox=[52, 22, 0, 339]
+-    Scatter bbox=[52, 22, 0, 339]
+-  LinearAxis bbox=[26, 378, 52, 22]
++  CartesianFrame bbox=[26, 5, 58, 373]
++  GlyphRenderer bbox=[55, 22, 0, 339]
++    Scatter bbox=[55, 22, 0, 339]
++  LinearAxis bbox=[26, 378, 58, 22]
+   LinearAxis bbox=[0, 5, 26, 373]
+-  ColorBar bbox=[78, 5, 82, 373]
+-    LinearAxis bbox=[130, 15, 20, 353]
+-    Title bbox=[88, 15, 17, 353]
+-  ColorBar bbox=[160, 5, 82, 373]
+-    LinearAxis bbox=[212, 15, 20, 353]
+-    Title bbox=[170, 15, 17, 353]
+-  ColorBar bbox=[242, 5, 82, 373]
+-    LinearAxis bbox=[294, 15, 20, 353]
++  ColorBar bbox=[84, 5, 82, 373]
++    LinearAxis bbox=[136, 15, 20, 353]
++    Title bbox=[94, 15, 17, 353]
++  ColorBar bbox=[166, 5, 76, 373]
++    LinearAxis bbox=[218, 15, 14, 353]
++    Title bbox=[176, 15, 17, 353]
++  ColorBar bbox=[242, 5, 76, 373]
++    LinearAxis bbox=[294, 15, 14, 353]
+     Title bbox=[252, 15, 17, 353]
+-  ColorBar bbox=[324, 5, 76, 373]
+-    LinearAxis bbox=[376, 15, 14, 353]
+-    Title bbox=[334, 15, 17, 353]
++  ColorBar bbox=[318, 5, 82, 373]
++    LinearAxis bbox=[370, 15, 20, 353]
++    Title bbox=[328, 15, 17, 353]
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_display_cutoffs__update_Linear.png b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_display_cutoffs__update_Linear.png
+index b83d9b7f949..caff590c918 100644
+Binary files a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_display_cutoffs__update_Linear.png and b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_display_cutoffs__update_Linear.png differ
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_locations_and_orientations.blf b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_locations_and_orientations.blf
+new file mode 100644
+index 00000000000..bef5c38cce6
+--- /dev/null
++++ b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_locations_and_orientations.blf
+@@ -0,0 +1,129 @@
++GridBox bbox=[0, 0, 1440, 1320]
++  Figure bbox=[0, 0, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[146, 42, 68, 247]
++      LinearAxis bbox=[181, 139, 23, 140]
++      Title bbox=[156, 52, 25, 87]
++  Figure bbox=[360, 0, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[146, 77, 68, 177]
++      LinearAxis bbox=[181, 104, 23, 140]
++      Title bbox=[156, 87, 25, 17]
++  Figure bbox=[720, 0, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[146, 42, 68, 247]
++      LinearAxis bbox=[181, 52, 23, 140]
++      Title bbox=[156, 192, 25, 87]
++  Figure bbox=[1080, 0, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[146, 77, 68, 177]
++      LinearAxis bbox=[181, 87, 23, 140]
++      Title bbox=[156, 227, 25, 17]
++  Figure bbox=[0, 330, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[138, 85, 85, 160]
++      LinearAxis bbox=[190, 95, 23, 140]
++      Title bbox=[148, 95, 17, 140]
++  Figure bbox=[360, 330, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[103, 85, 155, 160]
++      LinearAxis bbox=[225, 95, 23, 140]
++      Title bbox=[113, 95, 87, 140]
++  Figure bbox=[720, 330, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[138, 85, 85, 160]
++      LinearAxis bbox=[173, 95, 23, 140]
++      Title bbox=[196, 95, 17, 140]
++  Figure bbox=[1080, 330, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[99, 85, 162, 160]
++      LinearAxis bbox=[134, 95, 23, 140]
++      Title bbox=[157, 95, 94, 140]
++  Figure bbox=[0, 660, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[95, 91, 170, 148]
++      LinearAxis bbox=[105, 213, 150, 16]
++      Title bbox=[105, 101, 150, 87]
++  Figure bbox=[360, 660, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[95, 126, 170, 78]
++      LinearAxis bbox=[105, 178, 150, 16]
++      Title bbox=[105, 136, 150, 17]
++  Figure bbox=[720, 660, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[95, 91, 170, 148]
++      LinearAxis bbox=[105, 126, 150, 16]
++      Title bbox=[105, 142, 150, 87]
++  Figure bbox=[1080, 660, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[95, 126, 170, 78]
++      LinearAxis bbox=[105, 161, 150, 16]
++      Title bbox=[105, 177, 150, 17]
++  Figure bbox=[0, 990, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[87, 135, 187, 61]
++      LinearAxis bbox=[114, 170, 150, 16]
++      Title bbox=[97, 145, 17, 25]
++  Figure bbox=[360, 990, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[52, 135, 257, 61]
++      LinearAxis bbox=[149, 170, 150, 16]
++      Title bbox=[62, 145, 87, 25]
++  Figure bbox=[720, 990, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[87, 135, 187, 61]
++      LinearAxis bbox=[97, 170, 150, 16]
++      Title bbox=[247, 145, 17, 25]
++  Figure bbox=[1080, 990, 360, 330]
++    Canvas bbox=[0, 0, 360, 330]
++    CartesianFrame bbox=[5, 5, 350, 320]
++    LinearAxis bbox=[5, 325, 350, 0]
++    LinearAxis bbox=[5, 5, 0, 320]
++    ColorBar bbox=[48, 135, 264, 61]
++      LinearAxis bbox=[58, 170, 150, 16]
++      Title bbox=[208, 145, 94, 25]
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_locations_and_orientations.png b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_locations_and_orientations.png
+new file mode 100644
+index 00000000000..cd3b3aa396a
+Binary files /dev/null and b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_locations_and_orientations.png differ
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_text_alignments.blf b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_text_alignments.blf
+new file mode 100644
+index 00000000000..49aa26fb89e
+--- /dev/null
++++ b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_text_alignments.blf
+@@ -0,0 +1,49 @@
++GridBox bbox=[0, 0, 780, 400]
++  Figure bbox=[0, 0, 260, 200]
++    Canvas bbox=[0, 0, 260, 200]
++    CartesianFrame bbox=[5, 5, 250, 190]
++    LinearAxis bbox=[5, 195, 250, 0]
++    LinearAxis bbox=[5, 5, 0, 190]
++    ColorBar bbox=[88, 30, 85, 140]
++      LinearAxis bbox=[123, 40, 23, 120]
++      Title bbox=[146, 40, 17, 120]
++  Figure bbox=[260, 0, 260, 200]
++    Canvas bbox=[0, 0, 260, 200]
++    CartesianFrame bbox=[5, 5, 250, 190]
++    LinearAxis bbox=[5, 195, 250, 0]
++    LinearAxis bbox=[5, 5, 0, 190]
++    ColorBar bbox=[88, 30, 85, 140]
++      LinearAxis bbox=[123, 40, 23, 120]
++      Title bbox=[146, 40, 17, 120]
++  Figure bbox=[520, 0, 260, 200]
++    Canvas bbox=[0, 0, 260, 200]
++    CartesianFrame bbox=[5, 5, 250, 190]
++    LinearAxis bbox=[5, 195, 250, 0]
++    LinearAxis bbox=[5, 5, 0, 190]
++    ColorBar bbox=[88, 30, 85, 140]
++      LinearAxis bbox=[123, 40, 23, 120]
++      Title bbox=[146, 40, 17, 120]
++  Figure bbox=[0, 200, 260, 200]
++    Canvas bbox=[0, 0, 260, 200]
++    CartesianFrame bbox=[5, 5, 250, 190]
++    LinearAxis bbox=[5, 195, 250, 0]
++    LinearAxis bbox=[5, 5, 0, 190]
++    ColorBar bbox=[60, 61, 140, 78]
++      LinearAxis bbox=[70, 113, 120, 16]
++      Title bbox=[70, 71, 120, 17]
++  Figure bbox=[260, 200, 260, 200]
++    Canvas bbox=[0, 0, 260, 200]
++    CartesianFrame bbox=[5, 5, 250, 190]
++    LinearAxis bbox=[5, 195, 250, 0]
++    LinearAxis bbox=[5, 5, 0, 190]
++    ColorBar bbox=[60, 61, 140, 78]
++      LinearAxis bbox=[70, 113, 120, 16]
++      Title bbox=[70, 71, 120, 17]
++  Figure bbox=[520, 200, 260, 200]
++    Canvas bbox=[0, 0, 260, 200]
++    CartesianFrame bbox=[5, 5, 250, 190]
++    LinearAxis bbox=[5, 195, 250, 0]
++    LinearAxis bbox=[5, 5, 0, 190]
++    ColorBar bbox=[60, 61, 140, 78]
++      LinearAxis bbox=[70, 113, 120, 16]
++      Title bbox=[70, 71, 120, 17]
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_text_alignments.png b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_text_alignments.png
+new file mode 100644
+index 00000000000..cdcd42095a3
+Binary files /dev/null and b/bokehjs/test/baselines/linux/ColorBar_annotation__should_support_title_text_alignments.png differ
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_update_the_title_location_and_orientation.blf b/bokehjs/test/baselines/linux/ColorBar_annotation__should_update_the_title_location_and_orientation.blf
+new file mode 100644
+index 00000000000..b1c63059d35
+--- /dev/null
++++ b/bokehjs/test/baselines/linux/ColorBar_annotation__should_update_the_title_location_and_orientation.blf
+@@ -0,0 +1,8 @@
++Figure bbox=[0, 0, 320, 220]
++  Canvas bbox=[0, 0, 320, 220]
++  CartesianFrame bbox=[5, 5, 310, 210]
++  LinearAxis bbox=[5, 215, 310, 0]
++  LinearAxis bbox=[5, 5, 0, 210]
++  ColorBar bbox=[62, 80, 197, 61]
++    LinearAxis bbox=[72, 115, 160, 16]
++    Title bbox=[232, 90, 17, 25]
+diff --git a/bokehjs/test/baselines/linux/ColorBar_annotation__should_update_the_title_location_and_orientation.png b/bokehjs/test/baselines/linux/ColorBar_annotation__should_update_the_title_location_and_orientation.png
+new file mode 100644
+index 00000000000..a7af2cfab4e
+Binary files /dev/null and b/bokehjs/test/baselines/linux/ColorBar_annotation__should_update_the_title_location_and_orientation.png differ
+diff --git a/bokehjs/test/integration/annotations/color_bar.ts b/bokehjs/test/integration/annotations/color_bar.ts
+index 51c70cf6cb6..b463eda28f5 100644
+--- a/bokehjs/test/integration/annotations/color_bar.ts
++++ b/bokehjs/test/integration/annotations/color_bar.ts
+@@ -1,4 +1,5 @@
+-import {display, fig, column} from "#framework/layouts"
++import {display, fig, column, grid} from "#framework/layouts"
++import {expect} from "#framework/assertions"
+ 
+ import type {Plot, Column, ColorMapper} from "@bokehjs/models"
+ import {
+@@ -7,6 +8,8 @@ import {
+ 
+ import {Random} from "@bokehjs/core/util/random"
+ import {range} from "@bokehjs/core/util/array"
++import {paint} from "@bokehjs/core/util/defer"
++import {Location, Orientation, TextAlign} from "@bokehjs/core/enums"
+ import type {Side} from "@bokehjs/core/enums"
+ import {np} from "@bokehjs/api/linalg"
+ import {Spectral11} from "@bokehjs/api/palettes"
+@@ -58,6 +61,132 @@ describe("ColorBar annotation", () => {
+     await display(p)
+   })
+ 
++  it("should support title locations and orientations", async () => {
++    const color_mapper = new LinearColorMapper({palette: Spectral11, low: 0, high: 1})
++    const plots = []
++    for (const orientation of Orientation) {
++      for (const title_location of Location) {
++        for (const title_orientation of Orientation) {
++          const p = fig([360, 330], {border_fill_color: "lightgray"})
++          const color_bar = new ColorBar({
++            color_mapper,
++            location: "center",
++            orientation,
++            width: orientation == "horizontal" ? 150 : 25,
++            height: orientation == "vertical" ? 140 : 25,
++            title: `${title_location} / ${title_orientation}`,
++            title_location,
++            title_orientation,
++            title_text_halign: "center",
++            title_text_valign: "middle",
++            border_line_color: "black",
++          })
++          p.add_layout(color_bar, "center")
++          plots.push(p)
++        }
++      }
++    }
++
++    await display(grid([
++      plots.slice(0, 4),
++      plots.slice(4, 8),
++      plots.slice(8, 12),
++      plots.slice(12, 16),
++    ]))
++  })
++
++  it("should support title text alignments", async () => {
++    const color_mapper = new LinearColorMapper({palette: Spectral11, low: 0, high: 1})
++    const plots = []
++    for (const orientation of Orientation) {
++      for (const title_text_halign of TextAlign) {
++        const horizontal = orientation == "horizontal"
++        const p = fig([260, 200], {
++          border_fill_color: horizontal ? "aliceblue" : "lightyellow",
++        })
++        const color_bar = new ColorBar({
++          color_mapper,
++          location: "center",
++          orientation,
++          width: horizontal ? 120 : 25,
++          height: horizontal ? 25 : 120,
++          title: `${horizontal ? "H" : "V"}: ${title_text_halign}`,
++          title_location: horizontal ? "above" : "right",
++          title_orientation: orientation,
++          title_text_halign,
++          title_text_valign: "middle",
++          border_line_color: "black",
++        })
++        p.add_layout(color_bar, "center")
++        plots.push(p)
++      }
++    }
++
++    await display(grid([
++      plots.slice(0, 3),
++      plots.slice(3, 6),
++    ]))
++  })
++
++  it("should support asymmetric padding", async () => {
++    const color_mapper = new LinearColorMapper({palette: Spectral11, low: 0, high: 1})
++    const plots = []
++    for (const orientation of Orientation) {
++      const horizontal = orientation == "horizontal"
++      const p = fig([340, 320], {
++        background_fill_color: "whitesmoke",
++        border_fill_color: "whitesmoke",
++      })
++      const color_bar = new ColorBar({
++        color_mapper,
++        location: "center",
++        orientation,
++        width: horizontal ? 160 : 25,
++        height: horizontal ? 25 : 160,
++        title: "L10 R70 T20 B80",
++        title_location: horizontal ? "above" : "right",
++        title_orientation: orientation,
++        title_text_halign: "center",
++        title_text_valign: "middle",
++        padding: {left: 10, right: 70, top: 20, bottom: 80},
++        border_line_color: "black",
++        border_line_width: 2,
++        background_fill_color: "lemonchiffon",
++      })
++      p.add_layout(color_bar, "center")
++      plots.push(p)
++    }
++
++    await display(grid([plots]))
++  })
++
++  it("should update the title location and orientation", async () => {
++    const color_mapper = new LinearColorMapper({palette: Spectral11, low: 0, high: 1})
++    const color_bar = new ColorBar({
++      color_mapper,
++      location: "center",
++      orientation: "horizontal",
++      width: 160,
++      title: "Updated title",
++      title_location: "above",
++      title_orientation: "horizontal",
++      border_line_color: "black",
++    })
++    const p = fig([320, 220], {border_fill_color: "lightgray"})
++    p.add_layout(color_bar, "center")
++
++    const {view} = await display(p)
++    const color_bar_view = view.views.get_one(color_bar)
++    expect(color_bar_view.title_location).to.be.equal("above")
++    expect(color_bar_view.title_orientation).to.be.equal("horizontal")
++
++    color_bar.title_location = "right"
++    color_bar.title_orientation = "vertical"
++    await color_bar_view.ready
++    await view.ready
++    await paint()
++  })
++
+   it("should support horizontal orientation and positioning within the center panel", async () => {
+     const random = new Random(1)
+ 
+diff --git a/src/bokeh/core/property_aliases.py b/src/bokeh/core/property_aliases.py
+index 43aef39b477..683b959114d 100644
+--- a/src/bokeh/core/property_aliases.py
++++ b/src/bokeh/core/property_aliases.py
+@@ -20,6 +20,9 @@
+ # Imports
+ #-----------------------------------------------------------------------------
+ 
++# Standard library imports
++from typing import Literal, NotRequired, TypedDict
++
+ # Bokeh imports
+ from . import enums
+ from .property.auto import Auto
+@@ -54,6 +57,9 @@
+ # General API
+ #-----------------------------------------------------------------------------
+ 
++type AutoType = Literal["auto"]
++type PercentType = float
++
+ CSSVariable = Regex(r"^--")
+ 
+ CSSClass = Regex(r"^\.")
+@@ -62,9 +68,13 @@
+ 
+ IconLike = Either(Image, Enum(enums.ToolIcon), CSSVariable, CSSClass, DataImage)
+ 
++type PixelsType = int
+ Pixels = NonNegative(Int)
+ 
++type HAnchorType = enums.AlignType | enums.HAlignType | PercentType
+ HAnchor = Either(Enum(enums.Align), Enum(enums.HAlign), Percent)
++
++type VAnchorType = enums.AlignType | enums.VAlignType | PercentType
+ VAnchor = Either(Enum(enums.Align), Enum(enums.VAlign), Percent)
+ 
+ Anchor = (
+@@ -74,6 +84,7 @@
+     )
+ )
+ 
++type AutoAnchorType = AutoType | enums.AnchorType | tuple[AutoType | HAnchorType, AutoType | VAnchorType]
+ AutoAnchor = (
+     Either(
+         Auto,
+@@ -84,6 +95,27 @@
+ 
+ TextAnchor = Either(Anchor, Auto)
+ 
++class XYType[T](TypedDict):
++    x: NotRequired[T]
++    y: NotRequired[T]
++
++class LRTBType[T](TypedDict):
++    left: NotRequired[T]
++    right: NotRequired[T]
++    top: NotRequired[T]
++    bottom: NotRequired[T]
++
++class CornersType[T](TypedDict):
++    top_left: NotRequired[T]
++    top_right: NotRequired[T]
++    bottom_right: NotRequired[T]
++    bottom_left: NotRequired[T]
++
++type BorderRadiusType = (
++    PixelsType |
++    tuple[PixelsType, PixelsType, PixelsType, PixelsType] |
++    CornersType[PixelsType]
++)
+ BorderRadius = (
+     Either(
+         Pixels,
+@@ -97,6 +129,13 @@
+     )
+ )
+ 
++type PaddingType = (
++    PixelsType |
++    tuple[PixelsType, PixelsType] |
++    tuple[PixelsType, PixelsType, PixelsType, PixelsType] |
++    XYType[PixelsType] |
++    LRTBType[PixelsType]
++)
+ Padding = (
+     Either(
+         Pixels,
+diff --git a/src/bokeh/models/annotations/legends.py b/src/bokeh/models/annotations/legends.py
+index ca12b9dab2f..edb15ac2e4d 100644
+--- a/src/bokeh/models/annotations/legends.py
++++ b/src/bokeh/models/annotations/legends.py
+@@ -34,6 +34,7 @@
+     Location,
+     Orientation,
+     VAlign,
++    VerticalAlign,
+ )
+ from ...core.has_props import abstract
+ from ...core.property.aliases import CoordinateLike
+@@ -142,6 +143,15 @@ def __init__(self, *args: Any, **kwargs: Any) -> None:
+     The title text to render.
+     """)
+ 
++    title_orientation = Either(Enum(Orientation), Auto, default="auto", help="""
++    Whether the color bar's title should be oriented vertically or horizontally.
++    When set to ``"auto"``, the orientation is inferred from ``title_location``.
++    """)
++
++    title_location = Either(Enum(Location), Auto, default="auto", help="""
++    Specifies on which side of the color bar the title will be located.
++    """)
++
+     title_props = Include(ScalarTextProps, prefix="title", help="""
+     The {prop} values for the title text.
+     """)
+@@ -150,6 +160,14 @@ def __init__(self, *args: Any, **kwargs: Any) -> None:
+ 
+     title_text_font_style = Override(default="italic")
+ 
++    title_text_halign = Enum(HAlign, default="left", help="""
++    Specifies where to align color bar's title horizontally.
++    """)
++
++    title_text_valign = Enum(VerticalAlign, default="bottom", help="""
++    Specifies where to align color bar's title vertically.
++    """)
++
+     title_standoff = Int(2, help="""
+     The distance (in pixels) to separate the title from the color bar.
+     """)
+@@ -175,8 +193,10 @@ def __init__(self, *args: Any, **kwargs: Any) -> None:
+     Amount of margin (in pixels) around the outside of the color bar.
+     """)
+ 
+-    padding = Int(10, help="""
++    padding = Padding(default=10, help="""
+     Amount of padding (in pixels) between the color scale and color bar border.
++    This can also be specified as a tuple in the form (padding_top, padding_right,
++    padding_bottom, padding_left) to set individual padding values for each side.
+     """)
+ 
+     major_label_props = Include(ScalarTextProps, prefix="major_label", help="""
+diff --git a/src/bokeh/models/annotations/legends.pyi b/src/bokeh/models/annotations/legends.pyi
+index b20d787a580..2c945faa90b 100644
+--- a/src/bokeh/models/annotations/legends.pyi
++++ b/src/bokeh/models/annotations/legends.pyi
+@@ -23,8 +23,13 @@ from ...core.enums import (
+     LocationType as Location,
+     OrientationType as Orientation,
+     VAlignType as VAlign,
++    VerticalAlignType as VerticalAlign,
++)
++from ...core.property_aliases import (
++    AutoAnchorType as AutoAnchor,
++    BorderRadiusType as BorderRadius,
++    PaddingType as Padding,
+ )
+-from ...core.property_aliases import AutoAnchor, BorderRadius, Padding
+ from ...core.property_mixins import (
+     GlyphFillProps,
+     GlyphHatchProps,
+@@ -75,13 +80,17 @@ class _BaseColorBarInit(_AnnotationInit, _ScalarTitleTextPropsInit, _ScalarMajor
+     height: Auto | int
+     width: Auto | int
+     title: TextLike | None
++    title_orientation: Orientation | Auto
++    title_location: Location | Auto
++    title_text_halign: HAlign
++    title_text_valign: VerticalAlign
+     title_standoff: int
+     ticker: Ticker | Auto
+     formatter: TickFormatter | Auto
+     major_label_overrides: dict[float | str, TextLike]
+     major_label_policy: LabelingPolicy
+     margin: int
+-    padding: int
++    padding: Padding
+     label_standoff: int
+     major_tick_in: int
+     major_tick_out: int
+@@ -98,13 +107,17 @@ class BaseColorBar(Annotation, ScalarTitleTextProps, ScalarMajorLabelTextProps,
+     height: Auto | int = ...
+     width: Auto | int = ...
+     title: TextLike | None = ...
++    title_orientation: Orientation | Auto = ...
++    title_location: Location | Auto = ...
++    title_text_halign: HAlign = ...
++    title_text_valign: VerticalAlign = ...
+     title_standoff: int = ...
+     ticker: Ticker | Auto = ...
+     formatter: TickFormatter | Auto = ...
+     major_label_overrides: dict[float | str, TextLike] = ...
+     major_label_policy: LabelingPolicy = ...
+     margin: int = ...
+-    padding: int = ...
++    padding: Padding = ...
+     label_standoff: int = ...
+     major_tick_in: int = ...
+     major_tick_out: int = ...
+diff --git a/tests/baselines/defaults.json5 b/tests/baselines/defaults.json5
+index dcbc2664a13..124bf940984 100644
+--- a/tests/baselines/defaults.json5
++++ b/tests/baselines/defaults.json5
+@@ -1429,6 +1429,8 @@
+     height: "auto",
+     width: "auto",
+     title: null,
++    title_orientation: "auto",
++    title_location: "auto",
+     title_text_color: "#444444",
+     title_text_outline_color: null,
+     title_text_outline_width: 1,
+@@ -1439,6 +1441,8 @@
+     title_text_align: "left",
+     title_text_baseline: "bottom",
+     title_text_line_height: 1.2,
++    title_text_halign: "left",
++    title_text_valign: "bottom",
+     title_standoff: 2,
+     ticker: "auto",
+     formatter: "auto",
+diff --git a/tests/unit/bokeh/models/test_annotations.py b/tests/unit/bokeh/models/test_annotations.py
+index ba39d3ca613..1975acc0b75 100644
+--- a/tests/unit/bokeh/models/test_annotations.py
++++ b/tests/unit/bokeh/models/test_annotations.py
+@@ -188,7 +188,11 @@ def test_ColorBar() -> None:
+     assert color_bar.width == 'auto'
+     assert color_bar.scale_alpha == 1.0
+     assert color_bar.title is None
++    assert color_bar.title_orientation == "auto"
++    assert color_bar.title_location == "auto"
+     assert color_bar.title_standoff == 2
++    assert color_bar.title_text_halign == "left"
++    assert color_bar.title_text_valign == "bottom"
+     assert color_bar.ticker == "auto"
+     assert color_bar.formatter == "auto"
+     assert color_bar.color_mapper == color_mapper
+@@ -217,7 +221,11 @@ def test_ColorBar() -> None:
+         "width",
+         "scale_alpha",
+         "title",
++        "title_orientation",
++        "title_location",
+         "title_standoff",
++        "title_text_halign",
++        "title_text_valign",
+         "ticker",
+         "formatter",
+         "color_mapper",

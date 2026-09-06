@@ -1,0 +1,73 @@
+diff --git a/python/ray/tune/schedulers/util.py b/python/ray/tune/schedulers/util.py
+index 0d0e012a8367..18879ee46f28 100644
+--- a/python/ray/tune/schedulers/util.py
++++ b/python/ray/tune/schedulers/util.py
+@@ -14,9 +14,7 @@ def _set_search_properties_backwards_compatible(
+     try:
+         return set_search_properties_func(metric, mode, **spec)
+     except TypeError as e:
+-        if str(e).startswith(
+-            "set_search_properties() got an unexpected keyword argument"
+-        ):
++        if "set_search_properties() got an unexpected keyword argument" in str(e):
+             logger.warning(
+                 "Please update custom Scheduler to take in function signature "
+                 "as ``def set_search_properties(metric, mode, "
+diff --git a/python/ray/tune/tests/test_trial_scheduler.py b/python/ray/tune/tests/test_trial_scheduler.py
+index 4693330aa288..9430670e065b 100644
+--- a/python/ray/tune/tests/test_trial_scheduler.py
++++ b/python/ray/tune/tests/test_trial_scheduler.py
+@@ -31,6 +31,9 @@
+     TrialScheduler,
+ )
+ from ray.tune.schedulers.pbt import PopulationBasedTrainingReplay, _explore
++from ray.tune.schedulers.util import (
++    _set_search_properties_backwards_compatible,
++)
+ from ray.tune.search import ConcurrencyLimiter
+ from ray.tune.search._mock import _MockSearcher
+ from ray.tune.trainable.metadata import _TrainingRunMetadata
+@@ -2574,5 +2577,43 @@ def testAnonymousMetricEndToEndPBT(self):
+         )
+ 
+ 
++class SchedulerSetSearchPropertiesSuite(unittest.TestCase):
++    def testLegacySchedulerFallsBackToTwoArgSignature(self):
++        class LegacyScheduler(FIFOScheduler):
++            def set_search_properties(self, metric, mode):
++                return True
++
++        self.assertTrue(
++            _set_search_properties_backwards_compatible(
++                LegacyScheduler().set_search_properties, "loss", "min", num_samples=4
++            )
++        )
++
++    def testCurrentSchedulerReceivesSpec(self):
++        received = {}
++
++        class CurrentScheduler(FIFOScheduler):
++            def set_search_properties(self, metric, mode, **spec):
++                received.update(spec)
++                return True
++
++        self.assertTrue(
++            _set_search_properties_backwards_compatible(
++                CurrentScheduler().set_search_properties, "loss", "min", num_samples=4
++            )
++        )
++        self.assertEqual(received, {"num_samples": 4})
++
++    def testUnrelatedTypeErrorIsNotSwallowed(self):
++        class BrokenScheduler(FIFOScheduler):
++            def set_search_properties(self, metric, mode, **spec):
++                raise TypeError("unsupported operand type(s)")
++
++        with self.assertRaises(TypeError):
++            _set_search_properties_backwards_compatible(
++                BrokenScheduler().set_search_properties, "loss", "min", num_samples=4
++            )
++
++
+ if __name__ == "__main__":
+     sys.exit(pytest.main(["-v", __file__]))

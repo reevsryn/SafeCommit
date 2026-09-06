@@ -1,0 +1,1018 @@
+diff --git a/.github/workflows/bokeh-ci-full.yml b/.github/workflows/bokeh-ci-full.yml
+index e73e6b54f50..b2b64ec0d00 100644
+--- a/.github/workflows/bokeh-ci-full.yml
++++ b/.github/workflows/bokeh-ci-full.yml
+@@ -21,10 +21,6 @@ defaults:
+   run:
+     shell: bash --noprofile --norc -eo pipefail {0}
+ 
+-env:
+-  CHROME_VER: "141.0.7390.54"
+-  CHROME_REV: "chromium_3265"
+-
+ jobs:
+   build:
+     runs-on: ubuntu-24.04
+@@ -153,32 +149,30 @@ jobs:
+       - name: Ensure Python version
+         run: if [[ ! "$(python --version | cut -d' ' -f2)" == "${{ matrix.python-version }}"* ]]; then exit 1; fi
+ 
+-      - name: Install chromium
+-        uses: ./.github/workflows/composite/install-chromium
++      - name: Install Playwright browser
++        run: playwright install chromium
+ 
+       - name: List installed software
+         uses: ./.github/workflows/composite/list-software
+         with:
+           environment: ${{ matrix.environment }}
+-          include-chromium: 'true'
+-
+-      - name: Start chrome headless
+-        working-directory: ./bokehjs
+-        run: node make test:spawn:headless # starts chrome in the background on port 9222
+ 
+       - name: Run tests
+         env:
+           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+-        run: pytest -s -v --color=yes --tb line --durations=20 --durations-min=1 tests/test_examples.py
++        run: pytest -s -v --color=yes --tb line -n logical --durations=20 --durations-min=1 tests/test_examples.py
+ 
+       - name: Collect results
+         if: always()
+         env:
+           DST: "examples-report"
+         run: |
+-          mkdir -p ${DST}
+-          cp --parents examples-report.html $(cat .images-list) ${DST}
++          mkdir -p "$DST"
++          cp examples-report.html "$DST"
++          while IFS= read -r image; do
++            cp --parents "$image" "$DST"
++          done < .images-list
+ 
+       - name: Upload report
+         if: always()
+diff --git a/.github/workflows/bokeh-ci.yml b/.github/workflows/bokeh-ci.yml
+index 0f4e9d507a8..284449d2748 100644
+--- a/.github/workflows/bokeh-ci.yml
++++ b/.github/workflows/bokeh-ci.yml
+@@ -18,10 +18,6 @@ defaults:
+   run:
+     shell: bash --noprofile --norc -eo pipefail {0}
+ 
+-env:
+-  CHROME_VER: "141.0.7390.54"
+-  CHROME_REV: "chromium_3265"
+-
+ jobs:
+   build:
+     runs-on: ubuntu-24.04
+@@ -136,32 +132,30 @@ jobs:
+       - name: Ensure Python version
+         run: if [[ ! "$(python --version | cut -d' ' -f2)" == "${{ matrix.python-version }}"* ]]; then exit 1; fi
+ 
+-      - name: Install chromium
+-        uses: ./.github/workflows/composite/install-chromium
++      - name: Install Playwright browser
++        run: playwright install chromium
+ 
+       - name: List installed software
+         uses: ./.github/workflows/composite/list-software
+         with:
+           environment: test-py314
+-          include-chromium: 'true'
+-
+-      - name: Start chrome headless
+-        working-directory: ./bokehjs
+-        run: node make test:spawn:headless
+ 
+       - name: Run tests
+         env:
+           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+-        run: pytest -s -v --color=yes --tb line --durations=20 --durations-min=1 tests/test_examples.py
++        run: pytest -s -v --color=yes --tb line -n logical --durations=20 --durations-min=1 tests/test_examples.py
+ 
+       - name: Collect results
+         if: always()
+         env:
+           DST: "examples-report"
+         run: |
+-          mkdir -p ${DST}
+-          cp --parents examples-report.html $(cat .images-list) ${DST}
++          mkdir -p "$DST"
++          cp examples-report.html "$DST"
++          while IFS= read -r image; do
++            cp --parents "$image" "$DST"
++          done < .images-list
+ 
+       - name: Upload report
+         if: always()
+diff --git a/.github/workflows/composite/install-chromium/action.yml b/.github/workflows/composite/install-chromium/action.yml
+deleted file mode 100644
+index 2fa1ecba5c5..00000000000
+--- a/.github/workflows/composite/install-chromium/action.yml
++++ /dev/null
+@@ -1,33 +0,0 @@
+-name: 'Install Chromium'
+-
+-description: 'Install specific version of Chromium on Linux (snap-based)'
+-
+-runs:
+-  using: composite
+-  steps:
+-    - name: Verify platform
+-      shell: bash
+-      run: |
+-        if [[ "$RUNNER_OS" != "Linux" ]]; then
+-          echo "Error: This action only supports Linux (snap-based installation)"
+-          exit 1
+-        fi
+-
+-    - name: Install chromium (Linux)
+-      shell: bash
+-      run: |
+-        INSTALLED=$(chromium --version | cut -d' ' -f2 | cut -d'.' -f1-3)
+-        EXPECTED=$(echo "$CHROME_VER" | cut -d'.' -f1-3)
+-
+-        echo "Currently installed Chromium $INSTALLED; expected $EXPECTED"
+-
+-        if [[ "$INSTALLED" = "$EXPECTED" ]]; then
+-          echo "Using pre-installed version of chromium"
+-        else
+-          URL=https://github.com/bokeh/chromium/raw/main/linux/$CHROME_VER
+-          wget --no-verbose $URL/$CHROME_REV.assert
+-          wget --no-verbose $URL/$CHROME_REV.snap
+-
+-          sudo snap ack $CHROME_REV.assert
+-          sudo snap install $CHROME_REV.snap
+-        fi
+diff --git a/.github/workflows/composite/list-software/action.yml b/.github/workflows/composite/list-software/action.yml
+index f49210c2d94..78bdf036477 100644
+--- a/.github/workflows/composite/list-software/action.yml
++++ b/.github/workflows/composite/list-software/action.yml
+@@ -6,10 +6,6 @@ inputs:
+   environment:
+     description: 'Pixi environment to list'
+     required: true
+-  include-chromium:
+-    description: 'Whether to include chromium version in output'
+-    required: false
+-    default: 'false'
+ 
+ runs:
+   using: composite
+@@ -22,6 +18,3 @@ runs:
+         echo "python $(python --version)"
+         echo "node $(node --version)"
+         echo "npm $(npm --version)"
+-        if [[ "${{ inputs.include-chromium }}" == "true" ]]; then
+-          chromium --version || echo "chromium not found"
+-        fi
+diff --git a/bokehjs/make/tasks/test.ts b/bokehjs/make/tasks/test.ts
+index 41be586a7ba..a3e018fabe6 100644
+--- a/bokehjs/make/tasks/test.ts
++++ b/bokehjs/make/tasks/test.ts
+@@ -80,7 +80,6 @@ function sys_path(): string {
+ // Also update:
+ // - bokehjs/test/devtools/devtools.ts
+ // - .github/workflows/bokehjs-ci.yml
+-// - .github/workflows/bokeh-ci.yml
+ const supported_chromium_revision = "r3265" // 141.0.7390.54
+ 
+ function chrome(): string {
+@@ -257,12 +256,6 @@ task("test:run:headless", async () => {
+   await keep_alive()
+ })
+ 
+-task("test:spawn:headless", async () => {
+-  const proc = await headless(9222)
+-  await devtools_info(9222)
+-  console.log(`Exec '${chalk.gray("kill")} ${chalk.magenta(`${proc.pid}`)}' to terminate the browser process`)
+-})
+-
+ const start_headless = task("test:start:headless", async () => {
+   let port = 9222
+   await retry(async () => {
+diff --git a/tests/conftest.py b/tests/conftest.py
+index bfd748564f3..e08324d5b46 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -7,6 +7,7 @@
+ from __future__ import annotations
+ 
+ pytest_plugins = (
++    "tests.support.plugins.examples_report",
+     "tests.support.plugins.ipython",
+     "tests.support.plugins.managed_server_loop",
+     "tests.support.plugins.networkx",
+diff --git a/tests/examples.yaml b/tests/examples.yaml
+index e08daf99a37..f3e28fb0799 100644
+--- a/tests/examples.yaml
++++ b/tests/examples.yaml
+@@ -14,6 +14,7 @@
+   no_js: ["maps_cities.py", "maps.py", "trail.py"]
+ 
+ - path: "examples/output/webgl/*"
++  slow: ["clustering.py"]
+ 
+ - path: "examples/output/apis/*"
+   skip: ["autoload_static.py", "autoload_static_flask.py", "components.py", "components_themed.py", "iframe_embed", "json_item.py", "json_item_themed.py", "server_document", "server_session"]
+diff --git a/tests/support/plugins/bokeh_server.py b/tests/support/plugins/bokeh_server.py
+index 38db54db7be..f924ec5c657 100644
+--- a/tests/support/plugins/bokeh_server.py
++++ b/tests/support/plugins/bokeh_server.py
+@@ -22,10 +22,16 @@
+ 
+ # Standard library imports
+ import os
++import socket
+ import subprocess
+ import sys
+ import time
+-from typing import IO, Any, Callable
++from typing import (
++    IO,
++    Any,
++    Callable,
++    Iterator,
++)
+ 
+ # External imports
+ import pytest
+@@ -52,8 +58,13 @@
+ #-----------------------------------------------------------------------------
+ 
+ @pytest.fixture(scope='session')
+-def bokeh_server(request: pytest.FixtureRequest, log_file: IO[str]) -> str:
++def bokeh_server(request: pytest.FixtureRequest, log_file: IO[str]) -> Iterator[str]:
+     bokeh_port: int = request.config.option.bokeh_port
++    worker_input = getattr(request.config, "workerinput", None)
++    if worker_input is not None:
++        with socket.socket() as sock:
++            sock.bind(("127.0.0.1", 0))
++            bokeh_port = sock.getsockname()[1]
+ 
+     cmd = [sys.executable, "-m", "bokeh", "serve"]
+     argv = [f"--port={bokeh_port}"]
+diff --git a/tests/support/plugins/examples_report.py b/tests/support/plugins/examples_report.py
+new file mode 100644
+index 00000000000..c74054bd509
+--- /dev/null
++++ b/tests/support/plugins/examples_report.py
+@@ -0,0 +1,79 @@
++#-----------------------------------------------------------------------------
++# Copyright (c) Anaconda, Inc., and Bokeh Contributors.
++# All rights reserved.
++#
++# The full license is in the file LICENSE.txt, distributed with this software.
++#-----------------------------------------------------------------------------
++'''Collect the examples report across local or pytest-xdist test runs.'''
++
++from __future__ import annotations
++
++# Standard library imports
++from collections.abc import Iterator
++from pathlib import Path
++from typing import Any
++
++# External imports
++import pytest
++
++# Bokeh imports
++from tests.support.util.examples import Example
++
++BASE_DIR = Path(__file__).parents[3]
++
++type ReportEntry = tuple[str, str]
++
++_report_active = False
++_report_entries: list[ReportEntry] = []
++
++
++@pytest.fixture(scope="session")
++def report(request: pytest.FixtureRequest) -> Iterator[list[Example]]:
++    examples: list[Example] = []
++    yield examples
++
++    global _report_active
++    _report_active = True
++    entries = [(example.path, example.img_path) for example in examples]
++
++    worker_output = getattr(request.config, "workeroutput", None)
++    if worker_output is None:
++        _report_entries.extend(entries)
++    else:
++        worker_output["examples_report"] = entries
++
++
++@pytest.hookimpl(optionalhook=True)
++def pytest_testnodedown(node: Any, error: object) -> None:
++    entries = node.workeroutput.get("examples_report")
++    if entries is not None:
++        global _report_active
++        _report_active = True
++        _report_entries.extend(entries)
++
++
++def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
++    if hasattr(session.config, "workerinput") or not _report_active:
++        return
++
++    entries = sorted(_report_entries)
++    images = "".join(f"{Path(img_path).relative_to(BASE_DIR)}\n" for _, img_path in entries)
++    contents = "".join(
++        f'<div><div><b>{Path(path).relative_to(BASE_DIR)}</b></div>\n'
++        f'<a href="{Path(img_path).relative_to(BASE_DIR)}" target="_blank">'
++        f'<img src={Path(img_path).relative_to(BASE_DIR)}></img></a>\n</div>'
++        for path, img_path in entries
++    )
++    html = f"""\
++<html>
++<head>
++<title>Examples report</title>
++</head>
++<body style="display: flex; flex-direction: column;">
++{contents}\
++</body>
++</html>
++"""
++
++    (BASE_DIR / ".images-list").write_text(images)
++    (BASE_DIR / "examples-report.html").write_text(html)
+diff --git a/tests/support/plugins/log_file.py b/tests/support/plugins/log_file.py
+index 182fa887d96..da32aee29e1 100644
+--- a/tests/support/plugins/log_file.py
++++ b/tests/support/plugins/log_file.py
+@@ -22,6 +22,7 @@
+ 
+ # Standard library imports
+ from datetime import datetime
++from os.path import splitext
+ from typing import IO, Iterator
+ 
+ # External imports
+@@ -45,6 +46,10 @@ def log_file(request: pytest.FixtureRequest) -> Iterator[IO[str]]:
+     if log_file is None:
+         dt = datetime.now().isoformat(timespec="seconds")
+         log_file = f"bokeh_{dt}.log"
++    worker_input = getattr(request.config, "workerinput", None)
++    if worker_input is not None:
++        base, ext = splitext(log_file)
++        log_file = f"{base}-{worker_input['workerid']}{ext}"
+     with open(log_file, "w") as f:
+         # Clean-out any existing log-file
+         f.write("")
+diff --git a/tests/support/util/chrome_screenshot.js b/tests/support/util/chrome_screenshot.js
+deleted file mode 100644
+index b75829a3671..00000000000
+--- a/tests/support/util/chrome_screenshot.js
++++ /dev/null
+@@ -1,171 +0,0 @@
+-const CDP = require('chrome-remote-interface')
+-
+-const path = require('path')
+-
+-const argv = process.argv.slice(2)
+-
+-const file = argv[0]
+-const is_url = file.startsWith("file://") || file.startsWith("http://") || file.startsWith("https://")
+-const url = is_url ? file : `file://${path.resolve(file)}`
+-const pause = parseInt(argv[1]) || 100
+-const timeout = parseInt(argv[2]) || 15000
+-
+-process.on('unhandledRejection', (reason, p) => {
+-  console.error('Unhandled rejection at: ', reason)
+-  process.exit(1)
+-})
+-
+-function wait(ms) {
+-  return new Promise(resolve => setTimeout(resolve, ms))
+-}
+-
+-CDP(async function(client) {
+-  const {DOM, Emulation, Log, Page, Runtime} = client
+-
+-  await DOM.enable()
+-  await Log.enable()
+-  await Page.enable()
+-  await Runtime.enable()
+-
+-  await Emulation.setDeviceMetricsOverride({
+-    width: 2000,
+-    height: 4000,
+-    deviceScaleFactor: 1,
+-    mobile: false,
+-  })
+-
+-  const messages = []
+-  const errors = []
+-
+-  let context_id = null
+-
+-  function collect_trace(stackTrace) {
+-    if (stackTrace == null)
+-      return []
+-    else
+-      return stackTrace.callFrames.map(({functionName, url, lineNumber, columnNumber}) => {
+-        return {name: functionName || "(anonymous)", url, line: lineNumber+1, col: columnNumber+1}
+-      })
+-  }
+-
+-  Runtime.executionContextCreated(({context}) => context_id = context.id)
+-
+-  Runtime.consoleAPICalled(({type, args, stackTrace, executionContextId}) => {
+-    if (executionContextId !== context_id)
+-      return
+-    const text = args.map(({value}) => value ? value.toString() : "").join(" ")
+-    const trace = collect_trace(stackTrace)
+-    const {url, line, col} = trace[0]
+-    messages.push({level: type, text, url, line, col, trace})
+-  })
+-
+-  Runtime.exceptionThrown(({exceptionDetails}) => {
+-    if (exceptionDetails.executionContextId !== context_id)
+-      return
+-
+-    const {text, exception, lineNumber, columnNumber, url, stackTrace} = exceptionDetails
+-    errors.push({
+-      text: exception != null && exception.description != null ? exception.description : text,
+-      url,
+-      line: lineNumber+1,
+-      col: columnNumber+1,
+-      trace: collect_trace(stackTrace),
+-    })
+-  })
+-
+-  const jscss = /.*(js|css)$/
+-
+-  Log.entryAdded(({entry}) => {
+-    const {source, level, text, url, lineNumber, stackTrace} = entry
+-    if (source === "network" && level === "error" && jscss.test(url)) {
+-      errors.push({level, text, url, line: lineNumber+1, col: 1, trace: collect_trace(stackTrace)})
+-    }
+-  })
+-
+-  async function evaluate(expression) {
+-    const {result, exceptionDetails} = await Runtime.evaluate({expression})
+-
+-    if (exceptionDetails == null)
+-      return result
+-    else {
+-      const {text, lineNumber, columnNumber, url, stackTrace} = exceptionDetails
+-      errors.push({text, url, line: lineNumber+1, col: columnNumber+1, trace: collect_trace(stackTrace)})
+-      return null
+-    }
+-  }
+-
+-  async function is_ready() {
+-    const expr = "typeof Bokeh !== 'undefined'"
+-    const result = await evaluate(expr)
+-    return result != null && result.value === true
+-  }
+-
+-  async function is_idle() {
+-    const expr = "Bokeh.documents.length > 0 && Bokeh.documents.every((doc) => doc.is_idle)"
+-    const result = await evaluate(expr)
+-    return result != null && result.value === true
+-  }
+-
+-  async function get_bbox() {
+-    const expr0 = `JSON.stringify(getComputedStyle(document.body))`
+-    const result0 = await evaluate(expr0)
+-
+-    const expr1 = "JSON.stringify(Bokeh.index.roots.map((view) => view.el.getBoundingClientRect()))"
+-    const result1 = await evaluate(expr1)
+-
+-    if (result0 != null && result1 != null) {
+-      const style = JSON.parse(result0.value)
+-      const bounds = JSON.parse(result1.value)
+-
+-      const right = Math.ceil(Math.max(0, ...bounds.map((bbox) => bbox.right)))
+-      const bottom = Math.ceil(Math.max(0, ...bounds.map((bbox) => bbox.bottom)))
+-
+-      const width = Math.ceil(right + parseFloat(style.marginRight ?? 0))
+-      const height = Math.ceil(bottom + parseFloat(style.marginBottom ?? 0))
+-
+-      return {x: 0, y: 0, width, height, scale: 1}
+-    } else
+-      return undefined
+-  }
+-
+-  async function get_image() {
+-    const clip = await get_bbox()
+-    return await Page.captureScreenshot({format: "png", clip})
+-  }
+-
+-  async function finish(timeout, success) {
+-    const image = await get_image()
+-    console.log(JSON.stringify({success, timeout, errors, messages, image}))
+-    await client.close()
+-  }
+-
+-  Page.loadEventFired(async () => {
+-    if (errors.length > 0 || !(await is_ready())) {
+-      await finish(false, false)
+-      return
+-    }
+-
+-    for (let i = 0; i < timeout/pause; i++) {
+-      const ret = await is_idle()
+-
+-      if (ret === false) {
+-        await wait(pause)
+-        continue
+-      } else {
+-        await finish(false, true)
+-        return
+-      }
+-    }
+-
+-    await finish(true, true)
+-  })
+-
+-  const result = await Page.navigate({url})
+-  if ("errorText" in result) {
+-    console.error(`Cannot load resource: ${url} (${result.errorText})`)
+-    process.exit(1)
+-  }
+-}).on('error', (err) => {
+-  console.error('Cannot connect to browser: ', err)
+-  process.exit(1)
+-})
+diff --git a/tests/support/util/examples.py b/tests/support/util/examples.py
+index d6c3e686375..59759e718d2 100644
+--- a/tests/support/util/examples.py
++++ b/tests/support/util/examples.py
+@@ -22,7 +22,6 @@
+ 
+ # Standard library imports
+ import os
+-from base64 import b64decode
+ from glob import iglob
+ from os.path import (
+     basename,
+@@ -144,8 +143,8 @@ def is_xfail(self) -> bool:
+     def no_js(self) -> bool:
+         return bool(self.flags & Flags.no_js)
+ 
+-    def store_img(self, img_data: str) -> None:
+-        _store_binary(self.img_path, b64decode(img_data))
++    def store_img(self, image: bytes) -> None:
++        _store_binary(self.img_path, image)
+ 
+ type All = Literal["all"]
+ 
+diff --git a/tests/support/util/screenshot.py b/tests/support/util/screenshot.py
+deleted file mode 100644
+index cfef607da92..00000000000
+--- a/tests/support/util/screenshot.py
++++ /dev/null
+@@ -1,120 +0,0 @@
+-#-----------------------------------------------------------------------------
+-# Copyright (c) Anaconda, Inc., and Bokeh Contributors.
+-# All rights reserved.
+-#
+-# The full license is in the file LICENSE.txt, distributed with this software.
+-#-----------------------------------------------------------------------------
+-
+-#-----------------------------------------------------------------------------
+-# Boilerplate
+-#-----------------------------------------------------------------------------
+-from __future__ import annotations
+-
+-import logging # isort:skip
+-log = logging.getLogger(__name__)
+-
+-#-----------------------------------------------------------------------------
+-# Imports
+-#-----------------------------------------------------------------------------
+-
+-# Standard library imports
+-import json
+-import os
+-import subprocess
+-import sys
+-from os.path import (
+-    abspath,
+-    dirname,
+-    join,
+-    pardir,
+-    split,
+-)
+-from typing import TypedDict
+-
+-# Bokeh imports
+-from bokeh.util.terminal import fail, trace
+-
+-#-----------------------------------------------------------------------------
+-# Globals and constants
+-#-----------------------------------------------------------------------------
+-
+-TOP_PATH = abspath(join(split(__file__)[0], pardir, pardir, pardir))
+-
+-__all__ = (
+-    'run_in_chrome',
+-)
+-
+-#-----------------------------------------------------------------------------
+-# General API
+-#-----------------------------------------------------------------------------
+-
+-class JSImage(TypedDict):
+-    data: str
+-
+-class JSError(TypedDict):
+-    url: str | None
+-    text: str
+-
+-class JSMessage(TypedDict):
+-    level: str
+-    text: str
+-    url: str
+-    line: int
+-    col: int
+-
+-class JSResult(TypedDict):
+-    success: bool
+-    timeout: float | None
+-    image: JSImage
+-    errors: list[JSError]
+-    messages: list[JSMessage]
+-
+-def run_in_chrome(url: str, local_wait: int | None = None, global_wait: int | None = None) -> JSResult:
+-    return _run_in_browser(_get_chrome(), url, local_wait, global_wait)
+-
+-#-----------------------------------------------------------------------------
+-# Dev API
+-#-----------------------------------------------------------------------------
+-
+-#-----------------------------------------------------------------------------
+-# Private API
+-#-----------------------------------------------------------------------------
+-
+-def _get_chrome() -> list[str]:
+-    return ["node", join(dirname(__file__), "chrome_screenshot.js")]
+-
+-def _run_in_browser(engine: list[str], url: str, local_wait: int | None = None, global_wait: int | None = None) -> JSResult:
+-    """
+-    wait is in milliseconds
+-    """
+-    cmd = [*engine, url]
+-    if local_wait is not None:
+-        cmd += [str(local_wait)]
+-    if global_wait is not None:
+-        cmd += [str(global_wait)]
+-    trace(f"Running command: {' '.join(cmd)}")
+-
+-    env = os.environ.copy()
+-    env["NODE_PATH"] = join(TOP_PATH, 'bokehjs', 'node_modules')
+-
+-    try:
+-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+-    except OSError as e:
+-        fail(f"Failed to run: {' '.join(cmd)}")
+-        fail(str(e))
+-        sys.exit(1)
+-
+-    with proc:
+-        (stdout, stderr) = proc.communicate()
+-
+-        if proc.returncode != 0:
+-            output = stderr.decode("utf-8")
+-            fail(output)
+-            sys.exit(1)
+-
+-    output = stdout.decode("utf-8")
+-    return json.loads(output)
+-
+-#-----------------------------------------------------------------------------
+-# Code
+-#-----------------------------------------------------------------------------
+diff --git a/tests/test_examples.py b/tests/test_examples.py
+index e51836e39cc..0b50f1b579c 100644
+--- a/tests/test_examples.py
++++ b/tests/test_examples.py
+@@ -22,20 +22,26 @@
+ import subprocess
+ import sys
+ import time
++from collections.abc import Iterator
++from concurrent.futures import ThreadPoolExecutor
+ from os.path import (
+     abspath,
+     basename,
+     dirname,
+     join,
+-    relpath,
+ )
+ from types import FrameType
+-from typing import Iterator, Literal, NoReturn
++from typing import Any, Literal, NoReturn
++from urllib.parse import urlparse
+ 
+ # External imports
+ import _pytest.config
+ import _pytest.mark
+ import _pytest.python
++from playwright.sync_api import (  # type: ignore[attr-defined]
++    TimeoutError as PlaywrightTimeoutError,
++    sync_playwright,
++)
+ 
+ # Bokeh imports
+ from bokeh.client import push_session
+@@ -50,7 +56,6 @@
+     white,
+ )
+ from tests.support.util.examples import Example, Flags, collect_examples
+-from tests.support.util.screenshot import JSResult, run_in_chrome
+ 
+ #-----------------------------------------------------------------------------
+ # Setup
+@@ -64,6 +69,13 @@
+ 
+ _examples: list[Example] | None = None
+ 
++_browser_args = [
++    "--font-render-hinting=none",
++    "--disable-font-subpixel-positioning",
++    "--force-color-profile=srgb",
++    "--force-device-scale-factor=1",
++]
++
+ #-----------------------------------------------------------------------------
+ # General API
+ #-----------------------------------------------------------------------------
+@@ -109,45 +121,36 @@ def marks(example: Example) -> list[_pytest.mark.MarkDecorator]:
+             params = [ pytest.param(e.path, e, config, marks=marks(e)) for e in examples if e.is_notebook ]
+             metafunc.parametrize('notebook_example,example,config', params)
+ 
+-@pytest.fixture(scope="session", autouse=True)
+-def report() -> Iterator[list[Example]]:
+-    report: list[Example] = []
+-    yield report
+-
+-    images = ""
+-    for example in report:
+-        images += relpath(example.img_path, BASE_DIR) + "\n"
+-
+-    contents = ""
+-    for example in report:
+-        path = relpath(example.path, BASE_DIR)
+-        img_path = relpath(example.img_path, BASE_DIR)
+-        contents += """<div>"""
+-        contents += f"""<div><b>{path}</b></div>\n"""
+-        contents += f"""<a href="{img_path}" target="_blank"><img src={img_path}></img></a>\n"""
+-        contents += """</div>"""
+-
+-    html = f"""\
+-<html>
+-<head>
+-<title>Examples report</title>
+-</head>
+-<body style="display: flex; flex-direction: column;">
+-{contents}\
+-</body>
+-</html>
+-"""
+-
+-    with open(join(BASE_DIR, ".images-list"), "w") as f:
+-        f.write(images)
+-
+-    with open(join(BASE_DIR, "examples-report.html"), "w") as f:
+-        f.write(html)
+-
+-def test_file_examples(file_example: Example, example: Example, report: list[Example], config: _pytest.config.Config, bokeh_server: str) -> None:
++@pytest.fixture(scope="session")
++def examples_browser() -> Iterator[Any]:
++    manager = sync_playwright().start()
++    try:
++        browser = manager.chromium.launch(args=_browser_args)
++        context = browser.new_context(  # type: ignore[attr-defined]
++            device_scale_factor=1,
++            viewport={"width": 2000, "height": 4000},
++        )
++        page = context.new_page()
++        try:
++            yield page
++        finally:
++            page.close()
++            context.close()
++            browser.close()
++    finally:
++        manager.stop()
++
++def test_file_examples(
++    file_example: Example,
++    example: Example,
++    report: list[Example],
++    config: _pytest.config.Config,
++    bokeh_server: str,
++    request: pytest.FixtureRequest,
++) -> None:
+     if config.option.verbose:
+         print()
+-    (status, duration, out, err) = _run_example(example)
++    (status, duration, out, err) = _run_example(example, bokeh_server)
+     info(f"Example run in {white(f'{duration:.3f}s')}")
+ 
+     for line in out.split("\n"):
+@@ -167,9 +170,17 @@ def test_file_examples(file_example: Example, example: Example, report: list[Exa
+         if not config.option.no_js:
+             warn(f"skipping bokehjs for {example.relpath}")
+     else:
+-        _run_in_browser(example, f"file://{example.path_no_ext}.html", report, config.option.verbose)
+-
+-def test_server_examples(server_example: Example, example: Example, report: list[Example], config: _pytest.config.Config, bokeh_server: str) -> None:
++        examples_browser = request.getfixturevalue("examples_browser")
++        _run_in_browser(example, f"file://{example.path_no_ext}.html", report, examples_browser, config.option.verbose)
++
++def test_server_examples(
++    server_example: Example,
++    example: Example,
++    report: list[Example],
++    config: _pytest.config.Config,
++    bokeh_server: str,
++    request: pytest.FixtureRequest,
++) -> None:
+     if config.option.verbose:
+         print()
+     app = build_single_handler_application(example.path)
+@@ -187,65 +198,131 @@ def test_server_examples(server_example: Example, example: Example, report: list
+             raise RuntimeError('Unhandled callback type', type(session_callback))
+ 
+     session_id = ID(basename(example.path))
+-    push_session(doc, session_id=session_id)
++    # Playwright's synchronous driver owns the current thread's asyncio loop.
++    # Push from a worker thread so Tornado can run its own loop there.
++    with ThreadPoolExecutor(max_workers=1) as executor:
++        executor.submit(push_session, doc, session_id=session_id, url=bokeh_server).result()
+ 
+     if example.no_js:
+         if not config.option.no_js:
+             warn(f"skipping bokehjs for {example.relpath}")
+     else:
+-        _run_in_browser(example, f"http://localhost:5006/?bokeh-session-id={session_id}", report, config.option.verbose)
++        examples_browser = request.getfixturevalue("examples_browser")
++        _run_in_browser(example, f"{bokeh_server}/?bokeh-session-id={session_id}", report, examples_browser, config.option.verbose)
++
++type BrowserError = tuple[str | None, str]
+ 
+-def _print_webengine_output(result: JSResult) -> None:
+-    errors = result['errors']
+-    messages = result['messages']
++def _stack_url(stack: str) -> str | None:
++    for frame in stack.splitlines()[1:]:
++        location = frame.strip().removeprefix("at ").rstrip(")")
++        if "(" in location:
++            location = location.rsplit("(", maxsplit=1)[1]
++        try:
++            url, line, col = location.rsplit(":", maxsplit=2)
++        except ValueError:
++            continue
++        if line.isdigit() and col.isdigit() and urlparse(url).scheme:
++            return url
++    return None
+ 
++def _print_browser_output(messages: list[Any], errors: list[BrowserError]) -> None:
+     for message in messages:
+-        level = message['level']
+-        text = message['text']
+-        url = message['url']
+-        line = message['line']
+-        col = message['col']
++        location = message.location
++        url = location["url"]
++        line = location["lineNumber"] + 1
++        col = location["columnNumber"] + 1
+ 
+-        msg = f"{{{level}}} {url}:{line}:{col} {text}"
++        msg = f"{{{message.type}}} {url}:{line}:{col} {message.text}"
+         info(msg, label="JS")
+ 
+-    for error in errors:
+-        _url = error["url"]
+-        if _url is not None:
+-            fail(f"@{_url}", label="JS")
+-        for _line in error['text'].split("\n"):
+-            fail(_line, label="JS")
++    for url, text in errors:
++        if url is not None:
++            fail(f"@{url}", label="JS")
++        for line in text.split("\n"):
++            fail(line, label="JS")
+ 
+-def _run_in_browser(example: Example, url: str, report: list[Example], verbose: bool = False) -> None:
+-    start = time.time()
+-    result = run_in_chrome(url)
+-    end = time.time()
++def _run_in_browser(example: Example, url: str, report: list[Example], page: Any, verbose: bool = False) -> None:
++    messages: list[Any] = []
++    errors: list[BrowserError] = []
+ 
+-    info(f"Example rendered in {(end-start):.3f} seconds")
++    def on_page_error(error: Any) -> None:
++        stack = error.stack or str(error)
++        errors.append((_stack_url(stack), stack))
+ 
+-    success = result["success"]
+-    timeout = result["timeout"]
+-    errors = result["errors"]
++    def on_console(message: Any) -> None:
++        messages.append(message)
+ 
+-    image = result["image"]
+-    example.store_img(image["data"])
+-    report.append(example)
++    def on_request_failed(request: Any) -> None:
++        if request.resource_type in ("script", "stylesheet"):
++            errors.append((request.url, request.failure or "Failed to load resource"))
++
++    def on_response(response: Any) -> None:
++        if not response.ok and response.request.resource_type in ("script", "stylesheet"):
++            errors.append((response.url, f"Failed to load resource: {response.status} {response.status_text}"))
+ 
+-    no_errors = len(errors) == 0
++    page.on("console", on_console)
++    page.on("pageerror", on_page_error)
++    page.on("requestfailed", on_request_failed)
++    page.on("response", on_response)
++
++    start = time.time()
++    try:
++        page.goto(url, wait_until="load")
++        success = page.evaluate("typeof Bokeh !== 'undefined'")
++        timeout = False
++
++        if success:
++            try:
++                page.wait_for_function(
++                    """Bokeh.documents.length > 0 &&
++                        Bokeh.documents.every((doc) => doc.is_idle) &&
++                        Bokeh.index.roots.some((view) => {
++                            const {width, height} = view.el.getBoundingClientRect()
++                            return width > 0 && height > 0
++                        })""",
++                    timeout=15_000,
++                )
++            except PlaywrightTimeoutError:
++                timeout = True
++
++        image = _screenshot(page)
++    finally:
++        page.remove_listener("console", on_console)
++        page.remove_listener("pageerror", on_page_error)
++        page.remove_listener("requestfailed", on_request_failed)
++        page.remove_listener("response", on_response)
++
++    info(f"Example rendered in {(time.time()-start):.3f} seconds")
++    example.store_img(image)
++    report.append(example)
+ 
+     if timeout:
+         warn(f"{red('TIMEOUT:')} bokehjs did not finish")
+ 
+     if verbose:
+-        _print_webengine_output(result)
++        _print_browser_output(messages, errors)
+ 
+     assert success, f"{example.relpath} failed to load"
+-
+-    assert no_errors, f"{example.relpath} failed with {len(errors)} errors"
++    assert not errors, f"{example.relpath} failed with {len(errors)} errors"
++
++def _screenshot(page: Any) -> bytes:
++    clip = page.evaluate("""() => {
++        const style = getComputedStyle(document.body)
++        const bounds = Bokeh.index.roots.map((view) => view.el.getBoundingClientRect())
++        const right = Math.ceil(Math.max(0, ...bounds.map((bbox) => bbox.right)))
++        const bottom = Math.ceil(Math.max(0, ...bounds.map((bbox) => bbox.bottom)))
++        return {
++            x: 0,
++            y: 0,
++            width: Math.max(1, Math.ceil(right + parseFloat(style.marginRight || 0))),
++            height: Math.max(1, Math.ceil(bottom + parseFloat(style.marginBottom || 0))),
++        }
++    }""")
++    return page.screenshot(clip=clip, type="png")
+ 
+ type ProcStatus = int | Literal["timeout"]
+ 
+-def _run_example(example: Example) -> tuple[ProcStatus, float, str, str]:
++def _run_example(example: Example, bokeh_server: str) -> tuple[ProcStatus, float, str, str]:
+     code = f"""\
+ __file__ = filename = {example.path!r}
+ 
+@@ -274,6 +351,9 @@ def _run_example(example: Example) -> tuple[ProcStatus, float, str, str]:
+     env['BOKEH_IGNORE_FILENAME'] = 'true'
+     env['BOKEH_RESOURCES'] = 'server-dev'
+     env['BOKEH_BROWSER'] = 'none'
++    port = urlparse(bokeh_server).port
++    assert port is not None
++    env['BOKEH_DEFAULT_SERVER_PORT'] = str(port)
+ 
+     class Timeout(Exception):
+         pass

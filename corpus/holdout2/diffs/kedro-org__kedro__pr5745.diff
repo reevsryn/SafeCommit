@@ -1,0 +1,262 @@
+diff --git a/RELEASE.md b/RELEASE.md
+index dbe0399767..422d41d6d0 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -30,6 +30,7 @@
+ ## Breaking changes to the API
+ 
+ - **Security fix**: A catalog `type` field resolved with `runtime_params` supplied through the HTTP server's `POST /run` no longer accepts an `AbstractDataset` class chosen by the request. `runtime_params`-driven `type` selection through other, trusted callers (for example, `kedro run --params`) is unaffected.
++- The `settings.py` entry `RUNNER_MODULES_WHITELIST` has been renamed to `RUNNER_MODULE_ALLOWLIST`, following the `<COMPONENT>_ALLOWLIST` naming convention for Kedro allowlists. Projects that set the old name must rename it, otherwise the entries are ignored and the HTTP server rejects those runner modules.
+ 
+ ## Community contributions
+ 
+diff --git a/docs/extend/serving.md b/docs/extend/serving.md
+index a4be14c901..812b8e67a4 100644
+--- a/docs/extend/serving.md
++++ b/docs/extend/serving.md
+@@ -204,11 +204,11 @@ The server creates this session with `serving_mode=True` (see [Create a `KedroSe
+ 
+ #### Runner security
+ 
+-Short names (for example, `SequentialRunner`) always resolve against `kedro.runner`. Fully-qualified names (for example, `mypackage.runners.MyRunner`) must belong to `kedro.runner`, the project's own package, or a module listed in `RUNNER_MODULES_WHITELIST` in `settings.py`. The module is never imported otherwise.
++Short names (for example, `SequentialRunner`) always resolve against `kedro.runner`. Fully-qualified names (for example, `mypackage.runners.MyRunner`) must belong to `kedro.runner`, the project's own package, or a module listed in `RUNNER_MODULE_ALLOWLIST` in `settings.py`. The module is never imported otherwise.
+ 
+ ```python
+ # settings.py
+-RUNNER_MODULES_WHITELIST = ["external_lib.runners"]
++RUNNER_MODULE_ALLOWLIST = ["external_lib.runners"]
+ ```
+ 
+ #### Dataset type security
+diff --git a/docs/tutorials/settings.md b/docs/tutorials/settings.md
+index 9826d7a27f..623a8dbde2 100644
+--- a/docs/tutorials/settings.md
++++ b/docs/tutorials/settings.md
+@@ -22,6 +22,7 @@ By default, all code in `settings.py` is commented out. When settings are not su
+ | `CONFIG_LOADER_CLASS`       | `kedro.config.ConfigLoader`                        | Customise how project configuration is handled.                                                                           |
+ | `CONFIG_LOADER_ARGS`        | `dict()`                                           | Keyword arguments for the `CONFIG_LOADER_CLASS` constructor.                                                              |
+ | `DATA_CATALOG_CLASS`        | `kedro.io.DataCatalog`                             | Customise how the [Data Catalog](../catalog-data/data_catalog.md) is handled.                                             |
++| `RUNNER_MODULE_ALLOWLIST`   | `tuple()`                                          | Additional module prefixes the [HTTP server](../extend/serving.md#runner-security) may import a runner from.              |
+ 
+ ## Project metadata
+ 
+diff --git a/kedro/framework/project/__init__.py b/kedro/framework/project/__init__.py
+index 91ea1115d6..d2d3497f9b 100644
+--- a/kedro/framework/project/__init__.py
++++ b/kedro/framework/project/__init__.py
+@@ -139,7 +139,7 @@ class _ProjectSettings(LazySettings):
+     )
+     _SESSION_STORE_ARGS = Validator("SESSION_STORE_ARGS", default={})
+     _DISABLE_HOOKS_FOR_PLUGINS = Validator("DISABLE_HOOKS_FOR_PLUGINS", default=tuple())
+-    _RUNNER_MODULES_WHITELIST = Validator("RUNNER_MODULES_WHITELIST", default=tuple())
++    _RUNNER_MODULE_ALLOWLIST = Validator("RUNNER_MODULE_ALLOWLIST", default=tuple())
+     _CONFIG_LOADER_CLASS = _HasSharedParentClassValidator(
+         "CONFIG_LOADER_CLASS",
+         default=_get_default_class("kedro.config.OmegaConfigLoader"),
+@@ -164,7 +164,7 @@ def __init__(self, *args: Any, **kwargs: Any):
+                 self._SESSION_STORE_CLASS,
+                 self._SESSION_STORE_ARGS,
+                 self._DISABLE_HOOKS_FOR_PLUGINS,
+-                self._RUNNER_MODULES_WHITELIST,
++                self._RUNNER_MODULE_ALLOWLIST,
+                 self._CONFIG_LOADER_CLASS,
+                 self._CONFIG_LOADER_ARGS,
+                 self._DATA_CATALOG_CLASS,
+diff --git a/kedro/server/http_server.py b/kedro/server/http_server.py
+index 882e9b1d17..d752aeb0d4 100644
+--- a/kedro/server/http_server.py
++++ b/kedro/server/http_server.py
+@@ -35,7 +35,7 @@
+     KEDRO_SERVER_ENV,
+     _resolve_project_path,
+ )
+-from kedro.utils import load_obj
++from kedro.utils import _is_module_allowed, load_obj
+ 
+ if TYPE_CHECKING:
+     from collections.abc import AsyncGenerator
+@@ -193,19 +193,14 @@ def _validate_runner_module(runner_name: str | None, package_name: str | None) -
+     A runner name without a module prefix (e.g. ``SequentialRunner``) always
+     passes because ``load_obj`` will resolve it against ``kedro.runner``.
+     Allowed prefixes are ``kedro.runner``, the project <package_name>, and any
+-    additional entries in ``settings.RUNNER_MODULES_WHITELIST``.
++    additional entries in ``settings.RUNNER_MODULE_ALLOWLIST``.
+     """
+     if runner_name is None or "." not in runner_name:
+         return True
+     module = runner_name.rsplit(".", 1)[0]
+-    allowed_prefixes = [
+-        "kedro.runner",
+-        package_name,
+-        *settings.RUNNER_MODULES_WHITELIST,
+-    ]
+-    return any(
+-        module == prefix or module.startswith(prefix + ".")
+-        for prefix in allowed_prefixes
++    return _is_module_allowed(
++        module,
++        ["kedro.runner", package_name, *settings.RUNNER_MODULE_ALLOWLIST],
+     )
+ 
+ 
+@@ -238,7 +233,7 @@ def _execute_pipeline(
+             raise ValueError(
+                 f"Runner module '{module}' is not allowed. "
+                 "Only 'kedro.runner', the project package, or modules listed in "
+-                "'RUNNER_MODULES_WHITELIST' via settings.py are permitted."
++                "'RUNNER_MODULE_ALLOWLIST' via settings.py are permitted."
+             )
+         runner_class = load_obj(runner_name, "kedro.runner")
+         if not (
+diff --git a/kedro/utils.py b/kedro/utils.py
+index 6822d48656..5c1ab983a2 100644
+--- a/kedro/utils.py
++++ b/kedro/utils.py
+@@ -106,6 +106,31 @@ def load_obj(obj_path: str, default_obj_path: str = "") -> Any:
+     return getattr(module_obj, obj_name)
+ 
+ 
++def _is_module_allowed(
++    module_path: str, allowed_prefixes: Iterable[str | None]
++) -> bool:
++    """Check a module path against an allowlist of module prefixes.
++
++    This is the shared pre-flight check for components that import a module
++    named by user input. A prefix matches when it is the module path itself or
++    a parent package of it, so ``pkg`` allows ``pkg`` and ``pkg.sub`` but not
++    ``pkgsub``. ``None`` prefixes are ignored, so callers can pass optional
++    values such as a project package name without filtering them out first.
++
++    Args:
++        module_path: Dotted path of the module about to be imported.
++        allowed_prefixes: Module prefixes that are permitted.
++
++    Returns:
++        True when ``module_path`` is covered by one of ``allowed_prefixes``.
++    """
++    return any(
++        prefix is not None
++        and (module_path == prefix or module_path.startswith(prefix + "."))
++        for prefix in allowed_prefixes
++    )
++
++
+ def _is_databricks() -> bool:
+     """Evaluate if the current run environment is Databricks or not.
+ 
+diff --git a/tests/server/test_run_endpoint.py b/tests/server/test_run_endpoint.py
+index d6a4708845..07d608f19c 100644
+--- a/tests/server/test_run_endpoint.py
++++ b/tests/server/test_run_endpoint.py
+@@ -488,7 +488,7 @@ def test_execute_pipeline_rejects_disallowed_module(self, mocker):
+         mock_session = mocker.Mock()
+         mock_session._package_name = "mypackage"
+         mock_load_obj = mocker.patch("kedro.server.http_server.load_obj")
+-        mocker.patch.object(settings, "RUNNER_MODULES_WHITELIST", [])
++        mocker.patch.object(settings, "RUNNER_MODULE_ALLOWLIST", [])
+ 
+         result = _execute_pipeline(
+             session=mock_session,
+@@ -502,15 +502,15 @@ def test_execute_pipeline_rejects_disallowed_module(self, mocker):
+         mock_load_obj.assert_not_called()
+         mock_session.run.assert_not_called()
+ 
+-    def test_execute_pipeline_allows_whitelisted_module(self, mocker):
+-        """Runner from a module listed in RUNNER_MODULES_WHITELIST is permitted."""
++    def test_execute_pipeline_allows_allowlisted_module(self, mocker):
++        """Runner from a module listed in RUNNER_MODULE_ALLOWLIST is permitted."""
+         mock_session = mocker.Mock()
+         mock_session._package_name = "mypackage"
+         mocker.patch(
+             "kedro.server.http_server.load_obj",
+             return_value=_FakeRunner,
+         )
+-        mocker.patch.object(settings, "RUNNER_MODULES_WHITELIST", ["external.runners"])
++        mocker.patch.object(settings, "RUNNER_MODULE_ALLOWLIST", ["external.runners"])
+ 
+         result = _execute_pipeline(
+             session=mock_session,
+@@ -521,14 +521,14 @@ def test_execute_pipeline_allows_whitelisted_module(self, mocker):
+         mock_session.run.assert_called_once()
+ 
+     def test_execute_pipeline_allows_project_package_module(self, mocker):
+-        """Runner from the project's own package namespace is permitted without whitelisting."""
++        """Runner from the project's own package namespace is permitted without allowlisting."""
+         mock_session = mocker.Mock()
+         mock_session._package_name = "mypackage"
+         mocker.patch(
+             "kedro.server.http_server.load_obj",
+             return_value=_FakeRunner,
+         )
+-        mocker.patch.object(settings, "RUNNER_MODULES_WHITELIST", [])
++        mocker.patch.object(settings, "RUNNER_MODULE_ALLOWLIST", [])
+ 
+         result = _execute_pipeline(
+             session=mock_session,
+@@ -539,14 +539,14 @@ def test_execute_pipeline_allows_project_package_module(self, mocker):
+         mock_session.run.assert_called_once()
+ 
+     def test_execute_pipeline_allows_project_subpackage_module(self, mocker):
+-        """Runner from a subpackage of the project package is permitted without whitelisting."""
++        """Runner from a subpackage of the project package is permitted without allowlisting."""
+         mock_session = mocker.Mock()
+         mock_session._package_name = "mypackage"
+         mocker.patch(
+             "kedro.server.http_server.load_obj",
+             return_value=_FakeRunner,
+         )
+-        mocker.patch.object(settings, "RUNNER_MODULES_WHITELIST", [])
++        mocker.patch.object(settings, "RUNNER_MODULE_ALLOWLIST", [])
+ 
+         result = _execute_pipeline(
+             session=mock_session,
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 383096cd2e..420bd09641 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -7,6 +7,7 @@
+ 
+ from kedro.utils import (
+     KedroExperimentalWarning,
++    _is_module_allowed,
+     _is_unsafe_version,
+     experimental,
+     find_config_file,
+@@ -63,6 +64,37 @@ def test_load_obj_invalid_module(self):
+             load_obj("InvalidClass", "missing_path")
+ 
+ 
++class TestIsModuleAllowed:
++    @pytest.mark.parametrize(
++        "module_path,allowed_prefixes",
++        [
++            ("kedro.runner", ["kedro.runner"]),
++            ("kedro.runner.sequential_runner", ["kedro.runner"]),
++            ("my_project.runners", ["kedro.runner", "my_project"]),
++            ("external.runners", ["kedro.runner", None, "external.runners"]),
++        ],
++    )
++    def test_allowed(self, module_path, allowed_prefixes):
++        assert _is_module_allowed(module_path, allowed_prefixes)
++
++    @pytest.mark.parametrize(
++        "module_path,allowed_prefixes",
++        [
++            ("attacker.runners", ["kedro.runner", "my_project"]),
++            ("os", []),
++            # A prefix must match on a package boundary, not as a bare string.
++            ("kedro.runnerhack", ["kedro.runner"]),
++            ("my_projectevil", ["my_project"]),
++        ],
++    )
++    def test_rejected(self, module_path, allowed_prefixes):
++        assert not _is_module_allowed(module_path, allowed_prefixes)
++
++    def test_none_prefixes_are_ignored(self):
++        """A caller passing an unset package name must not raise."""
++        assert not _is_module_allowed("attacker.runners", [None])
++
++
+ def identity(input1) -> T:
+     """Return the input unchanged."""
+     return input1  # pragma: no cover

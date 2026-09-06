@@ -1,0 +1,771 @@
+diff --git a/.github/workflows/bokeh-ci-full.yml b/.github/workflows/bokeh-ci-full.yml
+index b01ddbb30a7..e73e6b54f50 100644
+--- a/.github/workflows/bokeh-ci-full.yml
++++ b/.github/workflows/bokeh-ci-full.yml
+@@ -70,10 +70,10 @@ jobs:
+           environment: test-py312
+ 
+       - name: Run codebase checks
+-        run: pytest --color=yes tests/codebase
++        run: pytest --color=yes --durations=20 --durations-min=1 tests/codebase
+ 
+       - name: Run tools tests
+-        run: pytest --color=yes tests/tools
++        run: pytest --color=yes --durations=20 --durations-min=1 tests/tools
+ 
+   typing:
+     needs: build
+@@ -170,7 +170,7 @@ jobs:
+         env:
+           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+-        run: pytest -s -v --color=yes --tb line tests/test_examples.py
++        run: pytest -s -v --color=yes --tb line --durations=20 --durations-min=1 tests/test_examples.py
+ 
+       - name: Collect results
+         if: always()
+@@ -231,6 +231,8 @@ jobs:
+ 
+       - name: Run unit tests
+         uses: ./.github/workflows/composite/run-unit-tests
++        with:
++          collect-coverage: ${{ runner.os != 'Windows' }}
+ 
+   unit-test-free-threaded:
+     name: unit-test free-threaded (ubuntu-24.04, 3.14t)
+@@ -267,12 +269,12 @@ jobs:
+           python-gil: '0'
+ 
+       - name: Run server examples
+-        run: PYTHON_GIL=0 pytest -q --color=yes --tb=short --no-js tests/test_examples.py::test_server_examples
++        run: PYTHON_GIL=0 pytest -q --color=yes --tb=short --durations=20 --durations-min=1 --no-js tests/test_examples.py::test_server_examples
+ 
+       - name: Stress free-threaded concurrency
+         run: |
+           # Keep repetitions in one process so concurrency comes from test threads.
+-          PYTHON_GIL=0 pytest --color=yes -n 0 --count=10 -m free_threading tests/unit/bokeh
++          PYTHON_GIL=0 pytest --color=yes --durations=20 --durations-min=1 -n 0 --count=10 -m free_threading tests/unit/bokeh
+ 
+   minimal-deps:
+     needs: build
+@@ -406,7 +408,7 @@ jobs:
+         env:
+           BOKEH_SERVER_FRONTEND: ${{ matrix.frontend }}
+           BOKEH_SERVER_PROXY: ${{ matrix.proxy }}
+-        run: pytest -v --color=yes tests/integration/server_proxy/test_proxy.py
++        run: pytest -v --color=yes --durations=20 --durations-min=1 tests/integration/server_proxy/test_proxy.py
+ 
+       - name: Upload proxy logs
+         if: always()
+@@ -443,7 +445,7 @@ jobs:
+         env:
+           BOKEH_SERVER_E2E: '1'
+           BOKEH_SERVER_E2E_RUNNER: ${{ matrix.runner }}
+-        run: pytest -v --color=yes tests/integration/server_e2e/test_examples.py
++        run: pytest -v --color=yes --durations=20 --durations-min=1 tests/integration/server_e2e/test_examples.py
+ 
+       - name: Upload server logs
+         if: always()
+diff --git a/.github/workflows/bokeh-ci.yml b/.github/workflows/bokeh-ci.yml
+index ddfb02c72fb..0f4e9d507a8 100644
+--- a/.github/workflows/bokeh-ci.yml
++++ b/.github/workflows/bokeh-ci.yml
+@@ -64,10 +64,10 @@ jobs:
+           environment: test-py312
+ 
+       - name: Run codebase checks
+-        run: pytest --color=yes tests/codebase
++        run: pytest --color=yes --durations=20 --durations-min=1 tests/codebase
+ 
+       - name: Run tools tests
+-        run: pytest --color=yes tests/tools
++        run: pytest --color=yes --durations=20 --durations-min=1 tests/tools
+ 
+   typing:
+     needs: build
+@@ -153,7 +153,7 @@ jobs:
+         env:
+           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+-        run: pytest -s -v --color=yes --tb line tests/test_examples.py
++        run: pytest -s -v --color=yes --tb line --durations=20 --durations-min=1 tests/test_examples.py
+ 
+       - name: Collect results
+         if: always()
+@@ -206,6 +206,8 @@ jobs:
+ 
+       - name: Run unit tests
+         uses: ./.github/workflows/composite/run-unit-tests
++        with:
++          collect-coverage: ${{ runner.os != 'Windows' }}
+ 
+   minimal-deps:
+     needs: build
+diff --git a/.github/workflows/composite/run-deps-tests/action.yml b/.github/workflows/composite/run-deps-tests/action.yml
+index 4ae95eca893..04e2d1f9b1f 100644
+--- a/.github/workflows/composite/run-deps-tests/action.yml
++++ b/.github/workflows/composite/run-deps-tests/action.yml
+@@ -15,8 +15,12 @@ runs:
+       run: |
+         COLOR="--color=yes"
+         COVERAGE="--cov=bokeh --cov-report=xml"
++        DURATIONS="--durations=20 --durations-min=1"
++        # Dependency jobs verify compatibility; unit and free-threaded jobs cover concurrency.
++        MARKERS="not sampledata and not free_threading"
++        PARALLEL="-n logical --dist=loadgroup"
+         POLICY="--last-failed --last-failed-no-failures none"
+-        pytest -m "not sampledata" $COLOR $COVERAGE tests/unit || pytest -m "not sampledata" $COLOR $POLICY tests/unit
++        pytest -m "$MARKERS" $COLOR $COVERAGE $DURATIONS $PARALLEL tests/unit || pytest -m "$MARKERS" $COLOR $DURATIONS $PARALLEL $POLICY tests/unit
+ 
+     - name: Upload code coverage
+       uses: codecov/codecov-action@v7
+diff --git a/.github/workflows/composite/run-unit-tests/action.yml b/.github/workflows/composite/run-unit-tests/action.yml
+index 110965bfb97..4d373d637f1 100644
+--- a/.github/workflows/composite/run-unit-tests/action.yml
++++ b/.github/workflows/composite/run-unit-tests/action.yml
+@@ -1,8 +1,12 @@
+ name: 'Run Unit Tests'
+ 
+-description: 'Run Bokeh unit tests with coverage'
++description: 'Run Bokeh unit tests with optional coverage'
+ 
+ inputs:
++  collect-coverage:
++    description: 'Whether to collect and upload Python coverage'
++    required: false
++    default: 'true'
+   coverage-flags:
+     description: 'Codecov flags (comma-separated)'
+     required: false
+@@ -39,13 +43,21 @@ runs:
+           export PYTHON_GIL="${{ inputs.python-gil }}"
+         fi
+         COLOR="--color=yes"
+-        COVERAGE="--cov=bokeh --cov-report=xml"
++        COVERAGE=()
++        if [[ "${{ inputs.collect-coverage }}" == "true" ]]; then
++          COVERAGE=(--cov=bokeh --cov-report=xml)
++        fi
++        DURATIONS="--durations=20 --durations-min=1"
++        PARALLEL=(-n logical)
++        if [[ "${{ runner.os }}" != "Windows" ]]; then
++          PARALLEL+=(--dist=loadgroup)
++        fi
+         POLICY="--last-failed --last-failed-no-failures none"
+-        pytest $COLOR $COVERAGE tests/unit -n logical || pytest $COLOR $POLICY tests/unit
++        pytest $COLOR "${COVERAGE[@]}" $DURATIONS "${PARALLEL[@]}" tests/unit || pytest $COLOR $DURATIONS $POLICY tests/unit
+ 
+     - name: Upload code coverage
+       uses: codecov/codecov-action@v7
+-      if: success() || failure()
++      if: (success() || failure()) && inputs.collect-coverage == 'true'
+       with:
+         env_vars: OS,PYTHON
+         flags: ${{ inputs.coverage-flags }}
+diff --git a/tests/support/plugins/managed_server_loop.py b/tests/support/plugins/managed_server_loop.py
+index ddcd9f39c2b..228df3052e4 100644
+--- a/tests/support/plugins/managed_server_loop.py
++++ b/tests/support/plugins/managed_server_loop.py
+@@ -57,11 +57,11 @@ class MSL(Protocol):
+     def __call__(self, application: Application, port: int | None = None, **server_kwargs: Any) -> ContextManager[Server]: ...
+ 
+ @pytest.fixture
+-def ManagedServerLoop(unused_tcp_port: int) -> MSL:
++def ManagedServerLoop() -> MSL:
+     @contextmanager
+     def msl(application: Application, port: int | None = None, **server_kwargs: Any) -> Iterator[Server]:
+         if port is None:
+-            port = unused_tcp_port
++            port = 0
+         server = Server(application, port=port, **server_kwargs)
+         server.start()
+         yield server
+diff --git a/tests/support/plugins/project.py b/tests/support/plugins/project.py
+index 4762143f347..dc866f7a007 100644
+--- a/tests/support/plugins/project.py
++++ b/tests/support/plugins/project.py
+@@ -21,6 +21,7 @@
+ #-----------------------------------------------------------------------------
+ 
+ # Standard library imports
++from hashlib import sha256
+ from typing import TYPE_CHECKING
+ 
+ # External imports
+@@ -48,7 +49,8 @@
+ 
+ @pytest.fixture
+ def test_file_path_and_url(request: pytest.FixtureRequest, file_server: SimpleWebServer) -> tuple[str, str]:
+-    file_name = request.function.__name__ + '.html'
++    suffix = sha256(request.node.nodeid.encode()).hexdigest()[:8]
++    file_name = f"{request.function.__name__}-{suffix}.html"
+     file_path = request.node.path.with_name(file_name)
+ 
+     def tear_down() -> None:
+diff --git a/tests/unit/bokeh/command/subcommands/test_serve.py b/tests/unit/bokeh/command/subcommands/test_serve.py
+index 6375808a581..8f73a0e706b 100644
+--- a/tests/unit/bokeh/command/subcommands/test_serve.py
++++ b/tests/unit/bokeh/command/subcommands/test_serve.py
+@@ -31,6 +31,7 @@
+ from queue import Empty, Queue
+ from threading import Thread
+ from typing import IO
++from urllib.request import urlopen
+ 
+ # Bokeh imports
+ from bokeh.command.subcommand import Argument
+@@ -653,13 +654,20 @@ def test_handling_SIGTERM() -> None:
+     pat_pid = re.compile(r"Starting Bokeh server with process id: (\d+)")
+     pat_term = re.compile(r"Received signal SIGTERM, shutting down")
+ 
+-    with run_bokeh_serve([]) as (_, nbsr):
+-        time.sleep(1) # otherwise won't work; can be replaced with breakpoint()
++    with run_bokeh_serve(["--port", "0"]) as (process, nbsr):
++        port = check_port(nbsr)
+         match = find_pattern(nbsr, pat_pid)
+         if match is None:
+             pytest.fail("Did not find server PID in process output")
+-        pid = int(match.group(1))
+-        os.kill(pid, signal.SIGTERM)
++        assert int(match.group(1)) == process.pid
++
++        # Processing a request confirms that the IOLoop is running and its
++        # SIGTERM handler has been installed.
++        with urlopen(f"http://localhost:{port}/", timeout=10) as response:
++            assert response.status == 200
++
++        process.send_signal(signal.SIGTERM)
++        process.wait(timeout=30)
+         match = find_pattern(nbsr, pat_term)
+         if match is None:
+             pytest.fail("Did not find SIGTERM confirmation in process output")
+diff --git a/tests/unit/bokeh/embed/test_bundle.py b/tests/unit/bokeh/embed/test_bundle.py
+index 0fff1dd6614..bec3140d0a1 100644
+--- a/tests/unit/bokeh/embed/test_bundle.py
++++ b/tests/unit/bokeh/embed/test_bundle.py
+@@ -17,14 +17,16 @@
+ #-----------------------------------------------------------------------------
+ 
+ # Standard library imports
+-from os.path import dirname, join
++import importlib
++import sys
++from pathlib import Path
++from shutil import copy
+ 
+ # Bokeh imports
+ from bokeh import models
+ from bokeh.core.has_props import _default_resolver
+ from bokeh.document import Document
+ from bokeh.embed.bundle import URL, extension_dirs
+-from bokeh.ext import build
+ from bokeh.resources import CDN, INLINE, Resources
+ from tests.support.util.env import envset
+ 
+@@ -38,6 +40,34 @@
+ ABSOLUTE = Resources(mode="absolute")
+ SERVER = Resources(mode="server")
+ 
++@pytest.fixture(scope="module", autouse=True)
++def _extension_packages(tmp_path_factory: pytest.TempPathFactory):
++    """Provide extension artifacts without rebuilding their npm packages."""
++    source_dir = Path(__file__).parent
++    packages_dir = tmp_path_factory.mktemp("extension_packages")
++    artifacts = {
++        "latex_label": "class LatexLabelView {}\n",
++        "ext_package_no_main": "const AModel = {}\n",
++    }
++
++    for name, artifact in artifacts.items():
++        package_dir = packages_dir / name
++        package_dir.mkdir()
++        for filename in ("__init__.py", "bokeh.ext.json", "package.json"):
++            copy(source_dir / name / filename, package_dir / filename)
++        dist_dir = package_dir / "dist"
++        dist_dir.mkdir()
++        (dist_dir / f"{name}.js").write_text(artifact, encoding="utf-8")
++
++    sys.path.insert(0, str(packages_dir))
++    importlib.invalidate_caches()
++    try:
++        yield
++    finally:
++        sys.path.remove(str(packages_dir))
++        for name in artifacts:
++            sys.modules.pop(name, None)
++
+ def plot() -> models.Plot:
+     from bokeh.plotting import figure
+     plot = figure()
+@@ -100,11 +130,6 @@ def test_no_objs_all_resources_bundled(self) -> None:
+ 
+ class Test_bundle_custom_extensions:
+ 
+-    @classmethod
+-    def setup_class(cls):
+-        base_dir = dirname(__file__)
+-        build(join(base_dir, "latex_label"), rebuild=True)
+-
+     @classmethod
+     def teardown_class(cls):
+         from latex_label import LatexLabel
+@@ -148,11 +173,6 @@ def test_with_Server_resources_dev(self) -> None:
+ 
+ class Test_bundle_ext_package_no_main:
+ 
+-    @classmethod
+-    def setup_class(cls):
+-        base_dir = dirname(__file__)
+-        build(join(base_dir, "ext_package_no_main"), rebuild=True)
+-
+     @classmethod
+     def teardown_class(cls):
+         from ext_package_no_main import AModel
+diff --git a/tests/unit/bokeh/embed/test_standalone.py b/tests/unit/bokeh/embed/test_standalone.py
+index fd26b56b3c9..586897c6bd6 100644
+--- a/tests/unit/bokeh/embed/test_standalone.py
++++ b/tests/unit/bokeh/embed/test_standalone.py
+@@ -19,12 +19,11 @@
+ # Standard library imports
+ import json
+ from collections import OrderedDict
+-from typing import TYPE_CHECKING, Any
++from typing import Any
+ from unittest.mock import MagicMock, patch
+ 
+ # External imports
+ import numpy as np
+-from jinja2 import Template
+ 
+ # Bokeh imports
+ import bokeh.resources as resources
+@@ -49,10 +48,6 @@
+     built_in_themes,
+ )
+ 
+-if TYPE_CHECKING:
+-    from selenium.webdriver.common.by import By
+-    from selenium.webdriver.remote.webdriver import WebDriver
+-
+ # Module under test
+ import bokeh.embed.standalone as bes # isort:skip
+ 
+@@ -60,14 +55,19 @@
+ # Setup
+ #-----------------------------------------------------------------------------
+ 
+-pytest_plugins = (
+-    "tests.support.plugins.project",
+-    "tests.support.plugins.selenium",
+-)
+-
+ def stable_id() -> ID:
+     return ID('ID')
+ 
++def _autoload_js_urls(js: str) -> list[str]:
++    prefix = "const js_urls = "
++    line = next(line.strip() for line in js.splitlines() if line.strip().startswith(prefix))
++    return json.loads(line.removeprefix(prefix).removesuffix(";"))
++
++def _assert_script_urls(js: str, expected: list[str]) -> None:
++    assert _autoload_js_urls(js) == expected
++    assert "crossorigin" not in js.lower()
++    assert "integrity" not in js.lower()
++
+ @pytest.fixture
+ def test_plot() -> figure:
+     from bokeh.plotting import figure
+@@ -75,22 +75,6 @@ def test_plot() -> figure:
+     test_plot.scatter(np.array([1, 2]), np.array([2, 3]))
+     return test_plot
+ 
+-PAGE = Template("""
+-<!DOCTYPE html>
+-<html lang="en">
+-<head>
+-</head>
+-
+-<body>
+-  <script>
+-  {{js}}
+-  </script>
+-  {{tag}}
+-</body>
+-""")
+-
+-CSS_SELECTOR: By.CSS_SELECTOR = "css selector"  # type: ignore[valid-type]
+-
+ #-----------------------------------------------------------------------------
+ # General API
+ #-----------------------------------------------------------------------------
+@@ -111,105 +95,38 @@ def test_script_attrs(self, test_plot: figure) -> None:
+         assert set(attrs) == {"src", "id"}
+         assert attrs["src"] == "some/path"
+ 
+-    @pytest.mark.selenium
+-    def test_by_css_selector(self) -> None:
+-        # Should match upstream, this is to avoid importing it
+-        pytest.importorskip("selenium")
+-        from selenium.webdriver.common.by import By
++    @pytest.mark.parametrize("version", ["1.4.0rc1", "2.0.0dev3"])
++    def test_js_dev_cdn(self, version: str, monkeypatch: pytest.MonkeyPatch, test_plot: figure) -> None:
++        monkeypatch.setattr(buv, "__version__", version)
++        monkeypatch.setattr(resources, "__version__", version)
++        js, _ = bes.autoload_static(test_plot, CDN, "some/path")
+ 
+-        assert By.CSS_SELECTOR == CSS_SELECTOR
++        _assert_script_urls(js, CDN.js_files)
+ 
+-    @pytest.mark.parametrize("version", ["1.4.0rc1", "2.0.0dev3"])
+-    @pytest.mark.selenium
+-    def test_js_dev_cdn(self, version: str, monkeypatch: pytest.MonkeyPatch, driver: WebDriver,
+-            test_file_path_and_url: tuple[str, str], test_plot: figure) -> None:
+-        monkeypatch.setattr(buv, "__version__", "1.4.0rc1")
+-        monkeypatch.setattr(resources, "__version__", "1.4.0rc1")
+-        js, tag = bes.autoload_static(test_plot, CDN, "some/path")
+-
+-        page = PAGE.render(js=js, tag=tag)
+-
+-        path, url = test_file_path_and_url
+-        with open(path, "w") as f:
+-            f.write(page)
+-
+-        driver.get(url)
+-
+-        scripts = driver.find_elements(CSS_SELECTOR, 'head script')
+-        assert len(scripts) == 5
+-        for script in scripts:
+-            assert script.get_attribute("crossorigin") is None
+-            assert script.get_attribute("integrity") == ""
+-
+-    @pytest.mark.selenium
+-    def test_js_release_cdn(self, monkeypatch: pytest.MonkeyPatch, driver: WebDriver,
+-            test_file_path_and_url: tuple[str, str], test_plot: figure) -> None:
++    def test_js_release_cdn(self, monkeypatch: pytest.MonkeyPatch, test_plot: figure) -> None:
+         monkeypatch.setattr(buv, "__version__", "2.0.0")
+         monkeypatch.setattr(resources, "__version__", "2.0.0")
+         r = CDN.clone()
+         # Skip bokeh-mathjax for older versions
+         r.components.remove("bokeh-mathjax")
+-        js, tag = bes.autoload_static(test_plot, r, "some/path")
++        js, _ = bes.autoload_static(test_plot, r, "some/path")
+ 
+-        page = PAGE.render(js=js, tag=tag)
++        _assert_script_urls(js, r.js_files)
+ 
+-        path, url = test_file_path_and_url
+-        with open(path, "w") as f:
+-            f.write(page)
+-
+-        driver.get(url)
+-
+-        scripts = driver.find_elements(CSS_SELECTOR, 'head script')
+-        for x in scripts:
+-            print(x.get_attribute("src"))
+-        assert len(scripts) == 4
+-        for script in scripts:
+-            assert script.get_attribute("crossorigin") is None
+-            assert script.get_attribute("integrity") == ""
+-
+-    @pytest.mark.selenium
+-    def test_js_release_dev_cdn(self, monkeypatch: pytest.MonkeyPatch, driver: WebDriver,
+-            test_file_path_and_url: tuple[str, str], test_plot: figure) -> None:
++    def test_js_release_dev_cdn(self, monkeypatch: pytest.MonkeyPatch, test_plot: figure) -> None:
+         monkeypatch.setattr(buv, "__version__", "2.0.0-foo")
+         monkeypatch.setattr(resources, "__version__", "2.0.0-foo")
+-        js, tag = bes.autoload_static(test_plot, CDN, "some/path")
+-
+-        page = PAGE.render(js=js, tag=tag)
+-
+-        path, url = test_file_path_and_url
+-        with open(path, "w") as f:
+-            f.write(page)
++        js, _ = bes.autoload_static(test_plot, CDN, "some/path")
+ 
+-        driver.get(url)
++        _assert_script_urls(js, CDN.js_files)
+ 
+-        scripts = driver.find_elements(CSS_SELECTOR, 'head script')
+-        for x in scripts:
+-            print(x.get_attribute("src"))
+-        assert len(scripts) == 5
+-        for script in scripts:
+-            assert script.get_attribute("crossorigin") is None
+-            assert script.get_attribute("integrity") == ""
+-
+-    @pytest.mark.selenium
+-    def test_js_release_server(self, monkeypatch: pytest.MonkeyPatch, driver: WebDriver,
+-            test_file_path_and_url: tuple[str, str], test_plot: figure) -> None:
++    def test_js_release_server(self, monkeypatch: pytest.MonkeyPatch, test_plot: figure) -> None:
+         monkeypatch.setattr(buv, "__version__", "2.0.0")
+         monkeypatch.setattr(resources, "__version__", "2.0.0")
+-        js, tag = bes.autoload_static(test_plot, resources.Resources(mode="server"), "some/path")
+-
+-        page = PAGE.render(js=js, tag=tag)
+-
+-        path, url = test_file_path_and_url
+-        with open(path, "w") as f:
+-            f.write(page)
+-
+-        driver.get(url)
++        r = resources.Resources(mode="server")
++        js, _ = bes.autoload_static(test_plot, r, "some/path")
+ 
+-        scripts = driver.find_elements(CSS_SELECTOR, 'head script')
+-        assert len(scripts) == 5
+-        for script in scripts:
+-            assert script.get_attribute("crossorigin") is None
+-            assert script.get_attribute("integrity") == ""
++        _assert_script_urls(js, r.js_files)
+ 
+ 
+ class Test_components:
+diff --git a/tests/unit/bokeh/io/test_export.py b/tests/unit/bokeh/io/test_export.py
+index c6138cf804f..13175b5cb18 100644
+--- a/tests/unit/bokeh/io/test_export.py
++++ b/tests/unit/bokeh/io/test_export.py
+@@ -60,6 +60,11 @@
+ _has_selenium = is_installed("selenium")
+ _has_playwright = is_installed("playwright")
+ 
++_webdriver_params = [
++    pytest.param("chromium", marks=pytest.mark.xdist_group(name="export-chromium")),
++    pytest.param("firefox", marks=pytest.mark.xdist_group(name="export-firefox")),
++]
++
+ if not _has_selenium and not _has_playwright:
+     pytest.skip("Neither Selenium nor Playwright is installed", allow_module_level=True)
+ 
+@@ -77,7 +82,7 @@ def browser():
+             browser.close()
+ 
+ 
+-@pytest.fixture(scope="module", params=["chromium", "firefox"])
++@pytest.fixture(scope="module", params=_webdriver_params)
+ def webdriver(request: pytest.FixtureRequest):
+     if not _has_selenium:
+         pytest.skip("Selenium not installed")
+@@ -89,7 +94,7 @@ def webdriver(request: pytest.FixtureRequest):
+         webdriver_control.terminate(driver)
+ 
+ 
+-@pytest.fixture(scope="module", params=["chromium", "firefox"])
++@pytest.fixture(scope="module", params=_webdriver_params)
+ def webdriver_with_scale_factor(request: pytest.FixtureRequest):
+     if not _has_selenium:
+         pytest.skip("Selenium not installed")
+@@ -312,10 +317,15 @@ def p(color: str):
+ 
+ @pytest.mark.selenium
+ def test_get_svgs_no_svg_present() -> None:
++    from bokeh.io.webdriver import webdriver_control
++
+     layout = Plot(x_range=Range1d(), y_range=Range1d(), height=20, width=20, toolbar_location=None)
+ 
+-    with silenced(MISSING_RENDERERS):
+-        svgs = bie.get_svgs(layout)
++    try:
++        with silenced(MISSING_RENDERERS):
++            svgs = bie.get_svgs(layout)
++    finally:
++        webdriver_control.reset()
+ 
+     assert svgs == []
+ 
+diff --git a/tests/unit/bokeh/test_client_server.py b/tests/unit/bokeh/test_client_server.py
+index 961cfc0b2ec..f10d8e4ed7e 100644
+--- a/tests/unit/bokeh/test_client_server.py
++++ b/tests/unit/bokeh/test_client_server.py
+@@ -173,65 +173,69 @@ async def check_http_blocked_socket_blocked(self, server, origin=None):
+         await self.check_http_gets_fail(server)
+         await self.check_connect_session_fails(server, origin=origin)
+ 
+-    async def test_allow_websocket_origin(self, ManagedServerLoop: MSL) -> None:
++    @pytest.mark.parametrize(("server_kwargs", "environment", "origin", "allowed"), [
++        pytest.param({}, None, None, True, id="local-random-port"),
++        pytest.param(
++            {"allow_websocket_origin": ["example.com"]}, None, "http://example.com:80", True,
++            id="explicit-host",
++        ),
++        pytest.param(
++            {}, {"BOKEH_ALLOW_WS_ORIGIN": "example.com"}, "http://example.com:80", True,
++            id="environment-host",
++        ),
++        pytest.param(
++            {"allow_websocket_origin": ["example.com:8080"]}, None, "http://example.com:8080", True,
++            id="explicit-port",
++        ),
++        pytest.param(
++            {}, {"BOKEH_ALLOW_WS_ORIGIN": "example.com:8080"}, "http://example.com:8080", True,
++            id="environment-port",
++        ),
++        pytest.param(
++            {"allow_websocket_origin": ["example.com"]}, None, "http://example.com", True,
++            id="implicit-port",
++        ),
++        pytest.param(
++            {}, {"BOKEH_ALLOW_WS_ORIGIN": "example.com"}, "http://example.com", True,
++            id="environment-implicit-port",
++        ),
++        pytest.param({}, None, "http://example.com:80", False, id="default-blocks-non-host"),
++        pytest.param({}, None, "hsdf:::///%#^$#:8080", False, id="garbage-origin"),
++        pytest.param(
++            {"allow_websocket_origin": ["example.com"]}, None, "http://foobar.com:80", False,
++            id="explicit-wrong-host",
++        ),
++        pytest.param(
++            {}, {"BOKEH_ALLOW_WS_ORIGIN": "example.com"}, "http://foobar.com:80", False,
++            id="environment-wrong-host",
++        ),
++        pytest.param(
++            {"allow_websocket_origin": ["example.com:8080"]}, None, "http://example.com:8081", False,
++            id="explicit-wrong-port",
++        ),
++        pytest.param(
++            {}, {"BOKEH_ALLOW_WS_ORIGIN": "example.com:8080"}, "http://example.com:8081", False,
++            id="environment-wrong-port",
++        ),
++    ])
++    async def test_allow_websocket_origin(
++        self,
++        ManagedServerLoop: MSL,
++        server_kwargs: dict[str, object],
++        environment: dict[str, str] | None,
++        origin: str | None,
++        allowed: bool,
++    ) -> None:
+         application = Application()
+-
+-        # allow good local origin with random port
+-        with ManagedServerLoop(application, port=0) as server:
+-            await self.check_http_ok_socket_ok(server, origin=f"http://localhost:{server.port}")
+-
+-        # allow good origin
+-        with ManagedServerLoop(application, allow_websocket_origin=["example.com"]) as server:
+-            await self.check_http_ok_socket_ok(server, origin="http://example.com:80")
+-
+-        # allow good origin from environment variable
+-        with ManagedServerLoop(application) as server:
+-            with envset(BOKEH_ALLOW_WS_ORIGIN="example.com"):
+-                await self.check_http_ok_socket_ok(server, origin="http://example.com:80")
+-
+-        # allow good origin with port
+-        with ManagedServerLoop(application, allow_websocket_origin=["example.com:8080"]) as server:
+-            await self.check_http_ok_socket_ok(server, origin="http://example.com:8080")
+-
+-        # allow good origin with port from environment variable
+-        with ManagedServerLoop(application) as server:
+-            with envset(BOKEH_ALLOW_WS_ORIGIN="example.com:8080"):
+-                await self.check_http_ok_socket_ok(server, origin="http://example.com:8080")
+-
+-        # allow good origin header with an implicit 80
+-        with ManagedServerLoop(application, allow_websocket_origin=["example.com"]) as server:
+-            await self.check_http_ok_socket_ok(server, origin="http://example.com")
+-
+-        # allow good origin header with an implicit 80
+-        with ManagedServerLoop(application) as server:
+-            with envset(BOKEH_ALLOW_WS_ORIGIN="example.com"):
+-                await self.check_http_ok_socket_ok(server, origin="http://example.com")
+-
+-        # block non-Host origins by default even if no extra origins specified
+-        with ManagedServerLoop(application) as server:
+-            await self.check_http_ok_socket_blocked(server, origin="http://example.com:80")
+-
+-        # block on a garbage Origin header
+-        with ManagedServerLoop(application) as server:
+-            await self.check_http_ok_socket_blocked(server, origin="hsdf:::///%#^$#:8080")
+-
+-        # block bad origin
+-        with ManagedServerLoop(application, allow_websocket_origin=["example.com"]) as server:
+-            await self.check_http_ok_socket_blocked(server, origin="http://foobar.com:80")
+-
+-        # block bad origin from environment variable
+-        with ManagedServerLoop(application) as server:
+-            with envset(BOKEH_ALLOW_WS_ORIGIN="example.com"):
+-                await self.check_http_ok_socket_blocked(server, origin="http://foobar.com:80")
+-
+-        # block bad origin port
+-        with ManagedServerLoop(application, allow_websocket_origin=["example.com:8080"]) as server:
+-            await self.check_http_ok_socket_blocked(server, origin="http://example.com:8081")
+-
+-        # block bad origin port from environment variable
+-        with ManagedServerLoop(application) as server:
+-            with envset(BOKEH_ALLOW_WS_ORIGIN="example.com:8080"):
+-                await self.check_http_ok_socket_blocked(server, origin="http://example.com:8081")
++        # Let the OS allocate ports so these cases can safely run concurrently.
++        with ManagedServerLoop(application, port=0, **server_kwargs) as server:
++            with envset(environment):
++                if origin is None:
++                    origin = f"http://localhost:{server.port}"
++                if allowed:
++                    await self.check_http_ok_socket_ok(server, origin=origin)
++                else:
++                    await self.check_http_ok_socket_blocked(server, origin=origin)
+ 
+     def test_push_document(self, ManagedServerLoop: MSL) -> None:
+         application = Application()
+diff --git a/tests/unit/bokeh/test_ext.py b/tests/unit/bokeh/test_ext.py
+index 7749d2dd755..4f53e8c03a2 100644
+--- a/tests/unit/bokeh/test_ext.py
++++ b/tests/unit/bokeh/test_ext.py
+@@ -17,6 +17,7 @@
+ #-----------------------------------------------------------------------------
+ 
+ # Standard library imports
++import json
+ import os
+ 
+ # Module under test
+@@ -43,6 +44,20 @@ def test_ext_commands(tmpdir) -> None:
+         "tsconfig.json",
+     ]
+ 
++    package_path = os.path.join(tmp, "package.json")
++    with open(package_path) as f:
++        package_json = json.load(f)
++    assert package_json["dependencies"] == {"@bokeh/bokehjs": "^3.0.0"}
++
++    # The compiler gets BokehJS from --bokehjs-dir, but expects node_modules to exist.
++    bokehjs_stub = str(tmpdir.mkdir("bokehjs_stub"))
++    with open(os.path.join(bokehjs_stub, "package.json"), "w") as f:
++        json.dump({"name": "@bokeh/bokehjs", "version": "3.0.0"}, f)
++    bokehjs_stub_ref = os.path.relpath(bokehjs_stub, tmp).replace(os.sep, "/")
++    package_json["dependencies"] = {"@bokeh/bokehjs": f"file:{bokehjs_stub_ref}"}
++    with open(package_path, "w") as f:
++        json.dump(package_json, f)
++
+     assert ext.build(tmp) is True
+     assert _names(tmp) == [
+         ".bokeh",
+diff --git a/tests/unit/bokeh/test_objects.py b/tests/unit/bokeh/test_objects.py
+index 25ff30793dc..70dddeb4ef6 100644
+--- a/tests/unit/bokeh/test_objects.py
++++ b/tests/unit/bokeh/test_objects.py
+@@ -121,8 +121,12 @@ def test_metaclassing(self) -> None:
+ 
+     def test_get_class(self) -> None:
+         from bokeh.model import get_class
+-        tclass = get_class('test_objects.TestModelCls.mkclass.Test_Class')
+-        assert hasattr(tclass, 'foo')
++
++        class LookupClass(Model):
++            foo = 1
++
++        tclass = get_class(LookupClass.__qualified_model__)
++        assert tclass is LookupClass
+         with pytest.raises(KeyError):
+             get_class('Imaginary_Class')
+ 
+diff --git a/tests/unit/bokeh/test_server.py b/tests/unit/bokeh/test_server.py
+index 5376dab095b..4dfe31bf7df 100644
+--- a/tests/unit/bokeh/test_server.py
++++ b/tests/unit/bokeh/test_server.py
+@@ -48,7 +48,7 @@ def test_port(self) -> None:
+ 
+     def test_address(self) -> None:
+         asyncio.set_event_loop(asyncio.new_event_loop())
+-        server = Server(Application(), address='0.0.0.0')
++        server = Server(Application(), address='0.0.0.0', port=0)
+         assert server.address == '0.0.0.0'
+         server.unlisten()
+         server.stop()

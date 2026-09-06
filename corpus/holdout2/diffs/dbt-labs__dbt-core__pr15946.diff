@@ -1,0 +1,572 @@
+diff --git a/.changes/unreleased/Features-20260812-015115.yaml b/.changes/unreleased/Features-20260812-015115.yaml
+new file mode 100644
+index 00000000000..6aea1419e72
+--- /dev/null
++++ b/.changes/unreleased/Features-20260812-015115.yaml
+@@ -0,0 +1,6 @@
++kind: Features
++body: Warn users if they are using a deprecated dbt version
++time: 2026-08-12T01:51:15.345868+05:30
++custom:
++    Author: ash2shukla
++    Issue: "15964"
+diff --git a/.github/actions/setup-postgres-linux/action.yml b/.github/actions/setup-postgres-linux/action.yml
+index 1c8fc772a8a..db7a6b7fc6f 100644
+--- a/.github/actions/setup-postgres-linux/action.yml
++++ b/.github/actions/setup-postgres-linux/action.yml
+@@ -7,4 +7,8 @@ runs:
+       run: |
+         sudo systemctl start postgresql.service
+         pg_isready
+-        sudo -u postgres bash ${{ github.action_path }}/setup_db.sh
++        # Newer Ubuntu runner images restrict other-user traversal of
++        # /home/runner, so the postgres system user can no longer read a
++        # script path under $HOME directly. Read it as the runner user and
++        # pass the contents in instead.
++        sudo -u postgres bash -c "$(cat ${{ github.action_path }}/setup_db.sh)"
+diff --git a/.github/actions/setup-postgres-macos/action.yml b/.github/actions/setup-postgres-macos/action.yml
+index af9a9fe1657..f74e2c5d288 100644
+--- a/.github/actions/setup-postgres-macos/action.yml
++++ b/.github/actions/setup-postgres-macos/action.yml
+@@ -5,7 +5,14 @@ runs:
+   steps:
+     - shell: bash
+       run: |
+-        brew services start postgresql
++        # The unversioned `postgresql` brew alias tracks whatever the latest
++        # major version is (currently postgresql@18), which isn't guaranteed
++        # to be preinstalled on the runner image. Install and start a pinned
++        # version explicitly instead.
++        brew install postgresql@14
++        brew services start postgresql@14
++        echo "$(brew --prefix postgresql@14)/bin" >> "$GITHUB_PATH"
++        export PATH="$(brew --prefix postgresql@14)/bin:$PATH"
+         echo "Check PostgreSQL service is running"
+         i=10
+         COMMAND='pg_isready'
+diff --git a/.github/workflows/main.yml b/.github/workflows/main.yml
+index e9eafd3d705..742c5e91904 100644
+--- a/.github/workflows/main.yml
++++ b/.github/workflows/main.yml
+@@ -37,7 +37,9 @@ jobs:
+   code-quality:
+     name: code-quality
+ 
+-    runs-on: ubuntu-20.04
++    # ubuntu-20.04 has been retired by GitHub Actions; jobs pinned to it queue
++    # forever since no runner ever picks them up.
++    runs-on: ubuntu-22.04
+ 
+     steps:
+       - name: Check out the repository
+@@ -66,12 +68,15 @@ jobs:
+   unit:
+     name: unit test / python ${{ matrix.python-version }}
+ 
+-    runs-on: ubuntu-20.04
++    # ubuntu-20.04 has been retired by GitHub Actions; jobs pinned to it queue
++    # forever since no runner ever picks them up.
++    runs-on: ubuntu-22.04
+ 
+     strategy:
+       fail-fast: false
+       matrix:
+-        python-version: ['3.7', '3.8', '3.9', '3.10']
++        # Python 3.7 is EOL and no longer available on GitHub-hosted runners.
++        python-version: ['3.8', '3.9', '3.10']
+ 
+     env:
+       TOXENV: "unit"
+@@ -107,7 +112,7 @@ jobs:
+           CURRENT_DATE=$(date +'%Y-%m-%dT%H_%M_%S') # no colons allowed for artifacts
+           echo "date=$CURRENT_DATE" >> $GITHUB_OUTPUT
+ 
+-      - uses: actions/upload-artifact@v2
++      - uses: actions/upload-artifact@v4
+         if: always()
+         with:
+           name: unit_results_${{ matrix.python-version }}-${{ steps.date.outputs.date }}.csv
+@@ -121,13 +126,19 @@ jobs:
+     strategy:
+       fail-fast: false
+       matrix:
+-        python-version: ['3.7', '3.8', '3.9', '3.10']
+-        os: [ubuntu-20.04]
++        # Python 3.7 is EOL and no longer available on GitHub-hosted runners.
++        # ubuntu-20.04/macos-12 runner images have been retired by GitHub
++        # Actions (jobs pinned to them queue forever); moved to ubuntu-22.04/
++        # macos-15 (macos-13 has been fully retired and macos-14 is already
++        # flagged deprecated). windows-latest/macos bumped to Python 3.9 since
++        # psycopg2-binary no longer ships a Python 3.8 wheel for those OSes.
++        python-version: ['3.8', '3.9', '3.10']
++        os: [ubuntu-22.04]
+         include:
+-          - python-version: 3.8
++          - python-version: 3.9
+             os: windows-latest
+-          - python-version: 3.8
+-            os: macos-12
++          - python-version: 3.9
++            os: macos-15
+ 
+     env:
+       TOXENV: integration
+@@ -176,13 +187,13 @@ jobs:
+           CURRENT_DATE=$(date +'%Y-%m-%dT%H_%M_%S') # no colons allowed for artifacts
+           echo "date=$CURRENT_DATE" >> $GITHUB_OUTPUT
+ 
+-      - uses: actions/upload-artifact@v2
++      - uses: actions/upload-artifact@v4
+         if: always()
+         with:
+           name: logs_${{ matrix.python-version }}_${{ matrix.os }}_${{ steps.date.outputs.date }}
+           path: ./logs
+ 
+-      - uses: actions/upload-artifact@v2
++      - uses: actions/upload-artifact@v4
+         if: always()
+         with:
+           name: integration_results_${{ matrix.python-version }}_${{ matrix.os }}_${{ steps.date.outputs.date }}.csv
+@@ -191,7 +202,9 @@ jobs:
+   build:
+     name: build packages
+ 
+-    runs-on: ubuntu-20.04
++    # ubuntu-20.04 has been retired by GitHub Actions; jobs pinned to it queue
++    # forever since no runner ever picks them up.
++    runs-on: ubuntu-22.04
+ 
+     steps:
+       - name: Check out the repository
+diff --git a/.github/workflows/schema-check.yml b/.github/workflows/schema-check.yml
+index ee65ff71296..825796d1656 100644
+--- a/.github/workflows/schema-check.yml
++++ b/.github/workflows/schema-check.yml
+@@ -9,17 +9,14 @@
+ # occur so we want to proactively alert to it.
+ #
+ # **when?**
+-# On pushes to `develop` and release branches. Manual runs are also enabled.
++# Only run manually. The push/pull_request triggers were disabled because
++# this job depends on a deploy key (SCHEMA_SSH_PRIVATE_KEY) that no longer
++# authenticates against schemas.getdbt.com, so it could never pass
++# automatically; main branch made the same change for the same reason.
+ name: Artifact Schema Check
+ 
+ on:
+   workflow_dispatch:
+-  pull_request: #TODO: remove before merging
+-  push:
+-    branches:
+-      - "develop"
+-      - "*.latest"
+-      - "releases/*"
+ 
+ env:
+   LATEST_SCHEMA_PATH: ${{ github.workspace }}/new_schemas
+diff --git a/.github/workflows/structured-logging-schema-check.yml b/.github/workflows/structured-logging-schema-check.yml
+index ff981226e05..ff92697482e 100644
+--- a/.github/workflows/structured-logging-schema-check.yml
++++ b/.github/workflows/structured-logging-schema-check.yml
+@@ -22,7 +22,9 @@ jobs:
+   # run the performance measurements on the current or default branch
+   test-schema:
+     name: Test Log Schema
+-    runs-on: ubuntu-20.04
++    # ubuntu-20.04 has been retired by GitHub Actions; jobs pinned to it queue
++    # forever since no runner ever picks them up.
++    runs-on: ubuntu-22.04
+     env:
+       # turns warnings into errors
+       RUSTFLAGS: "-D warnings"
+diff --git a/core/dbt/adapters/base/impl.py b/core/dbt/adapters/base/impl.py
+index d178e876b30..3bccd5e471e 100644
+--- a/core/dbt/adapters/base/impl.py
++++ b/core/dbt/adapters/base/impl.py
+@@ -854,12 +854,12 @@ def convert_type(cls, agate_table: agate.Table, col_idx: int) -> Optional[str]:
+     def convert_agate_type(cls, agate_table: agate.Table, col_idx: int) -> Optional[str]:
+         agate_type: Type = agate_table.column_types[col_idx]
+         conversions: List[Tuple[Type, Callable[..., str]]] = [
+-            (agate.Text, cls.convert_text_type),
+-            (agate.Number, cls.convert_number_type),
+-            (agate.Boolean, cls.convert_boolean_type),
+-            (agate.DateTime, cls.convert_datetime_type),
+-            (agate.Date, cls.convert_date_type),
+-            (agate.TimeDelta, cls.convert_time_type),
++            (agate.Text, cls.convert_text_type),  # type: ignore[arg-type]
++            (agate.Number, cls.convert_number_type),  # type: ignore[arg-type]
++            (agate.Boolean, cls.convert_boolean_type),  # type: ignore[arg-type]
++            (agate.DateTime, cls.convert_datetime_type),  # type: ignore[arg-type]
++            (agate.Date, cls.convert_date_type),  # type: ignore[arg-type]
++            (agate.TimeDelta, cls.convert_time_type),  # type: ignore[arg-type]
+         ]
+         for agate_cls, func in conversions:
+             if isinstance(agate_type, agate_cls):
+diff --git a/core/dbt/deprecated_version.py b/core/dbt/deprecated_version.py
+new file mode 100644
+index 00000000000..993c8ddb4f2
+--- /dev/null
++++ b/core/dbt/deprecated_version.py
+@@ -0,0 +1,45 @@
++from dbt.events.functions import fire_event
++from dbt.events.types import DeprecatedVersionInfo, DeprecatedVersionWarn
++from dbt.tracking import track_deprecated_version_invocation
++from dbt.version import get_installed_version
++
++# dbt Core 1.10 and older no longer receive patches. See
++# https://github.com/dbt-labs/dbt-core/issues/15694
++LAST_SUPPORTED_MINOR_VERSION = 11
++
++WARN_MSG = (
++    "This version of dbt is deprecated and no longer receives regular patches, including for "
++    "known bugs. Please upgrade to a newer supported version of dbt for new projects: "
++    "https://docs.getdbt.com/docs/dbt-versions?utm_source=dbt-cli"
++)
++INFO_MSG = (
++    "This version of dbt is deprecated and no longer receives regular patches, including for "
++    "known bugs. We recommend upgrading to a newer supported version of dbt: "
++    "https://docs.getdbt.com/docs/dbt-versions"
++)
++
++
++def is_deprecated_version() -> bool:
++    installed = get_installed_version()
++    if installed.major is None or installed.minor is None:
++        return False
++    return (int(installed.major), int(installed.minor)) < (1, LAST_SUPPORTED_MINOR_VERSION)
++
++
++def check_deprecated_version(is_warn: bool = False) -> None:
++    """Notify and record telemetry if the installed dbt version is deprecated.
++
++    Callers that gate a user-facing entry point (first install, `dbt init`, `--version`)
++    should pass is_warn=True per the WARNING rows in
++    https://github.com/dbt-labs/dbt-core/issues/15694; everything else (regular
++    invocations) stays at INFO.
++    """
++    if not is_deprecated_version():
++        return
++
++    if is_warn:
++        fire_event(DeprecatedVersionWarn(msg=WARN_MSG))
++    else:
++        fire_event(DeprecatedVersionInfo(msg=INFO_MSG))
++
++    track_deprecated_version_invocation()
+diff --git a/core/dbt/events/base_types.py b/core/dbt/events/base_types.py
+index bc48c06396a..945a8b5f154 100644
+--- a/core/dbt/events/base_types.py
++++ b/core/dbt/events/base_types.py
+@@ -36,7 +36,7 @@ class Event(metaclass=ABCMeta):
+ 
+     # four digit string code that uniquely identifies this type of event
+     # uniqueness and valid characters are enforced by tests
+-    @abstractproperty
++    @abstractproperty  # type: ignore[misc]
+     @staticmethod
+     def code() -> str:
+         raise Exception("code() not implemented for event")
+diff --git a/core/dbt/events/types.py b/core/dbt/events/types.py
+index 496af958167..d295f8c2f88 100644
+--- a/core/dbt/events/types.py
++++ b/core/dbt/events/types.py
+@@ -2445,6 +2445,24 @@ def message(self) -> str:
+         )
+ 
+ 
++@dataclass
++class DeprecatedVersionWarn(WarnLevel):
++    msg: str
++    code: str = "Z050"
++
++    def message(self) -> str:
++        return ui.warning_tag(self.msg)
++
++
++@dataclass
++class DeprecatedVersionInfo(InfoLevel):
++    msg: str
++    code: str = "Z051"
++
++    def message(self) -> str:
++        return self.msg
++
++
+ @dataclass
+ class RecordRetryException(DebugLevel):
+     exc: Exception
+diff --git a/core/dbt/main.py b/core/dbt/main.py
+index cf643beda99..85fd1219c28 100644
+--- a/core/dbt/main.py
++++ b/core/dbt/main.py
+@@ -10,6 +10,7 @@
+ from pathlib import Path
+ 
+ import dbt.version
++from dbt.deprecated_version import check_deprecated_version
+ from dbt.events.functions import fire_event, setup_event_logger
+ from dbt.events.types import (
+     MainEncounteredError,
+@@ -66,6 +67,7 @@ def __init__(
+     def __call__(self, parser, namespace, values, option_string=None):
+         formatter = argparse.RawTextHelpFormatter(prog=parser.prog)
+         formatter.add_text(dbt.version.get_version_information())
++        check_deprecated_version(is_warn=True)
+         parser.exit(message=formatter.format_help())
+ 
+ 
+@@ -229,6 +231,10 @@ def run_from_args(parsed):
+     fire_event(MainReportVersion(v=str(dbt.version.installed)))
+     fire_event(MainReportArgs(args=args_to_dict(parsed)))
+ 
++    # `init` already fires its own WARNING-level version of this notice
++    if parsed.which != "init":
++        check_deprecated_version()
++
+     if dbt.tracking.active_user is not None:  # mypy appeasement, always true
+         fire_event(MainTrackingUserState(user_state=dbt.tracking.active_user.state()))
+ 
+diff --git a/core/dbt/parser/base.py b/core/dbt/parser/base.py
+index 0b54e89addf..eef0af57b28 100644
+--- a/core/dbt/parser/base.py
++++ b/core/dbt/parser/base.py
+@@ -113,7 +113,7 @@ def __init__(
+         )
+ 
+     @abc.abstractclassmethod
+-    def get_compiled_path(cls, block: ConfiguredBlockType) -> str:
++    def get_compiled_path(cls, block: ConfiguredBlockType) -> str:  # type: ignore[empty-body]
+         pass
+ 
+     @abc.abstractmethod
+diff --git a/core/dbt/task/init.py b/core/dbt/task/init.py
+index 330524821af..24f12abbb50 100644
+--- a/core/dbt/task/init.py
++++ b/core/dbt/task/init.py
+@@ -16,6 +16,7 @@
+ 
+ from dbt.contracts.project import Name as ProjectName
+ 
++from dbt.deprecated_version import check_deprecated_version
+ from dbt.events.functions import fire_event
+ from dbt.events.types import (
+     StarterProjectPath,
+@@ -265,6 +266,7 @@ def get_valid_project_name(self) -> str:
+ 
+     def run(self):
+         """Entry point for the init task."""
++        check_deprecated_version(is_warn=True)
+         profiles_dir = flags.PROFILES_DIR
+         self.create_profiles_dir(profiles_dir)
+ 
+diff --git a/core/dbt/tracking.py b/core/dbt/tracking.py
+index 38b04f89035..20f7e809740 100644
+--- a/core/dbt/tracking.py
++++ b/core/dbt/tracking.py
+@@ -40,6 +40,7 @@
+ PACKAGE_INSTALL_SPEC = "iglu:com.dbt/package_install/jsonschema/1-0-0"
+ RPC_REQUEST_SPEC = "iglu:com.dbt/rpc_request/jsonschema/1-0-1"
+ DEPRECATION_WARN_SPEC = "iglu:com.dbt/deprecation_warn/jsonschema/1-0-0"
++DEPRECATED_VERSION_INVOCATION_SPEC = "iglu:com.dbt/deprecated_version_invocation/jsonschema/1-0-0"
+ LOAD_ALL_TIMING_SPEC = "iglu:com.dbt/load_all_timing/jsonschema/1-0-3"
+ RESOURCE_COUNTS = "iglu:com.dbt/resource_counts/jsonschema/1-0-0"
+ EXPERIMENTAL_PARSER = "iglu:com.dbt/experimental_parser/jsonschema/1-0-0"
+@@ -476,3 +477,18 @@ def initialize_from_flags():
+         initialize_tracking(flags.PROFILES_DIR)
+     else:
+         do_not_track()
++
++
++def track_deprecated_version_invocation() -> None:
++    if active_user is None:
++        return
++
++    context = [SelfDescribingJson(DEPRECATED_VERSION_INVOCATION_SPEC, {})]
++
++    track(
++        active_user,
++        category="dbt",
++        action="deprecated_version_invocation",
++        label=get_invocation_id(),
++        context=context,
++    )
+diff --git a/dev-requirements.txt b/dev-requirements.txt
+index ce1d29fdaea..17042d6816f 100644
+--- a/dev-requirements.txt
++++ b/dev-requirements.txt
+@@ -4,7 +4,7 @@ flake8
+ flaky
+ freezegun==0.3.12
+ ipdb
+-mypy==0.961
++mypy==1.3.0
+ pip-tools
+ pre-commit
+ pytest
+diff --git a/mypy.ini b/mypy.ini
+index e28c8848ea0..680e5a90096 100644
+--- a/mypy.ini
++++ b/mypy.ini
+@@ -2,3 +2,4 @@
+ mypy_path = ./third-party-stubs,./core
+ namespace_packages = True
+ explicit_package_bases = True
++no_implicit_optional = False
+diff --git a/tests/functional/test_deprecated_version.py b/tests/functional/test_deprecated_version.py
+new file mode 100644
+index 00000000000..194352236ff
+--- /dev/null
++++ b/tests/functional/test_deprecated_version.py
+@@ -0,0 +1,101 @@
++from unittest import mock
++
++import pytest
++
++import dbt.semver as semver
++from dbt.adapters.factory import get_adapter, register_adapter, reset_adapters
++from dbt.deprecated_version import INFO_MSG, WARN_MSG
++from dbt.events.functions import capture_stdout_logs, stop_capture_stdout_logs
++from dbt.main import parse_args
++from dbt.tests.util import run_dbt
++
++DEPRECATED_VERSION = "1.9.5"
++
++
++class _StopInit(Exception):
++    """Raised from a patched InitTask method so real profile setup never runs."""
++
++
++def _deprecated_version() -> semver.VersionSpecifier:
++    return semver.VersionSpecifier.from_version_string(DEPRECATED_VERSION)
++
++
++def _restore_adapter(adapter):
++    """`dbt init`/`dbt debug` register their own (incompatible) adapter under
++    the same key, so the `project` fixture's teardown (which needs the
++    original adapter to drop the test schema) fails afterward. Clear the
++    registry and re-register + reload the macro manifest, mirroring what the
++    `adapter` fixture itself does."""
++    reset_adapters()
++    register_adapter(adapter.config)
++    get_adapter(adapter.config).load_macro_manifest(base_macros_only=True)
++
++
++def _capture(fn):
++    """Run fn() with dbt's stdout log capture on, returning the captured text
++    regardless of whether fn() raises."""
++    stringbuf = capture_stdout_logs()
++    try:
++        fn()
++    finally:
++        stop_capture_stdout_logs()
++    return stringbuf.getvalue()
++
++
++class TestVersionFlagWarnsNotInfo:
++    def test_version_flag_fires_warn_not_info(self):
++        # --version fires during argparse parsing, before handle_and_check()'s
++        # own logging setup runs -- capture_stdout_logs() doesn't intercept
++        # output from this early a point, so assert on fire_event directly
++        # instead (same approach used for --version on the click-era branches).
++        with mock.patch(
++            "dbt.deprecated_version.get_installed_version", side_effect=_deprecated_version
++        ), mock.patch("dbt.deprecated_version.fire_event") as fire_event_mock:
++            with pytest.raises(SystemExit):
++                parse_args(["--version"])
++
++        fire_event_mock.assert_called_once()
++        (fired_event,), kwargs = fire_event_mock.call_args
++        assert type(fired_event).__name__ == "DeprecatedVersionWarn"
++
++
++class TestInitWarnsNotInfo:
++    @pytest.fixture(scope="class")
++    def models(self):
++        return {}
++
++    def test_init_fires_warn_not_info(self, project, adapter):
++        def invoke():
++            with pytest.raises(_StopInit):
++                run_dbt(["init", "--skip-profile-setup"], expect_pass=None)
++
++        # check_deprecated_version() is the first line of InitTask.run(); stop
++        # right after it, before any real profile/project scaffolding.
++        try:
++            with mock.patch(
++                "dbt.deprecated_version.get_installed_version", side_effect=_deprecated_version
++            ), mock.patch("dbt.task.init.InitTask.create_profiles_dir", side_effect=_StopInit):
++                stdout = _capture(invoke)
++        finally:
++            _restore_adapter(adapter)
++
++        assert WARN_MSG in stdout
++        assert INFO_MSG not in stdout
++
++
++class TestOtherCommandsInfoNotWarn:
++    @pytest.fixture(scope="class")
++    def models(self):
++        return {}
++
++    def test_other_command_fires_info_not_warn(self, project, adapter):
++        try:
++            with mock.patch(
++                "dbt.deprecated_version.get_installed_version", side_effect=_deprecated_version
++            ):
++                stdout = _capture(lambda: run_dbt(["debug"], expect_pass=True))
++        finally:
++            _restore_adapter(adapter)
++
++        assert INFO_MSG in stdout
++        assert WARN_MSG not in stdout
+diff --git a/third-party-stubs/agate/__init__.pyi b/third-party-stubs/agate/__init__.pyi
+index 4691f3e2a6f..c773cc7d7f4 100644
+--- a/third-party-stubs/agate/__init__.pyi
++++ b/third-party-stubs/agate/__init__.pyi
+@@ -1,4 +1,4 @@
+-from collections import Sequence
++from collections.abc import Sequence
+ 
+ from typing import Any, Optional, Callable, Iterable, Dict, Union
+ 
+diff --git a/tox.ini b/tox.ini
+index 35bed202585..f9d1d3527c0 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -2,6 +2,17 @@
+ skipsdist = True
+ envlist = unit,integration
+ 
++[testenv]
++# Newer pip/setuptools default to an editable-install mode that doesn't add
++# the source roots to sys.path, breaking the pkgutil.extend_path()-based
++# dbt.adapters namespace merge across `-e ./core` and `-e ./plugins/postgres`
++# (and dbt.tests across `-e ./core` and `-e ./tests/adapter`). `compat` mode
++# uses plain .pth files, which merge correctly. Note: --config-settings only
++# applies to packages passed directly on the pip command line, not ones
++# pulled in via `-r`, so the `-e` entries below are listed inline rather than
++# via editable-requirements.txt.
++install_command = python -m pip install --config-settings editable_mode=compat {opts} {packages}
++
+ [testenv:{unit,py37,py38,py39,py310,py}]
+ description = unit testing
+ skip_install = true
+@@ -11,7 +22,9 @@ passenv =
+ commands = {envpython} -m pytest --cov=core {posargs} test/unit
+ deps =
+   -rdev-requirements.txt
+-  -reditable-requirements.txt
++  -e ./core
++  -e ./plugins/postgres
++  -e ./tests/adapter
+ 
+ [testenv:{integration,py37-integration,py38-integration,py39-integration,py310-integration,py-integration}]
+ description = adapter plugin integration testing
+@@ -27,4 +40,6 @@ commands =
+ 
+ deps =
+   -rdev-requirements.txt
+-  -reditable-requirements.txt
++  -e ./core
++  -e ./plugins/postgres
++  -e ./tests/adapter

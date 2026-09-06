@@ -1,0 +1,1791 @@
+diff --git a/docs/integrations/prefect-aws/api-ref/prefect_aws-decorators.mdx b/docs/integrations/prefect-aws/api-ref/prefect_aws-decorators.mdx
+index 4367939fc96b..1059f49805d5 100644
+--- a/docs/integrations/prefect-aws/api-ref/prefect_aws-decorators.mdx
++++ b/docs/integrations/prefect-aws/api-ref/prefect_aws-decorators.mdx
+@@ -7,7 +7,7 @@ sidebarTitle: decorators
+ 
+ ## Functions
+ 
+-### `ecs` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-aws/prefect_aws/decorators.py#L53" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `ecs` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-aws/prefect_aws/decorators.py#L54" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ ecs(work_pool: str, include_files: Sequence[str] | None = None, launcher: BundleLauncher | None = None, **job_variables: Any) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]
+@@ -23,5 +23,8 @@ Patterns are relative to the flow file location. Supports glob patterns
+ (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+ be bundled and available in the remote execution environment.
+ - `launcher`: Optional upload and execution launcher override.
++- `include_files_base_dir`: Optional base directory used to resolve
++`include_files`. Relative paths are resolved from the working directory
++when the bundle is created. Defaults to the flow file's directory.
+ - `**job_variables`: Additional job variables to use for infrastructure configuration
+ 
+diff --git a/docs/integrations/prefect-azure/api-ref/prefect_azure-decorators.mdx b/docs/integrations/prefect-azure/api-ref/prefect_azure-decorators.mdx
+index 6082cdd1af1b..345aaf4aa846 100644
+--- a/docs/integrations/prefect-azure/api-ref/prefect_azure-decorators.mdx
++++ b/docs/integrations/prefect-azure/api-ref/prefect_azure-decorators.mdx
+@@ -7,7 +7,7 @@ sidebarTitle: decorators
+ 
+ ## Functions
+ 
+-### `azure_container_instance` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-azure/prefect_azure/decorators.py#L52" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `azure_container_instance` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-azure/prefect_azure/decorators.py#L53" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ azure_container_instance(work_pool: str, include_files: Sequence[str] | None = None, launcher: BundleLauncher | None = None, **job_variables: Any) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]
+@@ -23,5 +23,8 @@ Patterns are relative to the flow file location. Supports glob patterns
+ (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+ be bundled and available in the remote execution environment.
+ - `launcher`: Optional upload and execution launcher override.
++- `include_files_base_dir`: Optional base directory used to resolve
++`include_files`. Relative paths are resolved from the working directory
++when the bundle is created. Defaults to the flow file's directory.
+ - `**job_variables`: Additional job variables to use for infrastructure configuration
+ 
+diff --git a/docs/integrations/prefect-docker/api-ref/prefect_docker-decorators.mdx b/docs/integrations/prefect-docker/api-ref/prefect_docker-decorators.mdx
+index 0ef063843849..ca48e836e503 100644
+--- a/docs/integrations/prefect-docker/api-ref/prefect_docker-decorators.mdx
++++ b/docs/integrations/prefect-docker/api-ref/prefect_docker-decorators.mdx
+@@ -7,7 +7,7 @@ sidebarTitle: decorators
+ 
+ ## Functions
+ 
+-### `docker` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-docker/prefect_docker/decorators.py#L46" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `docker` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-docker/prefect_docker/decorators.py#L47" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ docker(work_pool: str, include_files: Sequence[str] | None = None, launcher: BundleLauncher | None = None, **job_variables: Any) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]
+@@ -23,5 +23,8 @@ Patterns are relative to the flow file location. Supports glob patterns
+ (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+ be bundled and available in the remote execution environment.
+ - `launcher`: Optional upload and execution launcher override.
++- `include_files_base_dir`: Optional base directory used to resolve
++`include_files`. Relative paths are resolved from the working directory
++when the bundle is created. Defaults to the flow file's directory.
+ - `**job_variables`: Additional job variables to use for infrastructure configuration
+ 
+diff --git a/docs/integrations/prefect-gcp/api-ref/prefect_gcp-decorators.mdx b/docs/integrations/prefect-gcp/api-ref/prefect_gcp-decorators.mdx
+index c6a845acba32..86659f22be67 100644
+--- a/docs/integrations/prefect-gcp/api-ref/prefect_gcp-decorators.mdx
++++ b/docs/integrations/prefect-gcp/api-ref/prefect_gcp-decorators.mdx
+@@ -7,7 +7,7 @@ sidebarTitle: decorators
+ 
+ ## Functions
+ 
+-### `cloud_run` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-gcp/prefect_gcp/decorators.py#L53" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `cloud_run` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-gcp/prefect_gcp/decorators.py#L54" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ cloud_run(work_pool: str, include_files: Sequence[str] | None = None, launcher: BundleLauncher | None = None, **job_variables: Any) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]
+@@ -23,10 +23,13 @@ Patterns are relative to the flow file location. Supports glob patterns
+ (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+ be bundled and available in the remote execution environment.
+ - `launcher`: Optional upload and execution launcher override.
++- `include_files_base_dir`: Optional base directory used to resolve
++`include_files`. Relative paths are resolved from the working directory
++when the bundle is created. Defaults to the flow file's directory.
+ - `**job_variables`: Additional job variables to use for infrastructure configuration
+ 
+ 
+-### `vertex_ai` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-gcp/prefect_gcp/decorators.py#L108" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `vertex_ai` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-gcp/prefect_gcp/decorators.py#L115" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ vertex_ai(work_pool: str, include_files: Sequence[str] | None = None, launcher: BundleLauncher | None = None, **job_variables: Any) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]
+@@ -42,5 +45,8 @@ Patterns are relative to the flow file location. Supports glob patterns
+ (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+ be bundled and available in the remote execution environment.
+ - `launcher`: Optional upload and execution launcher override.
++- `include_files_base_dir`: Optional base directory used to resolve
++`include_files`. Relative paths are resolved from the working directory
++when the bundle is created. Defaults to the flow file's directory.
+ - `**job_variables`: Additional job variables to use for infrastructure configuration
+ 
+diff --git a/docs/integrations/prefect-kubernetes/api-ref/prefect_kubernetes-decorators.mdx b/docs/integrations/prefect-kubernetes/api-ref/prefect_kubernetes-decorators.mdx
+index 1d4cdf707789..0565f64e666f 100644
+--- a/docs/integrations/prefect-kubernetes/api-ref/prefect_kubernetes-decorators.mdx
++++ b/docs/integrations/prefect-kubernetes/api-ref/prefect_kubernetes-decorators.mdx
+@@ -7,7 +7,7 @@ sidebarTitle: decorators
+ 
+ ## Functions
+ 
+-### `kubernetes` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-kubernetes/prefect_kubernetes/decorators.py#L52" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `kubernetes` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/integrations/prefect-kubernetes/prefect_kubernetes/decorators.py#L53" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ kubernetes(work_pool: str, include_files: Sequence[str] | None = None, launcher: BundleLauncher | None = None, **job_variables: Any) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]
+@@ -23,5 +23,8 @@ Patterns are relative to the flow file location. Supports glob patterns
+ (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+ be bundled and available in the remote execution environment.
+ - `launcher`: Optional upload and execution launcher override.
++- `include_files_base_dir`: Optional base directory used to resolve
++`include_files`. Relative paths are resolved from the working directory
++when the bundle is created. Defaults to the flow file's directory.
+ - `**job_variables`: Additional job variables to use for infrastructure configuration
+ 
+diff --git a/docs/v3/advanced/submit-flows-directly-to-dynamic-infrastructure.mdx b/docs/v3/advanced/submit-flows-directly-to-dynamic-infrastructure.mdx
+index ba32a4a1ae43..55b1e5d4862c 100644
+--- a/docs/v3/advanced/submit-flows-directly-to-dynamic-infrastructure.mdx
++++ b/docs/v3/advanced/submit-flows-directly-to-dynamic-infrastructure.mdx
+@@ -312,7 +312,33 @@ def my_flow():
+     print(config)
+ ```
+ 
+-The `include_files` parameter accepts a list of relative paths and glob patterns. Paths are resolved relative to the directory containing the flow file.
++The `include_files` parameter accepts a list of relative paths and glob patterns. By default, paths are resolved relative to the directory containing the flow file.
++
++### Choosing the base directory
++
++Set `include_files_base_dir` when the files are rooted somewhere other than the flow file's directory. This is useful when a flow is defined in an installed SDK while configuration or data files belong to the calling project.
++
++{/* pmd-metadata: notest */}
++```python
++from pathlib import Path
++
++from prefect import flow
++from prefect_kubernetes.decorators import kubernetes
++
++
++@kubernetes(
++    work_pool="my-kubernetes-pool",
++    include_files=["config.yaml", "data/"],
++    include_files_base_dir=Path("/srv/customer-project"),
++)
++@flow
++def process_customer_data():
++    ...
++```
++
++The base directory can be absolute or relative. Relative paths are resolved from the working directory when Prefect creates the bundle, and `~` expands to the current user's home directory. The directory must exist, be readable, and be a directory when the bundle is created.
++
++The base directory is the root for file collection, `.prefectignore` filtering, containment checks, and paths in the resulting archive. Included paths cannot escape it. Omitting `include_files_base_dir` preserves the flow-file-directory default.
+ 
+ ### Supported patterns
+ 
+@@ -345,7 +371,7 @@ This example includes all JSON files except those in the `fixtures/` directory.
+ 
+ ### Filtering with `.prefectignore`
+ 
+-If a `.prefectignore` file exists in the flow file's directory or at the project root (detected via `pyproject.toml`), its patterns are applied to filter out matching files. The `.prefectignore` file uses gitignore-style syntax:
++If a `.prefectignore` file exists in the include-files base directory or at its project root (detected via `pyproject.toml`), its patterns are applied to filter out matching files. When `include_files_base_dir` is omitted, the base directory is the flow file's directory. The `.prefectignore` file uses gitignore-style syntax:
+ 
+ ```text
+ # .prefectignore
+diff --git a/docs/v3/api-ref/python/prefect-flows.mdx b/docs/v3/api-ref/python/prefect-flows.mdx
+index ba7adc1fc2b5..b3fdafd47c7a 100644
+--- a/docs/v3/api-ref/python/prefect-flows.mdx
++++ b/docs/v3/api-ref/python/prefect-flows.mdx
+@@ -12,13 +12,31 @@ Module containing the base workflow class and decorator - for most use cases, us
+ 
+ ## Functions
+ 
+-### `bind_flow_to_infrastructure` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2835" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `bind_flow_to_infrastructure` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2847" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ bind_flow_to_infrastructure(flow: Flow[P, R], work_pool: str, worker_cls: type['BaseWorker[Any, Any, Any]'], job_variables: dict[str, Any] | None = None, launcher: BundleLauncher | None = None, include_files: Sequence[str] | None = None) -> InfrastructureBoundFlow[P, R]
+ ```
+ 
+-### `select_flow` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2879" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++
++Bind a flow to execution on a specific infrastructure work pool.
++
++**Args:**
++- `flow`: The flow to bind.
++- `work_pool`: The name of the work pool to use.
++- `worker_cls`: The worker class that submits the flow.
++- `job_variables`: Infrastructure overrides for the work pool's base job template.
++- `launcher`: Optional upload and execution launcher overrides.
++- `include_files`: Optional file patterns to include with the flow bundle.
++- `include_files_base_dir`: Optional base directory for `include_files`. Relative
++paths are resolved from the working directory when the bundle is created.
++Defaults to the flow file's directory.
++
++**Returns:**
++- An infrastructure-bound copy of the flow.
++
++
++### `select_flow` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2913" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ select_flow(flows: Iterable[Flow[P, R]], flow_name: Optional[str] = None, from_message: Optional[str] = None) -> Flow[P, R]
+@@ -36,7 +54,7 @@ Returns
+ - `UnspecifiedFlowError`: If multiple flows exist but no flow name was provided
+ 
+ 
+-### `load_flow_from_entrypoint` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2925" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `load_flow_from_entrypoint` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2959" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ load_flow_from_entrypoint(entrypoint: str, use_placeholder_flow: bool = True) -> Flow[P, Any]
+@@ -60,7 +78,7 @@ cannot be loaded from the entrypoint (e.g. dependencies are missing)
+ - `MissingFlowError`: If the flow function specified in the entrypoint does not exist
+ 
+ 
+-### `load_function_and_convert_to_flow` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2977" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `load_function_and_convert_to_flow` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3011" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ load_function_and_convert_to_flow(entrypoint: str) -> Flow[P, Any]
+@@ -70,7 +88,7 @@ load_function_and_convert_to_flow(entrypoint: str) -> Flow[P, Any]
+ Loads a function from an entrypoint and converts it to a flow if it is not already a flow.
+ 
+ 
+-### `serve` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3000" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `serve` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3034" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ serve(*args: 'RunnerDeployment', **kwargs: Any) -> None
+@@ -120,7 +138,7 @@ if __name__ == "__main__":
+ ```
+ 
+ 
+-### `aserve` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3078" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `aserve` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3112" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ aserve(*args: 'RunnerDeployment', **kwargs: Any) -> None
+@@ -182,7 +200,7 @@ if __name__ == "__main__":
+ ```
+ 
+ 
+-### `load_flow_from_flow_run` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3187" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `load_flow_from_flow_run` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3221" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ load_flow_from_flow_run(client: 'PrefectClient', flow_run: 'FlowRun', ignore_storage: bool = False, storage_base_path: Optional[str] = None, use_placeholder_flow: bool = True) -> Flow[..., Any]
+@@ -195,7 +213,7 @@ If `ignore_storage=True` is provided, no pull from remote storage occurs.  This
+ is largely for testing, and assumes the flow is already available locally.
+ 
+ 
+-### `load_placeholder_flow` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3296" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `load_placeholder_flow` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3330" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ load_placeholder_flow(entrypoint: str, raises: Exception) -> Flow[P, Any]
+@@ -214,7 +232,7 @@ or a module path to a flow function
+ - `raises`: an exception to raise when the flow is called
+ 
+ 
+-### `safe_load_flow_from_entrypoint` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3331" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `safe_load_flow_from_entrypoint` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3365" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ safe_load_flow_from_entrypoint(entrypoint: str) -> Optional[Flow[P, Any]]
+@@ -234,7 +252,7 @@ Safely load a Prefect flow from an entrypoint string. Returns None if loading fa
+ - (e.g. unresolved dependencies, syntax errors, or missing objects).
+ 
+ 
+-### `load_flow_arguments_from_entrypoint` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3501" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `load_flow_arguments_from_entrypoint` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3535" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ load_flow_arguments_from_entrypoint(entrypoint: str, arguments: Optional[Union[list[str], set[str]]] = None) -> dict[str, Any]
+@@ -251,7 +269,7 @@ from the `flow` decorator.
+ or a module path to a flow function
+ 
+ 
+-### `is_entrypoint_async` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3581" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++### `is_entrypoint_async` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L3615" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ is_entrypoint_async(entrypoint: str) -> bool
+@@ -1091,13 +1109,17 @@ infrastructure the flow will run on.
+ - `job_variables`: Infrastructure configuration that will override the base job
+ configuration of the work pool.
+ - `launcher`: Optional upload and execution launcher overrides.
++- `include_files`: Optional file patterns to include with the flow bundle.
++- `include_files_base_dir`: Optional base directory for `include_files`. Relative
++paths are resolved from the working directory when the bundle is created.
++Defaults to the flow file's directory.
+ - `worker_cls`: The class of the worker to use to spin up infrastructure and submit
+ the flow to it.
+ 
+ 
+ **Methods:**
+ 
+-#### `retry` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2553" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++#### `retry` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2561" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ retry(self, flow_run: 'FlowRun') -> R | State[R]
+@@ -1115,7 +1137,7 @@ reusing the same flow run ID and incrementing the run_count.
+ - The flow result or final state
+ 
+ 
+-#### `submit` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2509" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++#### `submit` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2517" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ submit(self, *args: P.args, **kwargs: P.kwargs) -> PrefectFlowRunFuture[R]
+@@ -1153,7 +1175,7 @@ print(result)
+ ```
+ 
+ 
+-#### `submit_to_work_pool` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2604" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++#### `submit_to_work_pool` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2612" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ submit_to_work_pool(self, *args: P.args, **kwargs: P.kwargs) -> PrefectFlowRunFuture[R]
+@@ -1190,7 +1212,7 @@ print(result)
+ ```
+ 
+ 
+-#### `with_options` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2771" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
++#### `with_options` <sup><a href="https://github.com/PrefectHQ/prefect/blob/main/src/prefect/flows.py#L2779" target="_blank"><Icon icon="github" style="width: 14px; height: 14px;" /></a></sup>
+ 
+ ```python
+ with_options(self) -> 'InfrastructureBoundFlow[P, R]'
+diff --git a/src/integrations/prefect-aws/prefect_aws/decorators.py b/src/integrations/prefect-aws/prefect_aws/decorators.py
+index 3f4d22f93b54..264380357df5 100644
+--- a/src/integrations/prefect-aws/prefect_aws/decorators.py
++++ b/src/integrations/prefect-aws/prefect_aws/decorators.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++from pathlib import Path
+ from typing import (
+     TYPE_CHECKING,
+     Any,
+@@ -54,6 +55,8 @@ def ecs(
+     work_pool: str,
+     include_files: Sequence[str] | None = None,
+     launcher: BundleLauncher | None = None,
++    *,
++    include_files_base_dir: Path | str | None = None,
+     **job_variables: Any,
+ ) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]:
+     """
+@@ -66,6 +69,9 @@ def ecs(
+             (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+             be bundled and available in the remote execution environment.
+         launcher: Optional upload and execution launcher override.
++        include_files_base_dir: Optional base directory used to resolve
++            `include_files`. Relative paths are resolved from the working directory
++            when the bundle is created. Defaults to the flow file's directory.
+         **job_variables: Additional job variables to use for infrastructure configuration
+ 
+     Example:
+@@ -100,6 +106,7 @@ def decorator(flow: Flow[P, R]) -> InfrastructureBoundFlow[P, R]:
+             worker_cls=ECSWorker,
+             launcher=launcher,
+             include_files=list(include_files) if include_files is not None else None,
++            include_files_base_dir=include_files_base_dir,
+         )
+ 
+     return decorator
+diff --git a/src/integrations/prefect-aws/tests/experimental/test_decorators.py b/src/integrations/prefect-aws/tests/experimental/test_decorators.py
+index edc1651b9805..05c2c787c3ef 100644
+--- a/src/integrations/prefect-aws/tests/experimental/test_decorators.py
++++ b/src/integrations/prefect-aws/tests/experimental/test_decorators.py
+@@ -1,4 +1,5 @@
+ import uuid
++from pathlib import Path
+ from typing import Generator
+ from unittest.mock import AsyncMock, MagicMock
+ 
+@@ -223,15 +224,22 @@ def test_flow():
+ 
+         assert test_flow.include_files == []
+ 
+-    def test_include_files_with_valid_strings(self, mock_submit: AsyncMock) -> None:
++    def test_include_files_with_valid_strings(
++        self, mock_submit: AsyncMock, tmp_path: Path
++    ) -> None:
+         """Test that include_files with valid strings is stored correctly"""
+ 
+-        @ecs(work_pool="test-pool", include_files=["config.yaml", "data/"])
++        @ecs(
++            work_pool="test-pool",
++            include_files=["config.yaml", "data/"],
++            include_files_base_dir=tmp_path,
++        )
+         @prefect.flow
+         def test_flow():
+             return "test"
+ 
+         assert test_flow.include_files == ["config.yaml", "data/"]
++        assert test_flow.include_files_base_dir == str(tmp_path)
+ 
+     def test_include_files_tuple_converted_to_list(
+         self, mock_submit: AsyncMock
+diff --git a/src/integrations/prefect-azure/prefect_azure/decorators.py b/src/integrations/prefect-azure/prefect_azure/decorators.py
+index d2037f684713..d61b233f109a 100644
+--- a/src/integrations/prefect-azure/prefect_azure/decorators.py
++++ b/src/integrations/prefect-azure/prefect_azure/decorators.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++from pathlib import Path
+ from typing import (
+     TYPE_CHECKING,
+     Any,
+@@ -53,6 +54,8 @@ def azure_container_instance(
+     work_pool: str,
+     include_files: Sequence[str] | None = None,
+     launcher: BundleLauncher | None = None,
++    *,
++    include_files_base_dir: Path | str | None = None,
+     **job_variables: Any,
+ ) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]:
+     """
+@@ -65,6 +68,9 @@ def azure_container_instance(
+             (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+             be bundled and available in the remote execution environment.
+         launcher: Optional upload and execution launcher override.
++        include_files_base_dir: Optional base directory used to resolve
++            `include_files`. Relative paths are resolved from the working directory
++            when the bundle is created. Defaults to the flow file's directory.
+         **job_variables: Additional job variables to use for infrastructure configuration
+ 
+     Example:
+@@ -99,6 +105,7 @@ def decorator(flow: Flow[P, R]) -> InfrastructureBoundFlow[P, R]:
+             worker_cls=AzureContainerWorker,
+             launcher=launcher,
+             include_files=list(include_files) if include_files is not None else None,
++            include_files_base_dir=include_files_base_dir,
+         )
+ 
+     return decorator
+diff --git a/src/integrations/prefect-azure/tests/experimental/tests_decorators.py b/src/integrations/prefect-azure/tests/experimental/tests_decorators.py
+index d302eefc8e3f..23edd04c2e54 100644
+--- a/src/integrations/prefect-azure/tests/experimental/tests_decorators.py
++++ b/src/integrations/prefect-azure/tests/experimental/tests_decorators.py
+@@ -1,4 +1,5 @@
+ import uuid
++from pathlib import Path
+ from typing import Generator
+ from unittest.mock import AsyncMock, MagicMock
+ 
+@@ -215,17 +216,22 @@ def test_flow():
+ 
+         assert test_flow.include_files == []
+ 
+-    def test_include_files_with_valid_strings(self, mock_submit: AsyncMock) -> None:
++    def test_include_files_with_valid_strings(
++        self, mock_submit: AsyncMock, tmp_path: Path
++    ) -> None:
+         """Test that include_files with valid strings is stored correctly"""
+ 
+         @azure_container_instance(
+-            work_pool="test-pool", include_files=["config.yaml", "data/"]
++            work_pool="test-pool",
++            include_files=["config.yaml", "data/"],
++            include_files_base_dir=tmp_path,
+         )
+         @prefect.flow
+         def test_flow():
+             return "test"
+ 
+         assert test_flow.include_files == ["config.yaml", "data/"]
++        assert test_flow.include_files_base_dir == str(tmp_path)
+ 
+     def test_include_files_tuple_converted_to_list(
+         self, mock_submit: AsyncMock
+diff --git a/src/integrations/prefect-docker/prefect_docker/decorators.py b/src/integrations/prefect-docker/prefect_docker/decorators.py
+index 829106e70a25..9eb060c1afb4 100644
+--- a/src/integrations/prefect-docker/prefect_docker/decorators.py
++++ b/src/integrations/prefect-docker/prefect_docker/decorators.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++from pathlib import Path
+ from typing import TYPE_CHECKING, Any, Callable, Sequence, TypeVar
+ 
+ from typing_extensions import ParamSpec
+@@ -47,6 +48,8 @@ def docker(
+     work_pool: str,
+     include_files: Sequence[str] | None = None,
+     launcher: BundleLauncher | None = None,
++    *,
++    include_files_base_dir: Path | str | None = None,
+     **job_variables: Any,
+ ) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]:
+     """
+@@ -59,6 +62,9 @@ def docker(
+             (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+             be bundled and available in the remote execution environment.
+         launcher: Optional upload and execution launcher override.
++        include_files_base_dir: Optional base directory used to resolve
++            `include_files`. Relative paths are resolved from the working directory
++            when the bundle is created. Defaults to the flow file's directory.
+         **job_variables: Additional job variables to use for infrastructure configuration
+ 
+     Example:
+@@ -93,6 +99,7 @@ def decorator(flow: Flow[P, R]) -> InfrastructureBoundFlow[P, R]:
+             worker_cls=DockerWorker,
+             launcher=launcher,
+             include_files=list(include_files) if include_files is not None else None,
++            include_files_base_dir=include_files_base_dir,
+         )
+ 
+     return decorator
+diff --git a/src/integrations/prefect-docker/prefect_docker/worker.py b/src/integrations/prefect-docker/prefect_docker/worker.py
+index 630b38fdb322..f32eaa55471a 100644
+--- a/src/integrations/prefect-docker/prefect_docker/worker.py
++++ b/src/integrations/prefect-docker/prefect_docker/worker.py
+@@ -629,7 +629,18 @@ async def _submit_adhoc_run(
+             worker_id=self.backend_id,
+         )
+ 
+-        creation_result = create_bundle_for_flow_run(flow=flow, flow_run=flow_run)
++        try:
++            creation_result = create_bundle_for_flow_run(flow=flow, flow_run=flow_run)
++        except Exception as exc:
++            logger.exception(
++                "Failed to create execution bundle for flow run '%s'.", flow_run.id
++            )
++            message = (
++                f"Flow run bundle could not be created: {type(exc).__name__}: {exc}"
++            )
++            await self._propose_crashed_state(flow_run, message)
++            return
++
+         bundle = creation_result["bundle"]
+ 
+         await (
+diff --git a/src/integrations/prefect-docker/tests/experimental/test_decorators.py b/src/integrations/prefect-docker/tests/experimental/test_decorators.py
+index 201604b22a6b..6ca6140285de 100644
+--- a/src/integrations/prefect-docker/tests/experimental/test_decorators.py
++++ b/src/integrations/prefect-docker/tests/experimental/test_decorators.py
+@@ -1,6 +1,7 @@
+ import asyncio
+ import sys
+ import uuid
++from pathlib import Path
+ from typing import Generator
+ from unittest.mock import AsyncMock, MagicMock
+ 
+@@ -209,15 +210,22 @@ def test_flow():
+ 
+         assert test_flow.include_files == []
+ 
+-    def test_include_files_with_valid_strings(self, mock_submit: AsyncMock) -> None:
++    def test_include_files_with_valid_strings(
++        self, mock_submit: AsyncMock, tmp_path: Path
++    ) -> None:
+         """Test that include_files with valid strings is stored correctly"""
+ 
+-        @docker(work_pool="test-pool", include_files=["config.yaml", "data/"])
++        @docker(
++            work_pool="test-pool",
++            include_files=["config.yaml", "data/"],
++            include_files_base_dir=tmp_path,
++        )
+         @prefect.flow
+         def test_flow():
+             return "test"
+ 
+         assert test_flow.include_files == ["config.yaml", "data/"]
++        assert test_flow.include_files_base_dir == str(tmp_path)
+ 
+     def test_include_files_tuple_converted_to_list(
+         self, mock_submit: AsyncMock
+diff --git a/src/integrations/prefect-docker/tests/test_worker.py b/src/integrations/prefect-docker/tests/test_worker.py
+index 225c04b503e1..584841e5b86d 100644
+--- a/src/integrations/prefect-docker/tests/test_worker.py
++++ b/src/integrations/prefect-docker/tests/test_worker.py
+@@ -1,5 +1,6 @@
+ import copy
+ import uuid
++from pathlib import Path
+ from unittest.mock import MagicMock, call, patch
+ 
+ import anyio.abc
+@@ -19,10 +20,12 @@
+ from pydantic import TypeAdapter, ValidationError
+ 
+ import prefect.main  # noqa
+-from prefect import get_client
++from prefect import flow, get_client
+ from prefect.client.schemas import FlowRun
+ from prefect.client.schemas.actions import WorkPoolCreate
++from prefect.client.schemas.objects import WorkPool
+ from prefect.events import RelatedResource
++from prefect.flows import bind_flow_to_infrastructure
+ from prefect.settings import (
+     PREFECT_API_URL,
+     PREFECT_SERVER_ALLOW_EPHEMERAL_MODE,
+@@ -1636,6 +1639,35 @@ async def test_submit_adhoc_run_without_flow_run_creates_new_run(
+             final_flow_runs = await client.read_flow_runs()
+             assert len(final_flow_runs) > initial_count
+ 
++    async def test_submit_adhoc_run_crashes_when_bundle_creation_fails(
++        self,
++        mock_docker_client: MagicMock,
++        work_pool: WorkPool,
++        tmp_path: Path,
++    ):
++        @flow
++        def test_flow() -> None:
++            pass
++
++        bound_flow = bind_flow_to_infrastructure(
++            flow=test_flow,
++            work_pool=work_pool.name,
++            worker_cls=DockerWorker,
++            include_files=["config.yaml"],
++            include_files_base_dir=tmp_path / "missing",
++        )
++
++        async with get_client() as client:
++            async with DockerWorker(work_pool_name=work_pool.name) as worker:
++                with pytest.warns(FutureWarning):
++                    future = await worker.submit(bound_flow)
++
++            flow_run = await client.read_flow_run(future.flow_run_id)
++            assert flow_run.state is not None
++            assert flow_run.state.is_crashed()
++            assert flow_run.state.message is not None
++            assert "include_files_base_dir" in flow_run.state.message
++
+     async def test_submit_adhoc_run_passes_worker_id_for_attribution(
+         self, mock_docker_client, work_pool, test_flow
+     ):
+diff --git a/src/integrations/prefect-gcp/prefect_gcp/decorators.py b/src/integrations/prefect-gcp/prefect_gcp/decorators.py
+index 1741f1fecf57..491b851b256a 100644
+--- a/src/integrations/prefect-gcp/prefect_gcp/decorators.py
++++ b/src/integrations/prefect-gcp/prefect_gcp/decorators.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++from pathlib import Path
+ from typing import (
+     TYPE_CHECKING,
+     Any,
+@@ -54,6 +55,8 @@ def cloud_run(
+     work_pool: str,
+     include_files: Sequence[str] | None = None,
+     launcher: BundleLauncher | None = None,
++    *,
++    include_files_base_dir: Path | str | None = None,
+     **job_variables: Any,
+ ) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]:
+     """
+@@ -66,6 +69,9 @@ def cloud_run(
+             (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+             be bundled and available in the remote execution environment.
+         launcher: Optional upload and execution launcher override.
++        include_files_base_dir: Optional base directory used to resolve
++            `include_files`. Relative paths are resolved from the working directory
++            when the bundle is created. Defaults to the flow file's directory.
+         **job_variables: Additional job variables to use for infrastructure configuration
+ 
+     Example:
+@@ -100,6 +106,7 @@ def decorator(flow: Flow[P, R]) -> InfrastructureBoundFlow[P, R]:
+             worker_cls=CloudRunWorkerV2,
+             launcher=launcher,
+             include_files=list(include_files) if include_files is not None else None,
++            include_files_base_dir=include_files_base_dir,
+         )
+ 
+     return decorator
+@@ -109,6 +116,8 @@ def vertex_ai(
+     work_pool: str,
+     include_files: Sequence[str] | None = None,
+     launcher: BundleLauncher | None = None,
++    *,
++    include_files_base_dir: Path | str | None = None,
+     **job_variables: Any,
+ ) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]:
+     """
+@@ -121,6 +130,9 @@ def vertex_ai(
+             (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+             be bundled and available in the remote execution environment.
+         launcher: Optional upload and execution launcher override.
++        include_files_base_dir: Optional base directory used to resolve
++            `include_files`. Relative paths are resolved from the working directory
++            when the bundle is created. Defaults to the flow file's directory.
+         **job_variables: Additional job variables to use for infrastructure configuration
+ 
+     Example:
+@@ -155,6 +167,7 @@ def decorator(flow: Flow[P, R]) -> InfrastructureBoundFlow[P, R]:
+             worker_cls=VertexAIWorker,
+             launcher=launcher,
+             include_files=list(include_files) if include_files is not None else None,
++            include_files_base_dir=include_files_base_dir,
+         )
+ 
+     return decorator
+diff --git a/src/integrations/prefect-gcp/tests/experimental/test_decorators.py b/src/integrations/prefect-gcp/tests/experimental/test_decorators.py
+index 8cc7bed4b936..463f7e78d92c 100644
+--- a/src/integrations/prefect-gcp/tests/experimental/test_decorators.py
++++ b/src/integrations/prefect-gcp/tests/experimental/test_decorators.py
+@@ -1,4 +1,5 @@
+ import uuid
++from pathlib import Path
+ from typing import Generator
+ from unittest.mock import AsyncMock, MagicMock
+ 
+@@ -223,13 +224,20 @@ def test_flow():
+ 
+         assert test_flow.include_files == []
+ 
+-    def test_include_files_with_valid_strings(self, mock_submit: AsyncMock) -> None:
+-        @cloud_run(work_pool="test-pool", include_files=["config.yaml", "data/"])
++    def test_include_files_with_valid_strings(
++        self, mock_submit: AsyncMock, tmp_path: Path
++    ) -> None:
++        @cloud_run(
++            work_pool="test-pool",
++            include_files=["config.yaml", "data/"],
++            include_files_base_dir=tmp_path,
++        )
+         @prefect.flow
+         def test_flow():
+             return "test"
+ 
+         assert test_flow.include_files == ["config.yaml", "data/"]
++        assert test_flow.include_files_base_dir == str(tmp_path)
+ 
+     def test_include_files_tuple_converted_to_list(
+         self, mock_submit: AsyncMock
+@@ -493,13 +501,20 @@ def test_flow():
+ 
+         assert test_flow.include_files == []
+ 
+-    def test_include_files_with_valid_strings(self, mock_submit: AsyncMock) -> None:
+-        @vertex_ai(work_pool="test-pool", include_files=["config.yaml", "data/"])
++    def test_include_files_with_valid_strings(
++        self, mock_submit: AsyncMock, tmp_path: Path
++    ) -> None:
++        @vertex_ai(
++            work_pool="test-pool",
++            include_files=["config.yaml", "data/"],
++            include_files_base_dir=tmp_path,
++        )
+         @prefect.flow
+         def test_flow():
+             return "test"
+ 
+         assert test_flow.include_files == ["config.yaml", "data/"]
++        assert test_flow.include_files_base_dir == str(tmp_path)
+ 
+     def test_include_files_tuple_converted_to_list(
+         self, mock_submit: AsyncMock
+diff --git a/src/integrations/prefect-kubernetes/prefect_kubernetes/decorators.py b/src/integrations/prefect-kubernetes/prefect_kubernetes/decorators.py
+index 72523c990198..8b260d8dd33e 100644
+--- a/src/integrations/prefect-kubernetes/prefect_kubernetes/decorators.py
++++ b/src/integrations/prefect-kubernetes/prefect_kubernetes/decorators.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++from pathlib import Path
+ from typing import (
+     TYPE_CHECKING,
+     Any,
+@@ -53,6 +54,8 @@ def kubernetes(
+     work_pool: str,
+     include_files: Sequence[str] | None = None,
+     launcher: BundleLauncher | None = None,
++    *,
++    include_files_base_dir: Path | str | None = None,
+     **job_variables: Any,
+ ) -> Callable[[Flow[P, R]], InfrastructureBoundFlow[P, R]]:
+     """
+@@ -65,6 +68,9 @@ def kubernetes(
+             (e.g., "*.yaml", "data/**/*.csv"). Files matching these patterns will
+             be bundled and available in the remote execution environment.
+         launcher: Optional upload and execution launcher override.
++        include_files_base_dir: Optional base directory used to resolve
++            `include_files`. Relative paths are resolved from the working directory
++            when the bundle is created. Defaults to the flow file's directory.
+         **job_variables: Additional job variables to use for infrastructure configuration
+ 
+     Example:
+@@ -99,6 +105,7 @@ def decorator(flow: Flow[P, R]) -> InfrastructureBoundFlow[P, R]:
+             worker_cls=KubernetesWorker,
+             launcher=launcher,
+             include_files=list(include_files) if include_files is not None else None,
++            include_files_base_dir=include_files_base_dir,
+         )
+ 
+     return decorator
+diff --git a/src/integrations/prefect-kubernetes/tests/experimental/test_decorator.py b/src/integrations/prefect-kubernetes/tests/experimental/test_decorator.py
+index b994ce36a0fa..ee4021e02500 100644
+--- a/src/integrations/prefect-kubernetes/tests/experimental/test_decorator.py
++++ b/src/integrations/prefect-kubernetes/tests/experimental/test_decorator.py
+@@ -1,4 +1,5 @@
+ import uuid
++from pathlib import Path
+ from typing import Generator
+ from unittest.mock import AsyncMock, MagicMock
+ 
+@@ -218,15 +219,22 @@ def test_flow():
+ 
+         assert test_flow.include_files == []
+ 
+-    def test_include_files_with_valid_strings(self, mock_submit: AsyncMock) -> None:
++    def test_include_files_with_valid_strings(
++        self, mock_submit: AsyncMock, tmp_path: Path
++    ) -> None:
+         """Test that include_files with valid strings is stored correctly"""
+ 
+-        @kubernetes(work_pool="test-pool", include_files=["config.yaml", "data/"])
++        @kubernetes(
++            work_pool="test-pool",
++            include_files=["config.yaml", "data/"],
++            include_files_base_dir=tmp_path,
++        )
+         @prefect.flow
+         def test_flow():
+             return "test"
+ 
+         assert test_flow.include_files == ["config.yaml", "data/"]
++        assert test_flow.include_files_base_dir == str(tmp_path)
+ 
+     def test_include_files_tuple_converted_to_list(
+         self, mock_submit: AsyncMock
+diff --git a/src/prefect/bundles/__init__.py b/src/prefect/bundles/__init__.py
+index 952484ba4d1e..deaa463f02f5 100644
+--- a/src/prefect/bundles/__init__.py
++++ b/src/prefect/bundles/__init__.py
+@@ -11,6 +11,7 @@
+ import multiprocessing
+ import multiprocessing.context
+ import os
++import stat
+ import subprocess
+ import sys
+ import tempfile
+@@ -395,6 +396,41 @@ def _pickle_local_modules_by_value(flow: Flow[Any, Any]):
+                 )
+ 
+ 
++def _resolve_include_files_base_dir(value: Path | str) -> Path:
++    """Resolve and validate an explicitly configured include-files base directory."""
++    try:
++        candidate = Path(value).expanduser()
++    except RuntimeError as exc:
++        raise ValueError(
++            f"Invalid include_files_base_dir {str(value)!r}: {exc}"
++        ) from exc
++
++    if not candidate.is_absolute():
++        candidate = Path.cwd() / candidate
++
++    try:
++        base_dir = candidate.resolve(strict=True)
++        if not stat.S_ISDIR(base_dir.stat().st_mode):
++            raise ValueError(
++                f"include_files_base_dir {str(value)!r} must be a directory."
++            )
++
++        # Open the directory to verify that collection can read it. `os.access` is
++        # not sufficient because its result can differ from the actual operation.
++        with os.scandir(base_dir):
++            pass
++    except FileNotFoundError as exc:
++        raise ValueError(
++            f"include_files_base_dir {str(value)!r} does not exist."
++        ) from exc
++    except NotADirectoryError as exc:
++        raise ValueError(
++            f"include_files_base_dir {str(value)!r} must be a directory."
++        ) from exc
++
++    return base_dir
++
++
+ def create_bundle_for_flow_run(
+     flow: Flow[Any, Any],
+     flow_run: FlowRun,
+@@ -463,12 +499,16 @@ def create_bundle_for_flow_run(
+     files_key: str | None = None
+     zip_path: Path | None = None
+     include_files = getattr(flow, "include_files", None)
++    include_files_base_dir = getattr(flow, "include_files_base_dir", None)
+ 
+     if include_files:
+         try:
+-            # Get base directory from flow file location
+-            flow_file = Path(inspect.getfile(flow.fn))
+-            base_dir = flow_file.parent.resolve()
++            if include_files_base_dir is None:
++                # Preserve the existing default relative to the flow definition.
++                flow_file = Path(inspect.getfile(flow.fn))
++                base_dir = flow_file.parent.resolve()
++            else:
++                base_dir = _resolve_include_files_base_dir(include_files_base_dir)
+ 
+             # Pipeline: collect -> filter -> check -> zip
+             collector = FileCollector(base_dir)
+@@ -498,6 +538,8 @@ def create_bundle_for_flow_run(
+                         files_key,
+                     )
+         except (OSError, TypeError, AttributeError) as e:
++            if include_files_base_dir is not None:
++                raise
+             # Handle cases where flow has no file (dynamic flow) or other IO errors
+             logger.warning(
+                 "Could not collect included files: %s. Files will not be bundled.",
+diff --git a/src/prefect/bundles/_ignore_filter.py b/src/prefect/bundles/_ignore_filter.py
+index b8ba89160dde..095b7f0bf2c2 100644
+--- a/src/prefect/bundles/_ignore_filter.py
++++ b/src/prefect/bundles/_ignore_filter.py
+@@ -87,23 +87,9 @@ def _read_ignore_file(path: Path) -> list[str]:
+     return [line for line in lines if line.strip() and not line.startswith("#")]
+ 
+ 
+-def load_ignore_patterns(flow_dir: Path) -> list[str]:
+-    """
+-    Load patterns from cascading .prefectignore files.
+-
+-    Load order (patterns combined via union):
+-    1. Project root .prefectignore (if found via pyproject.toml detection)
+-    2. Flow directory .prefectignore (if different from project root)
+-
+-    Missing .prefectignore files emit debug log, not warning.
+-
+-    Args:
+-        flow_dir: Flow file's directory (base for relative paths).
+-
+-    Returns:
+-        Combined list of pattern strings from all .prefectignore files.
+-    """
+-    patterns: list[str] = []
++def _load_ignore_pattern_sources(flow_dir: Path) -> list[tuple[Path, list[str]]]:
++    """Load ignore patterns together with the directory they are relative to."""
++    sources: list[tuple[Path, list[str]]] = []
+ 
+     # 1. Find and load project root .prefectignore
+     project_root = find_project_root(flow_dir)
+@@ -111,7 +97,7 @@ def load_ignore_patterns(flow_dir: Path) -> list[str]:
+         project_ignore = project_root / ".prefectignore"
+         if project_ignore.exists():
+             logger.debug(f"Loading .prefectignore from project root: {project_ignore}")
+-            patterns.extend(_read_ignore_file(project_ignore))
++            sources.append((project_root.resolve(), _read_ignore_file(project_ignore)))
+         else:
+             logger.debug(f"No .prefectignore found at project root: {project_root}")
+     else:
+@@ -123,11 +109,34 @@ def load_ignore_patterns(flow_dir: Path) -> list[str]:
+         # Only load if different from project root's .prefectignore
+         if project_root is None or flow_dir.resolve() != project_root.resolve():
+             logger.debug(f"Loading .prefectignore from flow directory: {flow_ignore}")
+-            patterns.extend(_read_ignore_file(flow_ignore))
++            sources.append((flow_dir.resolve(), _read_ignore_file(flow_ignore)))
+     else:
+         logger.debug(f"No .prefectignore found in flow directory: {flow_dir}")
+ 
+-    return patterns
++    return sources
++
++
++def load_ignore_patterns(flow_dir: Path) -> list[str]:
++    """
++    Load patterns from cascading .prefectignore files.
++
++    Load order (later matching patterns override earlier patterns):
++    1. Project root .prefectignore (if found via pyproject.toml detection)
++    2. Flow directory .prefectignore (if different from project root)
++
++    Missing .prefectignore files emit debug log, not warning.
++
++    Args:
++        flow_dir: Flow file's directory (base for relative paths).
++
++    Returns:
++        Combined list of pattern strings from all .prefectignore files.
++    """
++    return [
++        pattern
++        for _, patterns in _load_ignore_pattern_sources(flow_dir)
++        for pattern in patterns
++    ]
+ 
+ 
+ class IgnoreFilter:
+@@ -155,14 +164,16 @@ def __init__(self, flow_dir: Path) -> None:
+             flow_dir: Base directory for file collection (typically flow file's parent).
+         """
+         self.flow_dir = flow_dir.resolve()
+-        self._spec: pathspec.GitIgnoreSpec | None = None
++        self._specs: list[tuple[Path, pathspec.GitIgnoreSpec]] = []
+         self._load_patterns()
+ 
+     def _load_patterns(self) -> None:
+         """Load patterns and compile into pathspec."""
+-        patterns = load_ignore_patterns(self.flow_dir)
+-        if patterns:
+-            self._spec = pathspec.GitIgnoreSpec.from_lines(patterns)
++        for pattern_root, patterns in _load_ignore_pattern_sources(self.flow_dir):
++            if patterns:
++                self._specs.append(
++                    (pattern_root, pathspec.GitIgnoreSpec.from_lines(patterns))
++                )
+ 
+     def filter(
+         self,
+@@ -202,11 +213,25 @@ def filter(
+                 result.excluded_by_ignore.append(file)
+                 continue
+ 
+-            # Check against ignore spec
++            # Check against ignore specs in cascade order. A later source only
++            # overrides the current decision when one of its patterns matches.
+             excluded = False
+-            if self._spec is not None:
+-                if self._spec.match_file(rel_path):
+-                    excluded = True
++            for pattern_root, spec in self._specs:
++                try:
++                    pattern_path = str(file.relative_to(pattern_root))
++                except ValueError:
++                    try:
++                        pattern_path = str(file.resolve().relative_to(pattern_root))
++                    except ValueError:
++                        continue
++
++                normalized_path = pathspec.util.normalize_file(pattern_path)
++                if any(
++                    pattern.include is not None
++                    and pattern.match_file(normalized_path) is not None
++                    for pattern in spec.patterns
++                ):
++                    excluded = spec.match_file(normalized_path)
+ 
+             if excluded:
+                 result.excluded_by_ignore.append(file)
+diff --git a/src/prefect/flows.py b/src/prefect/flows.py
+index 643749b8412a..2f48010b6ad9 100644
+--- a/src/prefect/flows.py
++++ b/src/prefect/flows.py
+@@ -2397,6 +2397,10 @@ class InfrastructureBoundFlow(Flow[P, R]):
+         job_variables: Infrastructure configuration that will override the base job
+             configuration of the work pool.
+         launcher: Optional upload and execution launcher overrides.
++        include_files: Optional file patterns to include with the flow bundle.
++        include_files_base_dir: Optional base directory for `include_files`. Relative
++            paths are resolved from the working directory when the bundle is created.
++            Defaults to the flow file's directory.
+         worker_cls: The class of the worker to use to spin up infrastructure and submit
+             the flow to it.
+     """
+@@ -2409,6 +2413,7 @@ def __init__(
+         worker_cls: type["BaseWorker[Any, Any, Any]"],
+         launcher: BundleLauncher | None = None,
+         include_files: Sequence[str] | None = None,
++        include_files_base_dir: Path | str | None = None,
+         **kwargs: Any,
+     ):
+         super().__init__(*args, **kwargs)
+@@ -2419,6 +2424,9 @@ def __init__(
+         self.include_files: list[str] | None = (
+             list(include_files) if include_files is not None else None
+         )
++        self.include_files_base_dir: str | None = (
++            str(include_files_base_dir) if include_files_base_dir is not None else None
++        )
+ 
+     @overload
+     def __call__(self: "Flow[P, NoReturn]", *args: P.args, **kwargs: P.kwargs) -> None:
+@@ -2648,7 +2656,7 @@ def my_flow(x: int, y: int):
+             get_result_store,
+             resolve_result_storage,
+         )
+-        from prefect.states import Pending, Scheduled
++        from prefect.states import Failed, Pending, Scheduled
+         from prefect.tasks import Task
+ 
+         # Get parameters to error early if they are invalid
+@@ -2753,14 +2761,28 @@ def my_flow(x: int, y: int):
+                 parent_task_run_id=getattr(parent_task_run, "id", None),
+             )
+ 
+-            result = create_bundle_for_flow_run(flow=flow, flow_run=flow_run)
+-            upload_bundle_to_storage(
+-                result["bundle"],
+-                bundle_key,
+-                upload_command,
+-                zip_path=result["zip_path"],
+-                upload_step=upload_step,
+-            )
++            try:
++                result = create_bundle_for_flow_run(flow=flow, flow_run=flow_run)
++                upload_bundle_to_storage(
++                    result["bundle"],
++                    bundle_key,
++                    upload_command,
++                    zip_path=result["zip_path"],
++                    upload_step=upload_step,
++                )
++            except Exception as exc:
++                try:
++                    client.set_flow_run_state(
++                        flow_run.id,
++                        state=Failed(message=f"Flow run submission failed: {exc}"),
++                        force=True,
++                    )
++                except Exception:
++                    logger.exception(
++                        "Failed to update flow run %s after submission failed",
++                        flow_run.id,
++                    )
++                raise
+ 
+             # Set flow run to scheduled now that the bundle is uploaded and ready to be executed
+             client.set_flow_run_state(flow_run.id, state=Scheduled())
+@@ -2795,6 +2817,7 @@ def with_options(
+         job_variables: Optional[dict[str, Any]] = None,
+         launcher: BundleLauncher | None = NotSet,  # type: ignore
+         include_files: Optional[list[str]] = NotSet,  # type: ignore
++        include_files_base_dir: Path | str | None = NotSet,  # type: ignore
+     ) -> "InfrastructureBoundFlow[P, R]":
+         new_flow = super().with_options(
+             name=name,
+@@ -2828,6 +2851,9 @@ def with_options(
+             include_files=include_files
+             if include_files is not NotSet
+             else self.include_files,
++            include_files_base_dir=include_files_base_dir
++            if include_files_base_dir is not NotSet
++            else self.include_files_base_dir,
+         )
+         return new_infrastructure_bound_flow
+ 
+@@ -2839,7 +2865,25 @@ def bind_flow_to_infrastructure(
+     job_variables: dict[str, Any] | None = None,
+     launcher: BundleLauncher | None = None,
+     include_files: Sequence[str] | None = None,
++    *,
++    include_files_base_dir: Path | str | None = None,
+ ) -> InfrastructureBoundFlow[P, R]:
++    """Bind a flow to execution on a specific infrastructure work pool.
++
++    Args:
++        flow: The flow to bind.
++        work_pool: The name of the work pool to use.
++        worker_cls: The worker class that submits the flow.
++        job_variables: Infrastructure overrides for the work pool's base job template.
++        launcher: Optional upload and execution launcher overrides.
++        include_files: Optional file patterns to include with the flow bundle.
++        include_files_base_dir: Optional base directory for `include_files`. Relative
++            paths are resolved from the working directory when the bundle is created.
++            Defaults to the flow file's directory.
++
++    Returns:
++        An infrastructure-bound copy of the flow.
++    """
+     new = InfrastructureBoundFlow[P, R](
+         flow.fn,
+         work_pool=work_pool,
+@@ -2847,6 +2891,7 @@ def bind_flow_to_infrastructure(
+         worker_cls=worker_cls,
+         launcher=launcher,
+         include_files=include_files,
++        include_files_base_dir=include_files_base_dir,
+     )
+     # Copy all attributes from the original flow
+     for attr, value in flow.__dict__.items():
+@@ -2856,6 +2901,9 @@ def bind_flow_to_infrastructure(
+     new.worker_cls = worker_cls
+     new.launcher = normalize_launcher(launcher)
+     new.include_files = list(include_files) if include_files is not None else None
++    new.include_files_base_dir = (
++        str(include_files_base_dir) if include_files_base_dir is not None else None
++    )
+     return new
+ 
+ 
+diff --git a/src/prefect/workers/base.py b/src/prefect/workers/base.py
+index cb3cbf818bfb..9ec5054d984f 100644
+--- a/src/prefect/workers/base.py
++++ b/src/prefect/workers/base.py
+@@ -1144,7 +1144,18 @@ async def _submit_adhoc_run(
+             worker_id=self.backend_id,
+         )
+ 
+-        bundle_result = create_bundle_for_flow_run(flow=flow, flow_run=flow_run)
++        try:
++            bundle_result = create_bundle_for_flow_run(flow=flow, flow_run=flow_run)
++        except Exception as exc:
++            logger.exception(
++                "Failed to create execution bundle for flow run '%s'.", flow_run.id
++            )
++            message = (
++                f"Flow run bundle could not be created: {type(exc).__name__}: {exc}"
++            )
++            await self._propose_crashed_state(flow_run, message, client=self.client)
++            return
++
+         bundle = bundle_result["bundle"]
+         zip_path = bundle_result["zip_path"]
+ 
+diff --git a/src/prefect/workers/process.py b/src/prefect/workers/process.py
+index b1283f8bac85..1d0faeb79296 100644
+--- a/src/prefect/workers/process.py
++++ b/src/prefect/workers/process.py
+@@ -280,7 +280,17 @@ async def _submit_adhoc_run(
+             worker_id=self.backend_id,
+         )
+ 
+-        result = create_bundle_for_flow_run(flow=flow, flow_run=flow_run)
++        try:
++            result = create_bundle_for_flow_run(flow=flow, flow_run=flow_run)
++        except Exception as exc:
++            logger.exception(
++                "Failed to create execution bundle for flow run '%s'.", flow_run.id
++            )
++            message = (
++                f"Flow run bundle could not be created: {type(exc).__name__}: {exc}"
++            )
++            await self._propose_crashed_state(flow_run, message)
++            return
+ 
+         logger.debug("Executing flow run bundle in subprocess...")
+         try:
+diff --git a/tests/_experimental/bundles/test_bundles.py b/tests/_experimental/bundles/test_bundles.py
+index 4cb1edfcf3d7..0e912efc65e8 100644
+--- a/tests/_experimental/bundles/test_bundles.py
++++ b/tests/_experimental/bundles/test_bundles.py
+@@ -2,11 +2,13 @@
+ 
+ from pathlib import Path
+ from unittest.mock import MagicMock, patch
++from zipfile import ZipFile
+ 
+ import pytest
+ 
+ import prefect.bundles as bundles_module
+ from prefect.bundles import create_bundle_for_flow_run
++from prefect.bundles._path_resolver import PathValidationError
+ from prefect.flows import flow
+ 
+ 
+@@ -322,6 +324,243 @@ def test_flow():
+             result["zip_path"].unlink(missing_ok=True)
+             result["zip_path"].parent.rmdir()
+ 
++    def test_include_files_base_dir_sets_the_collection_and_archive_root(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")
++        (tmp_path / ".prefectignore").write_text("assets/ignored.txt\n")
++        custom_base_dir = tmp_path / "assets"
++        custom_base_dir.mkdir()
++        (custom_base_dir / "config.yaml").write_text("source: custom")
++        (custom_base_dir / "ignored.txt").write_text("ignored")
++        nested_dir = custom_base_dir / "data"
++        nested_dir.mkdir()
++        (nested_dir / "input.csv").write_text("a,b\n1,2")
++
++        flow_dir = tmp_path / "flows"
++        flow_dir.mkdir()
++        flow_file = flow_dir / "my_flow.py"
++        flow_file.write_text("from prefect import flow")
++        (flow_dir / "config.yaml").write_text("source: flow")
++
++        monkeypatch.setattr(
++            bundles_module.subprocess,
++            "check_output",
++            lambda *args, **kwargs: b"prefect>=3.0.0\n",
++        )
++
++        @flow
++        def test_flow():
++            pass
++
++        test_flow.include_files = [  # type: ignore[attr-defined]
++            "config.yaml",
++            "ignored.txt",
++            "data/input.csv",
++        ]
++        test_flow.include_files_base_dir = custom_base_dir  # type: ignore[attr-defined]
++
++        with patch("prefect.bundles.inspect.getfile", return_value=str(flow_file)):
++            flow_run = MagicMock()
++            flow_run.model_dump.return_value = {"id": "test-123"}
++            result = create_bundle_for_flow_run(test_flow, flow_run)
++
++        zip_path = result["zip_path"]
++        assert zip_path is not None
++
++        try:
++            with ZipFile(zip_path) as archive:
++                assert set(archive.namelist()) == {"config.yaml", "data/input.csv"}
++                assert archive.read("config.yaml") == b"source: custom"
++        finally:
++            zip_path.unlink(missing_ok=True)
++            zip_path.parent.rmdir()
++
++    def test_relative_include_files_base_dir_resolves_from_bundle_creation_cwd(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        assets_dir = tmp_path / "assets"
++        assets_dir.mkdir()
++        (assets_dir / "config.yaml").write_text("source: cwd")
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.setattr(
++            bundles_module.subprocess,
++            "check_output",
++            lambda *args, **kwargs: b"prefect>=3.0.0\n",
++        )
++
++        @flow
++        def test_flow():
++            pass
++
++        test_flow.include_files = ["config.yaml"]  # type: ignore[attr-defined]
++        test_flow.include_files_base_dir = Path("assets")  # type: ignore[attr-defined]
++
++        flow_run = MagicMock()
++        flow_run.model_dump.return_value = {"id": "test-123"}
++        result = create_bundle_for_flow_run(test_flow, flow_run)
++
++        zip_path = result["zip_path"]
++        assert zip_path is not None
++
++        try:
++            with ZipFile(zip_path) as archive:
++                assert archive.read("config.yaml") == b"source: cwd"
++        finally:
++            zip_path.unlink(missing_ok=True)
++            zip_path.parent.rmdir()
++
++    def test_include_files_base_dir_expands_user_home(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        assets_dir = tmp_path / "assets"
++        assets_dir.mkdir()
++        (assets_dir / "config.yaml").write_text("source: home")
++        monkeypatch.setenv("HOME", str(tmp_path))
++        monkeypatch.setattr(
++            bundles_module.subprocess,
++            "check_output",
++            lambda *args, **kwargs: b"prefect>=3.0.0\n",
++        )
++
++        @flow
++        def test_flow():
++            pass
++
++        test_flow.include_files = ["config.yaml"]  # type: ignore[attr-defined]
++        test_flow.include_files_base_dir = Path("~/assets")  # type: ignore[attr-defined]
++
++        flow_run = MagicMock()
++        flow_run.model_dump.return_value = {"id": "test-123"}
++        result = create_bundle_for_flow_run(test_flow, flow_run)
++
++        zip_path = result["zip_path"]
++        assert zip_path is not None
++
++        try:
++            with ZipFile(zip_path) as archive:
++                assert archive.read("config.yaml") == b"source: home"
++        finally:
++            zip_path.unlink(missing_ok=True)
++            zip_path.parent.rmdir()
++
++    @pytest.mark.parametrize("base_dir_kind", ["missing", "file"])
++    def test_invalid_include_files_base_dir_fails_bundle_creation(
++        self,
++        tmp_path: Path,
++        monkeypatch: pytest.MonkeyPatch,
++        base_dir_kind: str,
++    ) -> None:
++        base_dir = tmp_path / base_dir_kind
++        if base_dir_kind == "file":
++            base_dir.write_text("not a directory")
++
++        monkeypatch.setattr(
++            bundles_module.subprocess,
++            "check_output",
++            lambda *args, **kwargs: b"prefect>=3.0.0\n",
++        )
++
++        @flow
++        def test_flow():
++            pass
++
++        test_flow.include_files = ["config.yaml"]  # type: ignore[attr-defined]
++        test_flow.include_files_base_dir = base_dir  # type: ignore[attr-defined]
++
++        flow_run = MagicMock()
++        flow_run.model_dump.return_value = {"id": "test-123"}
++
++        with pytest.raises(ValueError, match="include_files_base_dir"):
++            create_bundle_for_flow_run(test_flow, flow_run)
++
++    def test_unknown_user_in_include_files_base_dir_fails_bundle_creation(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.setattr(
++            bundles_module.subprocess,
++            "check_output",
++            lambda *args, **kwargs: b"prefect>=3.0.0\n",
++        )
++        original_expanduser = Path.expanduser
++
++        def expanduser(path: Path) -> Path:
++            if str(path) == "~unknown-user/assets":
++                raise RuntimeError("Could not determine home directory")
++            return original_expanduser(path)
++
++        monkeypatch.setattr(Path, "expanduser", expanduser)
++
++        @flow
++        def test_flow():
++            pass
++
++        test_flow.include_files = ["config.yaml"]  # type: ignore[attr-defined]
++        test_flow.include_files_base_dir = Path("~unknown-user/assets")  # type: ignore[attr-defined]
++
++        flow_run = MagicMock()
++        flow_run.model_dump.return_value = {"id": "test-123"}
++
++        with pytest.raises(ValueError, match="include_files_base_dir"):
++            create_bundle_for_flow_run(test_flow, flow_run)
++
++    def test_unreadable_include_files_base_dir_fails_bundle_creation(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        base_dir = tmp_path / "assets"
++        base_dir.mkdir()
++        monkeypatch.setattr(
++            bundles_module.subprocess,
++            "check_output",
++            lambda *args, **kwargs: b"prefect>=3.0.0\n",
++        )
++        original_scandir = bundles_module.os.scandir
++
++        def scandir(path: Path):
++            if Path(path) == base_dir:
++                raise PermissionError("permission denied")
++            return original_scandir(path)
++
++        monkeypatch.setattr(bundles_module.os, "scandir", scandir)
++
++        @flow
++        def test_flow():
++            pass
++
++        test_flow.include_files = ["config.yaml"]  # type: ignore[attr-defined]
++        test_flow.include_files_base_dir = base_dir  # type: ignore[attr-defined]
++
++        flow_run = MagicMock()
++        flow_run.model_dump.return_value = {"id": "test-123"}
++
++        with pytest.raises(PermissionError, match="permission denied"):
++            create_bundle_for_flow_run(test_flow, flow_run)
++
++    def test_include_files_cannot_escape_custom_base_dir(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        base_dir = tmp_path / "assets"
++        base_dir.mkdir()
++        (tmp_path / "secret.txt").write_text("secret")
++        monkeypatch.setattr(
++            bundles_module.subprocess,
++            "check_output",
++            lambda *args, **kwargs: b"prefect>=3.0.0\n",
++        )
++
++        @flow
++        def test_flow():
++            pass
++
++        test_flow.include_files = ["../secret.txt"]  # type: ignore[attr-defined]
++        test_flow.include_files_base_dir = base_dir  # type: ignore[attr-defined]
++
++        flow_run = MagicMock()
++        flow_run.model_dump.return_value = {"id": "test-123"}
++
++        with pytest.raises(PathValidationError, match="traversal"):
++            create_bundle_for_flow_run(test_flow, flow_run)
++
+     def test_files_key_none_when_no_include_files(self, monkeypatch) -> None:
+         """files_key is None when flow has no include_files."""
+         import prefect.bundles as bundles_module
+@@ -367,6 +606,7 @@ def test_flow():
+             pass
+ 
+         test_flow.include_files = []
++        test_flow.include_files_base_dir = Path("does-not-exist")  # type: ignore[attr-defined]
+ 
+         flow_run = MagicMock()
+         flow_run.model_dump.return_value = {"id": "test-123"}
+diff --git a/tests/_experimental/bundles/test_ignore_filter.py b/tests/_experimental/bundles/test_ignore_filter.py
+index 807e7df0f379..0b9c569c7955 100644
+--- a/tests/_experimental/bundles/test_ignore_filter.py
++++ b/tests/_experimental/bundles/test_ignore_filter.py
+@@ -16,6 +16,7 @@
+ from __future__ import annotations
+ 
+ import logging
++from pathlib import Path
+ 
+ from prefect.bundles._ignore_filter import (
+     FilterResult,
+@@ -286,6 +287,40 @@ def test_cascade_loads_project_root_patterns(self, tmp_path):
+         assert log_file in result.excluded_by_ignore
+         assert py_file in result.included_files
+ 
++    def test_project_root_patterns_match_relative_to_project_root(self, tmp_path):
++        project_root = tmp_path / "project"
++        project_root.mkdir()
++        (project_root / "pyproject.toml").write_text("[project]")
++        (project_root / ".prefectignore").write_text("assets/secret.txt\n")
++
++        base_dir = project_root / "assets"
++        base_dir.mkdir()
++        secret_file = base_dir / "secret.txt"
++        secret_file.touch()
++
++        result = IgnoreFilter(base_dir).filter([secret_file])
++
++        assert secret_file in result.excluded_by_ignore
++
++    def test_flow_dir_negation_overrides_project_root_pattern(self, tmp_path: Path):
++        project_root = tmp_path / "project"
++        project_root.mkdir()
++        (project_root / "pyproject.toml").write_text("[project]")
++        (project_root / ".prefectignore").write_text("assets/*.txt\n")
++
++        base_dir = project_root / "assets"
++        base_dir.mkdir()
++        (base_dir / ".prefectignore").write_text("!keep.txt\n")
++        keep_file = base_dir / "keep.txt"
++        keep_file.touch()
++        ignored_file = base_dir / "ignored.txt"
++        ignored_file.touch()
++
++        result = IgnoreFilter(base_dir).filter([keep_file, ignored_file])
++
++        assert keep_file in result.included_files
++        assert ignored_file in result.excluded_by_ignore
++
+     def test_cascade_loads_flow_dir_patterns(self, tmp_path):
+         """Test that IgnoreFilter loads patterns from flow directory."""
+         # Setup: .prefectignore in flow_dir only
+diff --git a/tests/test_infrastructure_bound_flow.py b/tests/test_infrastructure_bound_flow.py
+index 9c42ee4e6e2e..9783ca20d0af 100644
+--- a/tests/test_infrastructure_bound_flow.py
++++ b/tests/test_infrastructure_bound_flow.py
+@@ -681,6 +681,44 @@ def my_flow(x: int, y: int):
+         ):
+             infrastructure_bound_flow.submit_to_work_pool(x=1, y=2)
+ 
++    @pytest.mark.filterwarnings("ignore::FutureWarning")
++    async def test_dispatch_marks_flow_run_failed_when_bundle_creation_fails(
++        self,
++        work_pool: WorkPool,
++        result_storage: LocalFileSystem,
++        prefect_client: PrefectClient,
++        tmp_path: Path,
++    ):
++        @flow(result_storage=result_storage)
++        def my_flow():
++            return "done"
++
++        infrastructure_bound_flow = bind_flow_to_infrastructure(
++            flow=my_flow,
++            work_pool=work_pool.name,
++            worker_cls=ProcessWorker,
++            include_files=["config.yaml"],
++            include_files_base_dir=tmp_path / "missing",
++        )
++        existing_run_ids = {
++            flow_run.id for flow_run in await prefect_client.read_flow_runs()
++        }
++
++        with pytest.raises(ValueError, match="include_files_base_dir"):
++            infrastructure_bound_flow.submit_to_work_pool()
++
++        new_flow_runs = [
++            flow_run
++            for flow_run in await prefect_client.read_flow_runs()
++            if flow_run.id not in existing_run_ids
++        ]
++        assert len(new_flow_runs) == 1
++        failed_run = new_flow_runs[0]
++        assert failed_run.state is not None
++        assert failed_run.state.is_failed()
++        assert failed_run.state.message is not None
++        assert "Flow run submission failed" in failed_run.state.message
++
+     @pytest.mark.filterwarnings("ignore::FutureWarning")
+     @pytest.mark.usefixtures("mock_subprocess_check_call")
+     async def test_dispatch_flow_from_within_flow(
+@@ -993,6 +1031,30 @@ def my_flow():
+         )
+ 
+         assert infrastructure_bound_flow.include_files is None
++        assert infrastructure_bound_flow.include_files_base_dir is None
++
++    def test_include_files_base_dir_can_be_set_without_include_files(
++        self,
++        work_pool: WorkPool,
++        result_storage: LocalFileSystem,
++        tmp_path: Path,
++    ):
++        @flow(result_storage=result_storage)
++        def my_flow():
++            return "Hello"
++
++        infrastructure_bound_flow = bind_flow_to_infrastructure(
++            flow=my_flow,
++            work_pool=work_pool.name,
++            worker_cls=ProcessWorker,
++            include_files_base_dir=tmp_path,
++        )
++
++        assert infrastructure_bound_flow.include_files is None
++        assert infrastructure_bound_flow.include_files_base_dir == str(tmp_path)
++
++        restored_flow = cloudpickle.loads(cloudpickle.dumps(infrastructure_bound_flow))
++        assert restored_flow.include_files_base_dir == str(tmp_path)
+ 
+     def test_include_files_with_list(
+         self, work_pool: WorkPool, result_storage: LocalFileSystem
+@@ -1050,7 +1112,10 @@ def my_flow():
+         assert isinstance(infrastructure_bound_flow.include_files, list)
+ 
+     def test_with_options_preserves_include_files_when_not_provided(
+-        self, work_pool: WorkPool, result_storage: LocalFileSystem
++        self,
++        work_pool: WorkPool,
++        result_storage: LocalFileSystem,
++        tmp_path: Path,
+     ):
+         """with_options() without include_files preserves original include_files."""
+ 
+@@ -1063,13 +1128,42 @@ def my_flow():
+             work_pool=work_pool.name,
+             worker_cls=ProcessWorker,
+             include_files=["a.txt", "b.yaml"],
++            include_files_base_dir=tmp_path,
+         )
+ 
+         new_flow = original_flow.with_options(name="new-name")
+ 
+         assert new_flow.include_files == ["a.txt", "b.yaml"]
++        assert new_flow.include_files_base_dir == str(tmp_path)
+         assert new_flow.name == "new-name"
+ 
++    def test_with_options_replaces_and_clears_include_files_base_dir(
++        self,
++        work_pool: WorkPool,
++        result_storage: LocalFileSystem,
++        tmp_path: Path,
++    ):
++        @flow(result_storage=result_storage)
++        def my_flow():
++            return "Hello"
++
++        original_flow = bind_flow_to_infrastructure(
++            flow=my_flow,
++            work_pool=work_pool.name,
++            worker_cls=ProcessWorker,
++            include_files=["a.txt"],
++            include_files_base_dir=tmp_path / "original",
++        )
++
++        updated_flow = original_flow.with_options(
++            include_files_base_dir=tmp_path / "updated"
++        )
++        cleared_flow = updated_flow.with_options(include_files_base_dir=None)
++
++        assert original_flow.include_files_base_dir == str(tmp_path / "original")
++        assert updated_flow.include_files_base_dir == str(tmp_path / "updated")
++        assert cleared_flow.include_files_base_dir is None
++
+     def test_with_options_replaces_include_files(
+         self, work_pool: WorkPool, result_storage: LocalFileSystem
+     ):
+diff --git a/tests/workers/test_base_worker.py b/tests/workers/test_base_worker.py
+index 05a2f8fdcb56..c4751db7b970 100644
+--- a/tests/workers/test_base_worker.py
++++ b/tests/workers/test_base_worker.py
+@@ -4680,6 +4680,45 @@ def test_flow():
+         # Upload step should have been run
+         mock_run_process.assert_called_once()
+ 
++    async def test_bundle_creation_failure_crashes_flow_run(
++        self,
++        work_pool: WorkPool,
++        prefect_client: PrefectClient,
++        tmp_path: Path,
++    ):
++        class BundleWorker(BaseWorker[BaseJobConfiguration, Any, BaseWorkerResult]):
++            type = "bundle-worker"
++            job_configuration = BaseJobConfiguration
++
++            async def run(
++                self,
++                flow_run: FlowRun,
++                configuration: BaseJobConfiguration,
++                task_status: anyio.abc.TaskStatus[int] | None = None,
++            ) -> BaseWorkerResult:
++                return BaseWorkerResult(identifier="test", status_code=0)
++
++        @flow
++        def test_flow() -> None:
++            pass
++
++        bound_flow = bind_flow_to_infrastructure(
++            flow=test_flow,
++            work_pool=work_pool.name,
++            worker_cls=BundleWorker,
++            include_files=["config.yaml"],
++            include_files_base_dir=tmp_path / "missing",
++        )
++        async with BundleWorker(work_pool_name=work_pool.name) as worker:
++            with pytest.warns(FutureWarning):
++                future = await worker.submit(bound_flow)
++
++        flow_run = await prefect_client.read_flow_run(future.flow_run_id)
++        assert flow_run.state is not None
++        assert flow_run.state.is_crashed()
++        assert flow_run.state.message is not None
++        assert "include_files_base_dir" in flow_run.state.message
++
+     async def test_work_pool_is_missing_storage_configuration(
+         self,
+         work_pool_missing_storage_configuration: WorkPool,
+diff --git a/tests/workers/test_process_worker.py b/tests/workers/test_process_worker.py
+index 9518282d5c71..d9218d2345fa 100644
+--- a/tests/workers/test_process_worker.py
++++ b/tests/workers/test_process_worker.py
+@@ -16,6 +16,7 @@
+ from prefect.client.orchestration import PrefectClient
+ from prefect.client.schemas import State
+ from prefect.client.schemas.objects import Deployment, FlowRun, StateType, WorkPool
++from prefect.flows import bind_flow_to_infrastructure
+ from prefect.runner._process_manager import ProcessHandle
+ from prefect.server import models
+ from prefect.server.database.orm_models import Flow
+@@ -941,6 +942,33 @@ def test_flow():
+     assert len(final_flow_runs) > initial_count
+ 
+ 
++async def test_submit_adhoc_run_crashes_when_bundle_creation_fails(
++    process_work_pool: WorkPool,
++    prefect_client: PrefectClient,
++    tmp_path: Path,
++):
++    @flow
++    def test_flow() -> None:
++        pass
++
++    bound_flow = bind_flow_to_infrastructure(
++        flow=test_flow,
++        work_pool=process_work_pool.name,
++        worker_cls=ProcessWorker,
++        include_files=["config.yaml"],
++        include_files_base_dir=tmp_path / "missing",
++    )
++    async with ProcessWorker(work_pool_name=process_work_pool.name) as worker:
++        with pytest.warns(FutureWarning):
++            future = await worker.submit(bound_flow)
++
++    flow_run = await prefect_client.read_flow_run(future.flow_run_id)
++    assert flow_run.state is not None
++    assert flow_run.state.is_crashed()
++    assert flow_run.state.message is not None
++    assert "include_files_base_dir" in flow_run.state.message
++
++
+ async def test_submit_adhoc_run_passes_worker_id_for_attribution(
+     process_work_pool: WorkPool,
+     prefect_client: PrefectClient,

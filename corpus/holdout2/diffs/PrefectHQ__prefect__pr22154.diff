@@ -1,0 +1,242 @@
+diff --git a/src/integrations/prefect-docker/prefect_docker/worker.py b/src/integrations/prefect-docker/prefect_docker/worker.py
+index 141d3c4bd28c..630b38fdb322 100644
+--- a/src/integrations/prefect-docker/prefect_docker/worker.py
++++ b/src/integrations/prefect-docker/prefect_docker/worker.py
+@@ -101,6 +101,8 @@ class ImagePullPolicy(enum.Enum):
+ 
+     IF_NOT_PRESENT = "IfNotPresent"
+     ALWAYS = "Always"
++    # tries to pull the image, but if not possible it still continues
++    IF_POSSIBLE = "IfPossible"
+     NEVER = "Never"
+ 
+ 
+@@ -151,7 +153,9 @@ class DockerWorkerJobConfiguration(BaseJobConfiguration):
+         description="Credentials for logging into a Docker registry to pull"
+         " images from.",
+     )
+-    image_pull_policy: Optional[Literal["IfNotPresent", "Always", "Never"]] = Field(
++    image_pull_policy: Optional[
++        Literal["IfNotPresent", "Always", "IfPossible", "Never"]
++    ] = Field(
+         default=None,
+         description="The image pull policy to use when pulling images.",
+     )
+@@ -391,7 +395,7 @@ def _determine_image_pull_policy(self) -> ImagePullPolicy:
+            a tag other than "latest", use ImagePullPolicy.if_not_present.
+ 
+         This logic matches the behavior of Kubernetes.
+-        See:https://kubernetes.io/docs/concepts/containers/images/#imagepullpolicy-defaulting
++        See: https://kubernetes.io/docs/concepts/containers/images/#imagepullpolicy-defaulting
+         """
+         if not self.image_pull_policy:
+             _, tag = parse_image_tag(self.image)
+@@ -784,19 +788,51 @@ def _create_and_start_container(
+         )
+ 
+         if self._should_pull_image(docker_client, configuration=configuration):
+-            # Only authenticate to the registry when we actually need to pull an image.
+-            # This prevents unnecessary authentication attempts when the image already
+-            # exists locally, improving resilience when registries are unavailable.
+-            if configuration.registry_credentials:
+-                self._logger.info("Logging into Docker registry...")
+-                docker_client.login(
+-                    username=configuration.registry_credentials.username,
+-                    password=configuration.registry_credentials.password.get_secret_value(),
+-                    registry=configuration.registry_credentials.registry_url,
+-                    reauth=configuration.registry_credentials.reauth,
+-                )
+-            self._logger.info(f"Pulling image {configuration.image!r}...")
+-            self._pull_image(docker_client, configuration)
++            try:
++                # Only authenticate to the registry when we actually need to pull an image.
++                # This prevents unnecessary authentication attempts when the image already
++                # exists locally, improving resilience when registries are unavailable.
++                if configuration.registry_credentials:
++                    self._logger.info("Logging into Docker registry...")
++                    docker_client.login(
++                        username=configuration.registry_credentials.username,
++                        password=configuration.registry_credentials.password.get_secret_value(),
++                        registry=configuration.registry_credentials.registry_url,
++                        reauth=configuration.registry_credentials.reauth,
++                    )
++                self._logger.info(f"Pulling image {configuration.image!r}...")
++
++                self._pull_image(docker_client, configuration)
++            except Exception as exc:
++                image_pull_policy = configuration._determine_image_pull_policy()
++                if image_pull_policy is not ImagePullPolicy.IF_POSSIBLE:
++                    raise exc
++                else:
++                    self._logger.warning(
++                        f"We could not pull the image {configuration.image!r}. But because ImagePullPolicy is set to '{ImagePullPolicy.IF_POSSIBLE}' we still continue. Maybe we have an local one."
++                        f"\nPulling failed with:\n{exc}"
++                    )
++                    # if pull policy is if_possible, we check if a local image exists. If yes this will be used, otherwise it will raise a detailed exception
++                    try:
++                        docker_client.images.get(configuration.image)
++                    except docker.errors.ImageNotFound as exc_image_not_found:
++                        # this fail results from different exceptions
++                        """
++                        # if we use one day python >=3.11
++                        docker_errors = [exc, exc_image_not_found]
++                        raise ExceptionGroup(
++                            f"Docker image {configuration.image!r} could neither be pulled online nor found locally.",
++                            docker_errors,
++                        )
++                        """
++                        error_message = (
++                            f"Docker operation completely failed for {configuration.image!r}:\n"
++                            f"-> [1. Login/Pull Error]: {exc}\n\n"
++                            f"-> [2. Local Error]: {exc_image_not_found}\n\n"
++                            f"-> NOTE: Because ImagePullPolicy was set to '{ImagePullPolicy.IF_POSSIBLE}', "
++                            f"a local fallback was attempted after the pull failed, but the image could not be found locally either."
++                        )
++                        raise RuntimeError(error_message) from exc_image_not_found
+ 
+         try:
+             self._logger.info(
+@@ -921,7 +957,10 @@ def _should_pull_image(
+         """
+         image_pull_policy = configuration._determine_image_pull_policy()
+ 
+-        if image_pull_policy is ImagePullPolicy.ALWAYS:
++        if image_pull_policy in (
++            ImagePullPolicy.ALWAYS,
++            ImagePullPolicy.IF_POSSIBLE,
++        ):
+             return True
+         elif image_pull_policy is ImagePullPolicy.NEVER:
+             return False
+diff --git a/src/integrations/prefect-docker/tests/test_worker.py b/src/integrations/prefect-docker/tests/test_worker.py
+index fbac53063b6c..225c04b503e1 100644
+--- a/src/integrations/prefect-docker/tests/test_worker.py
++++ b/src/integrations/prefect-docker/tests/test_worker.py
+@@ -885,6 +885,107 @@ async def test_image_pull_policy_never_does_not_pull(
+     mock_docker_client.api.pull.assert_not_called()
+ 
+ 
++async def test_image_pull_policy_if_possible_pulls_image_if_possible(
++    mock_docker_client, flow_run, default_docker_worker_job_configuration
++):
++    credentials = DockerRegistryCredentials(
++        username="my_username",
++        password="my_password",
++        registry_url="registry.hub.docker.com",
++    )
++
++    default_docker_worker_job_configuration.image_pull_policy = "IfPossible"
++    default_docker_worker_job_configuration.image = "prefect"
++    default_docker_worker_job_configuration.registry_credentials = credentials
++    default_docker_worker_job_configuration.prepare_for_flow_run(flow_run=flow_run)
++    async with DockerWorker(work_pool_name="test") as worker:
++        await worker.run(
++            flow_run=flow_run, configuration=default_docker_worker_job_configuration
++        )
++    # Login SHOULD be called because we always pull (if possible)
++    mock_docker_client.login.assert_called_once_with(
++        username="my_username",
++        password="my_password",
++        registry="registry.hub.docker.com",
++        reauth=True,
++    )
++    mock_docker_client.api.pull.assert_called_once()
++
++
++async def test_image_pull_policy_if_possible_use_existing_local_image_if_pull_not_possible(
++    mock_docker_client, flow_run, default_docker_worker_job_configuration
++):
++    from docker.errors import APIError
++
++    credentials = DockerRegistryCredentials(
++        username="my_username",
++        password="my_password",
++        registry_url="registry.hub.docker.com",
++    )
++
++    mock_docker_client.login.side_effect = APIError(
++        "Server not reachable or image does not exist"
++    )
++
++    default_docker_worker_job_configuration.image_pull_policy = "IfPossible"
++    default_docker_worker_job_configuration.image = "prefect"
++    default_docker_worker_job_configuration.registry_credentials = credentials
++    default_docker_worker_job_configuration.prepare_for_flow_run(flow_run=flow_run)
++    async with DockerWorker(work_pool_name="test") as worker:
++        await worker.run(
++            flow_run=flow_run, configuration=default_docker_worker_job_configuration
++        )
++    # Login SHOULD be called because we try to pull (=> always if possible)
++    mock_docker_client.login.assert_called_once_with(
++        username="my_username",
++        password="my_password",
++        registry="registry.hub.docker.com",
++        reauth=True,
++    )
++    # no pull, because registry is not available
++    mock_docker_client.api.pull.assert_not_called()
++
++
++async def test_image_pull_policy_if_possible_fail_if_local_image_is_not_found(
++    mock_docker_client, flow_run, default_docker_worker_job_configuration
++):
++    from docker.errors import APIError
++
++    credentials = DockerRegistryCredentials(
++        username="my_username",
++        password="my_password",
++        registry_url="registry.hub.docker.com",
++    )
++
++    mock_docker_client.login.side_effect = APIError(
++        "Server not reachable or image does not exist"
++    )
++    mock_docker_client.images.get.side_effect = docker.errors.ImageNotFound(
++        "Image not found locally"
++    )
++
++    default_docker_worker_job_configuration.image_pull_policy = "IfPossible"
++    default_docker_worker_job_configuration.image = "prefect"
++    default_docker_worker_job_configuration.registry_credentials = credentials
++    default_docker_worker_job_configuration.prepare_for_flow_run(flow_run=flow_run)
++    with pytest.raises(RuntimeError, match="Docker operation completely failed for"):
++        async with DockerWorker(work_pool_name="test") as worker:
++            await worker.run(
++                flow_run=flow_run, configuration=default_docker_worker_job_configuration
++            )
++    # Login SHOULD be called because we try to pull (=> always if possible)
++    mock_docker_client.login.assert_called_once_with(
++        username="my_username",
++        password="my_password",
++        registry="registry.hub.docker.com",
++        reauth=True,
++    )
++    # no pull, because registry is not available
++    mock_docker_client.api.pull.assert_not_called()
++    # still we search for a local image
++    mock_docker_client.images.get.assert_called_once()
++
++
+ async def test_image_pull_policy_if_not_present_pulls_image_if_not_present(
+     mock_docker_client, flow_run, default_docker_worker_job_configuration
+ ):
+@@ -939,6 +1040,7 @@ async def test_pull_image_raises_on_stream_error(
+         {"error": "write /var/lib/docker/...: no space left on device"},
+     ]
+ 
++    default_docker_worker_job_configuration.image_pull_policy = "Always"
+     default_docker_worker_job_configuration.image = "prefect:latest"
+     default_docker_worker_job_configuration.prepare_for_flow_run(flow_run=flow_run)
+     with pytest.raises(RuntimeError, match="no space left on device"):
+diff --git a/src/prefect/server/api/collections_data/views/aggregate-worker-metadata.json b/src/prefect/server/api/collections_data/views/aggregate-worker-metadata.json
+index 66614ac40413..9b46744e2529 100644
+--- a/src/prefect/server/api/collections_data/views/aggregate-worker-metadata.json
++++ b/src/prefect/server/api/collections_data/views/aggregate-worker-metadata.json
+@@ -815,6 +815,7 @@
+               "enum": [
+                 "IfNotPresent",
+                 "Always",
++                "IfPossible",
+                 "Never"
+               ],
+               "type": "string"

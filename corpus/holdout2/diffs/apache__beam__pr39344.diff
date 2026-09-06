@@ -1,0 +1,684 @@
+diff --git a/.github/trigger_files/IO_Iceberg_Integration_Tests.json b/.github/trigger_files/IO_Iceberg_Integration_Tests.json
+index 7ab7bcd9a9c6..37dd25bf9029 100644
+--- a/.github/trigger_files/IO_Iceberg_Integration_Tests.json
++++ b/.github/trigger_files/IO_Iceberg_Integration_Tests.json
+@@ -1,4 +1,4 @@
+ {
+     "comment": "Modify this file in a trivial way to cause this test suite to run.",
+-    "modification": 2
++    "modification": 3
+ }
+diff --git a/.github/trigger_files/beam_PostCommit_Python_Xlang_IO_Direct.json b/.github/trigger_files/beam_PostCommit_Python_Xlang_IO_Direct.json
+index e3d6056a5de9..b26833333238 100644
+--- a/.github/trigger_files/beam_PostCommit_Python_Xlang_IO_Direct.json
++++ b/.github/trigger_files/beam_PostCommit_Python_Xlang_IO_Direct.json
+@@ -1,4 +1,4 @@
+ {
+   "comment": "Modify this file in a trivial way to cause this test suite to run",
+-  "modification": 1
++  "modification": 2
+ }
+diff --git a/CHANGES.md b/CHANGES.md
+index f71dab149d8a..d853314a0ad3 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -81,6 +81,10 @@
+ ## Breaking Changes
+ 
+ * (Python) Removed `google-perftools` from the SDK container images. Users who wish to use `--profiler_agent=tcmalloc` should install google-perftools APT package in their custom container images separately ([#39323](https://github.com/apache/beam/issues/39323)).
++* [IcebergIO] Reading a `timestamptz` column will now return a `Timestamp.MICROS` Beam logical type to preserve
++ microseconds (the old Beam `Schema.FieldType#DATETIME` primitive type truncates past milliseconds). This may break
++ existing streaming read pipelines. It also breaks Python reads when a `timestamptz` column is present. Use pipeline
++ option `--updateCompatibilityVersion=2.75.0` (or any older version) to keep the old behavior ([#39344](https://github.com/apache/beam/issues/39344)).
+ * `DoFn.process` returning a `str`, `bytes`, or `dict` (instead of an iterable wrapping one) now raises a `TypeError` rather than silently iterating per-character/byte/key (Python) ([#18712](https://github.com/apache/beam/issues/18712)).
+ * (Java) Added `DRAINING` and `DRAINED` states to `PipelineResult`, including runner state mappings and Dataflow update handling ([#39020](https://github.com/apache/beam/issues/39020)).
+ * (Python) Typehints of dataclass fields are honored during type inferences. To restore the behavior of fallback-to-any,
+diff --git a/sdks/java/io/google-cloud-platform/src/main/java/org/apache/beam/sdk/io/gcp/bigquery/BigQueryUtils.java b/sdks/java/io/google-cloud-platform/src/main/java/org/apache/beam/sdk/io/gcp/bigquery/BigQueryUtils.java
+index d9805a6f4e06..5ba2d17c127a 100644
+--- a/sdks/java/io/google-cloud-platform/src/main/java/org/apache/beam/sdk/io/gcp/bigquery/BigQueryUtils.java
++++ b/sdks/java/io/google-cloud-platform/src/main/java/org/apache/beam/sdk/io/gcp/bigquery/BigQueryUtils.java
+@@ -932,6 +932,12 @@ public static Row toBeamRow(Schema rowSchema, TableSchema bqSchema, TableRow jso
+           return java.time.Instant.parse(jsonBQString);
+         }
+       } else if (fieldType.isLogicalType(Timestamp.IDENTIFIER)) {
++        if (!jsonBQString.contains("UTC")) {
++          BigDecimal bd = new BigDecimal(jsonBQString);
++          long seconds = bd.longValue();
++          long nanos = bd.subtract(BigDecimal.valueOf(seconds)).movePointRight(9).longValue();
++          return java.time.Instant.ofEpochSecond(seconds, nanos);
++        }
+         return VAR_PRECISION_FORMATTER.parse(jsonBQString, java.time.Instant::from);
+       }
+     }
+diff --git a/sdks/java/io/google-cloud-platform/src/test/java/org/apache/beam/sdk/io/gcp/bigquery/BigQueryUtilsTest.java b/sdks/java/io/google-cloud-platform/src/test/java/org/apache/beam/sdk/io/gcp/bigquery/BigQueryUtilsTest.java
+index b50e8448698a..52dbef55286f 100644
+--- a/sdks/java/io/google-cloud-platform/src/test/java/org/apache/beam/sdk/io/gcp/bigquery/BigQueryUtilsTest.java
++++ b/sdks/java/io/google-cloud-platform/src/test/java/org/apache/beam/sdk/io/gcp/bigquery/BigQueryUtilsTest.java
+@@ -41,6 +41,7 @@
+ import java.time.LocalDate;
+ import java.time.LocalDateTime;
+ import java.time.LocalTime;
++import java.time.OffsetDateTime;
+ import java.util.Arrays;
+ import java.util.Base64;
+ import java.util.Collections;
+@@ -1444,22 +1445,43 @@ public void testToBeamRow_timestampNanos_utcSuffix() {
+ 
+   @Test
+   @SuppressWarnings("JavaInstantGetSecondsGetNano")
+-  public void testToBeamRow_timestampMicros_utcSuffix() {
++  public void testToBeamRow_timestampMicros() {
+     Schema schema = Schema.builder().addLogicalTypeField("ts", Timestamp.MICROS).build();
+ 
+     // BigQuery format with " UTC" suffix
+     String timestamp = "2024-08-10 16:52:07.123456 UTC";
++    String parsableTimestamp = "2024-08-10T16:52:07.123456Z";
++    String negativeTimestamp = "1960-08-10T16:52:07.000123Z";
+ 
+-    Row beamRow = BigQueryUtils.toBeamRow(schema, new TableRow().set("ts", timestamp));
++    java.time.Instant instant = OffsetDateTime.parse(parsableTimestamp).toInstant();
++    String value = instant.getEpochSecond() + "." + instant.getNano() / 1000;
++    java.time.Instant negInstant = OffsetDateTime.parse(negativeTimestamp).toInstant();
++    String negValue =
++        BigDecimal.valueOf(negInstant.getEpochSecond())
++            .add(BigDecimal.valueOf(negInstant.getNano(), 9))
++            .toPlainString();
+ 
+-    java.time.Instant actual = (java.time.Instant) beamRow.getValue("ts");
+-    assertEquals(2024, actual.atZone(java.time.ZoneOffset.UTC).getYear());
+-    assertEquals(8, actual.atZone(java.time.ZoneOffset.UTC).getMonthValue());
+-    assertEquals(10, actual.atZone(java.time.ZoneOffset.UTC).getDayOfMonth());
+-    assertEquals(16, actual.atZone(java.time.ZoneOffset.UTC).getHour());
+-    assertEquals(52, actual.atZone(java.time.ZoneOffset.UTC).getMinute());
+-    assertEquals(7, actual.atZone(java.time.ZoneOffset.UTC).getSecond());
+-    assertEquals(123456000, actual.getNano());
++    List<TableRow> testRows =
++        Arrays.asList(
++            new TableRow().set("ts", timestamp),
++            new TableRow().set("ts", value),
++            new TableRow().set("negative", true).set("ts", negValue));
++
++    for (TableRow row : testRows) {
++      Row beamRow = BigQueryUtils.toBeamRow(schema, row);
++
++      java.time.Instant actual = (java.time.Instant) beamRow.getValue("ts");
++
++      assertEquals(
++          row.get("negative") == null ? 2024 : 1960,
++          actual.atZone(java.time.ZoneOffset.UTC).getYear());
++      assertEquals(8, actual.atZone(java.time.ZoneOffset.UTC).getMonthValue());
++      assertEquals(10, actual.atZone(java.time.ZoneOffset.UTC).getDayOfMonth());
++      assertEquals(16, actual.atZone(java.time.ZoneOffset.UTC).getHour());
++      assertEquals(52, actual.atZone(java.time.ZoneOffset.UTC).getMinute());
++      assertEquals(7, actual.atZone(java.time.ZoneOffset.UTC).getSecond());
++      assertEquals(row.get("negative") == null ? 123456000 : 123000, actual.getNano());
++    }
+   }
+ 
+   @Test
+diff --git a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergIO.java b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergIO.java
+index abdc2a179b58..ee5755898b7f 100644
+--- a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergIO.java
++++ b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergIO.java
+@@ -25,6 +25,7 @@
+ import java.util.Map;
+ import org.apache.beam.sdk.annotations.Internal;
+ import org.apache.beam.sdk.io.Read;
++import org.apache.beam.sdk.options.StreamingOptions;
+ import org.apache.beam.sdk.schemas.Schema;
+ import org.apache.beam.sdk.transforms.PTransform;
+ import org.apache.beam.sdk.values.PBegin;
+@@ -699,12 +700,23 @@ public PCollection<Row> expand(PBegin input) {
+ 
+       Table table = TableCache.get(getCatalogConfig(), tableId);
+ 
++      @Nullable
++      String updateCompatibilityVersion =
++          input
++              .getPipeline()
++              .getOptions()
++              .as(StreamingOptions.class)
++              .getUpdateCompatibilityVersion();
++
+       IcebergScanConfig scanConfig =
+           IcebergScanConfig.builder()
+               .setCatalogConfig(getCatalogConfig())
+               .setScanType(IcebergScanConfig.ScanType.TABLE)
+               .setTableIdentifier(tableId)
+-              .setSchema(IcebergUtils.icebergSchemaToBeamSchema(table.schema()))
++              .setSchema(
++                  IcebergUtils.icebergSchemaToBeamSchema(
++                      table.schema(), updateCompatibilityVersion))
++              .setUpdateCompatibilityVersion(updateCompatibilityVersion)
+               .setFromSnapshotInclusive(getFromSnapshot())
+               .setToSnapshot(getToSnapshot())
+               .setFromTimestamp(getFromTimestamp())
+diff --git a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergScanConfig.java b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergScanConfig.java
+index 95ea6cf1bd4b..d184a84edf96 100644
+--- a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergScanConfig.java
++++ b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergScanConfig.java
+@@ -164,7 +164,8 @@ public org.apache.iceberg.Schema recordIdSchema() {
+ 
+   public Schema rowIdBeamSchema() {
+     if (cachedRowIdBeamSchema == null) {
+-      cachedRowIdBeamSchema = icebergSchemaToBeamSchema(recordIdSchema());
++      cachedRowIdBeamSchema =
++          icebergSchemaToBeamSchema(recordIdSchema(), getUpdateCompatibilityVersion());
+     }
+     return cachedRowIdBeamSchema;
+   }
+@@ -237,6 +238,9 @@ public Expression getFilter() {
+   @Pure
+   public abstract boolean getUseCdc();
+ 
++  @Pure
++  public abstract @Nullable String getUpdateCompatibilityVersion();
++
+   @Pure
+   public abstract @Nullable Boolean getStreaming();
+ 
+@@ -335,6 +339,9 @@ public Builder setTableIdentifier(String... names) {
+ 
+     public abstract Builder setUseCdc(boolean useCdc);
+ 
++    public abstract Builder setUpdateCompatibilityVersion(
++        @Nullable String updateCompatibilityVersion);
++
+     public abstract Builder setStreaming(@Nullable Boolean streaming);
+ 
+     public abstract Builder setPollInterval(@Nullable Duration pollInterval);
+diff --git a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergUtils.java b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergUtils.java
+index 309205707a95..35accf45976d 100644
+--- a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergUtils.java
++++ b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IcebergUtils.java
+@@ -40,7 +40,9 @@
+ import org.apache.beam.sdk.schemas.logicaltypes.MicrosInstant;
+ import org.apache.beam.sdk.schemas.logicaltypes.PassThroughLogicalType;
+ import org.apache.beam.sdk.schemas.logicaltypes.SqlTypes;
++import org.apache.beam.sdk.schemas.logicaltypes.Timestamp;
+ import org.apache.beam.sdk.util.Preconditions;
++import org.apache.beam.sdk.util.construction.TransformUpgrader;
+ import org.apache.beam.sdk.values.PCollection;
+ import org.apache.beam.sdk.values.Row;
+ import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+@@ -83,7 +85,8 @@ private IcebergUtils() {}
+           .put(MicrosInstant.IDENTIFIER, Types.TimestampType.withZone())
+           .build();
+ 
+-  private static Schema.FieldType icebergTypeToBeamFieldType(final Type type) {
++  private static Schema.FieldType icebergTypeToBeamFieldType(
++      final Type type, @Nullable String updateCompatibilityVersion) {
+     switch (type.typeId()) {
+       case BOOLEAN:
+         return Schema.FieldType.BOOLEAN;
+@@ -102,7 +105,14 @@ private static Schema.FieldType icebergTypeToBeamFieldType(final Type type) {
+       case TIMESTAMP:
+         Types.TimestampType ts = (Types.TimestampType) type.asPrimitiveType();
+         if (ts.shouldAdjustToUTC()) {
+-          return Schema.FieldType.DATETIME;
++          // timestamptz. The micros-precision Timestamp logical type preserves microseconds, while
++          // the legacy DATETIME (joda) mapping truncates to millis. Gated for update compatibility.
++          if (updateCompatibilityVersion != null
++              && !updateCompatibilityVersion.isEmpty()
++              && TransformUpgrader.compareVersions(updateCompatibilityVersion, "2.76.0") < 0) {
++            return Schema.FieldType.DATETIME;
++          }
++          return Schema.FieldType.logicalType(Timestamp.MICROS);
+         }
+         return Schema.FieldType.logicalType(SqlTypes.DATETIME);
+       case STRING:
+@@ -114,36 +124,51 @@ private static Schema.FieldType icebergTypeToBeamFieldType(final Type type) {
+       case DECIMAL:
+         return Schema.FieldType.DECIMAL;
+       case STRUCT:
+-        return Schema.FieldType.row(icebergStructTypeToBeamSchema(type.asStructType()));
++        return Schema.FieldType.row(
++            icebergStructTypeToBeamSchema(type.asStructType(), updateCompatibilityVersion));
+       case LIST:
+-        return Schema.FieldType.array(icebergTypeToBeamFieldType(type.asListType().elementType()));
++        return Schema.FieldType.array(
++            icebergTypeToBeamFieldType(
++                type.asListType().elementType(), updateCompatibilityVersion));
+       case MAP:
+         return Schema.FieldType.map(
+-            icebergTypeToBeamFieldType(type.asMapType().keyType()),
+-            icebergTypeToBeamFieldType(type.asMapType().valueType()));
++            icebergTypeToBeamFieldType(type.asMapType().keyType(), updateCompatibilityVersion),
++            icebergTypeToBeamFieldType(type.asMapType().valueType(), updateCompatibilityVersion));
+       default:
+         throw new RuntimeException("Unrecognized Iceberg Type: " + type.typeId());
+     }
+   }
+ 
+-  private static Schema.Field icebergFieldToBeamField(final Types.NestedField field) {
+-    return Schema.Field.of(field.name(), icebergTypeToBeamFieldType(field.type()))
++  private static Schema.Field icebergFieldToBeamField(
++      final Types.NestedField field, @Nullable String updateCompatibilityVersion) {
++    return Schema.Field.of(
++            field.name(), icebergTypeToBeamFieldType(field.type(), updateCompatibilityVersion))
+         .withNullable(field.isOptional());
+   }
+ 
+   /** Converts an Iceberg {@link org.apache.iceberg.Schema} to a Beam {@link Schema}. */
+   public static Schema icebergSchemaToBeamSchema(final org.apache.iceberg.Schema schema) {
++    return icebergSchemaToBeamSchema(schema, null);
++  }
++
++  /**
++   * Converts an Iceberg {@link org.apache.iceberg.Schema} to a Beam {@link Schema}, accounting for
++   * update compatibility.
++   */
++  public static Schema icebergSchemaToBeamSchema(
++      final org.apache.iceberg.Schema schema, @Nullable String updateCompatibilityVersion) {
+     Schema.Builder builder = Schema.builder();
+     for (Types.NestedField f : schema.columns()) {
+-      builder.addField(icebergFieldToBeamField(f));
++      builder.addField(icebergFieldToBeamField(f, updateCompatibilityVersion));
+     }
+     return builder.build();
+   }
+ 
+-  private static Schema icebergStructTypeToBeamSchema(final Types.StructType struct) {
++  private static Schema icebergStructTypeToBeamSchema(
++      final Types.StructType struct, @Nullable String updateCompatibilityVersion) {
+     Schema.Builder builder = Schema.builder();
+     for (Types.NestedField f : struct.fields()) {
+-      builder.addField(icebergFieldToBeamField(f));
++      builder.addField(icebergFieldToBeamField(f, updateCompatibilityVersion));
+     }
+     return builder.build();
+   }
+@@ -198,7 +223,17 @@ static TypeAndMaxId beamFieldTypeToIcebergFieldType(
+       String logicalTypeIdentifier = logicalType.getIdentifier();
+       @Nullable Type type = BEAM_LOGICAL_TYPES_TO_ICEBERG_TYPES.get(logicalTypeIdentifier);
+       if (type == null) {
+-        throw new RuntimeException("Unsupported Beam logical type " + logicalTypeIdentifier);
++        if (beamType.isLogicalType(Timestamp.IDENTIFIER)) {
++          int precision = checkStateNotNull(logicalType.getArgument());
++          if (precision == Timestamp.MICROS.getArgument()) {
++            type = Types.TimestampType.withZone();
++          } else {
++            throw new UnsupportedOperationException(
++                "Unsupported Timestamp precision: " + precision);
++          }
++        } else {
++          throw new RuntimeException("Unsupported Beam logical type " + logicalTypeIdentifier);
++        }
+       }
+       return new TypeAndMaxId(--nestedFieldId, type);
+     } else if (beamType.getTypeName().isCollectionType()) { // ARRAY or ITERABLE
+@@ -613,21 +648,28 @@ private static Object getLogicalTypeValue(Object icebergValue, Schema.FieldType
+         return LocalTime.parse(strValue);
+       } else if (type.isLogicalType(SqlTypes.DATETIME.getIdentifier())) {
+         return LocalDateTime.parse(strValue);
++      } else if (type.isLogicalType(Timestamp.IDENTIFIER)) {
++        return OffsetDateTime.parse(strValue).toInstant();
+       }
+     } else if (icebergValue instanceof Long) {
+       if (type.isLogicalType(SqlTypes.TIME.getIdentifier())) {
+         return DateTimeUtil.timeFromMicros((Long) icebergValue);
+       } else if (type.isLogicalType(SqlTypes.DATETIME.getIdentifier())) {
+         return DateTimeUtil.timestampFromMicros((Long) icebergValue);
++      } else if (type.isLogicalType(Timestamp.IDENTIFIER)) {
++        // timestamptz stored as micros since epoch -> java.time.Instant (micros preserved).
++        return DateTimeUtil.timestamptzFromMicros((Long) icebergValue).toInstant();
+       }
+     } else if (icebergValue instanceof Integer
+         && type.isLogicalType(SqlTypes.DATE.getIdentifier())) {
+       return DateTimeUtil.dateFromDays((Integer) icebergValue);
+-    } else if (icebergValue instanceof OffsetDateTime
+-        && type.isLogicalType(SqlTypes.DATETIME.getIdentifier())) {
+-      return ((OffsetDateTime) icebergValue)
+-          .withOffsetSameInstant(ZoneOffset.UTC)
+-          .toLocalDateTime();
++    } else if (icebergValue instanceof OffsetDateTime) {
++      OffsetDateTime odt = (OffsetDateTime) icebergValue;
++      if (type.isLogicalType(SqlTypes.DATETIME.getIdentifier())) {
++        return odt.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
++      } else if (type.isLogicalType(Timestamp.IDENTIFIER)) {
++        return odt.toInstant();
++      }
+     }
+     // LocalDateTime, LocalDate, LocalTime
+     return icebergValue;
+diff --git a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IncrementalScanSource.java b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IncrementalScanSource.java
+index 324eb8172760..98870095e171 100644
+--- a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IncrementalScanSource.java
++++ b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/IncrementalScanSource.java
+@@ -68,7 +68,9 @@ public PCollection<Row> expand(PBegin input) {
+         .setCoder(KvCoder.of(ReadTaskDescriptor.getCoder(), ReadTask.getCoder()))
+         .apply(Redistribute.arbitrarily())
+         .apply("Read Rows From Tasks", ParDo.of(new ReadFromTasks(scanConfig)))
+-        .setRowSchema(IcebergUtils.icebergSchemaToBeamSchema(scanConfig.getProjectedSchema()));
++        .setRowSchema(
++            IcebergUtils.icebergSchemaToBeamSchema(
++                scanConfig.getProjectedSchema(), scanConfig.getUpdateCompatibilityVersion()));
+   }
+ 
+   /** Continuously watches for new snapshots. */
+diff --git a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ReadFromTasks.java b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ReadFromTasks.java
+index 71114437731c..438e2de464d6 100644
+--- a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ReadFromTasks.java
++++ b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ReadFromTasks.java
+@@ -69,7 +69,9 @@ public void process(
+         return;
+       }
+       FileScanTask task = fileScanTasks.get((int) l);
+-      Schema beamSchema = IcebergUtils.icebergSchemaToBeamSchema(scanConfig.getProjectedSchema());
++      Schema beamSchema =
++          IcebergUtils.icebergSchemaToBeamSchema(
++              scanConfig.getProjectedSchema(), scanConfig.getUpdateCompatibilityVersion());
+       try (CloseableIterable<Record> reader = ReadUtils.createReader(task, table, scanConfig)) {
+ 
+         for (Record record : reader) {
+diff --git a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ScanSource.java b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ScanSource.java
+index c407ef8d3e2d..d8c1780c5db3 100644
+--- a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ScanSource.java
++++ b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ScanSource.java
+@@ -116,7 +116,9 @@ public void populateDisplayData(DisplayData.Builder builder) {
+ 
+   @Override
+   public Coder<Row> getOutputCoder() {
+-    return RowCoder.of(IcebergUtils.icebergSchemaToBeamSchema(scanConfig.getProjectedSchema()));
++    return RowCoder.of(
++        IcebergUtils.icebergSchemaToBeamSchema(
++            scanConfig.getProjectedSchema(), scanConfig.getUpdateCompatibilityVersion()));
+   }
+ 
+   @Override
+diff --git a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ScanTaskReader.java b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ScanTaskReader.java
+index c9ad372a0751..c6ddd0a7e250 100644
+--- a/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ScanTaskReader.java
++++ b/sdks/java/io/iceberg/src/main/java/org/apache/beam/sdk/io/iceberg/ScanTaskReader.java
+@@ -66,7 +66,10 @@ class ScanTaskReader extends BoundedSource.BoundedReader<Row> {
+ 
+   public ScanTaskReader(ScanTaskSource source) {
+     this.source = source;
+-    this.beamSchema = icebergSchemaToBeamSchema(source.getScanConfig().getProjectedSchema());
++    this.beamSchema =
++        icebergSchemaToBeamSchema(
++            source.getScanConfig().getProjectedSchema(),
++            source.getScanConfig().getUpdateCompatibilityVersion());
+   }
+ 
+   @Override
+diff --git a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergIOReadTest.java b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergIOReadTest.java
+index edd261458168..7920fc37c84b 100644
+--- a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergIOReadTest.java
++++ b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergIOReadTest.java
+@@ -32,7 +32,9 @@
+ 
+ import java.io.File;
+ import java.io.IOException;
++import java.time.OffsetDateTime;
+ import java.util.Arrays;
++import java.util.Collections;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Objects;
+@@ -41,8 +43,11 @@
+ import java.util.stream.Stream;
+ import org.apache.avro.generic.GenericData;
+ import org.apache.avro.generic.GenericRecord;
++import org.apache.beam.sdk.Pipeline;
+ import org.apache.beam.sdk.io.iceberg.IcebergIO.ReadRows.StartingStrategy;
++import org.apache.beam.sdk.options.StreamingOptions;
+ import org.apache.beam.sdk.schemas.Schema;
++import org.apache.beam.sdk.schemas.logicaltypes.Timestamp;
+ import org.apache.beam.sdk.testing.PAssert;
+ import org.apache.beam.sdk.testing.TestPipeline;
+ import org.apache.beam.sdk.transforms.DoFn;
+@@ -83,6 +88,7 @@
+ import org.apache.parquet.avro.AvroParquetWriter;
+ import org.apache.parquet.hadoop.ParquetWriter;
+ import org.checkerframework.checker.nullness.qual.Nullable;
++import org.joda.time.DateTime;
+ import org.joda.time.Duration;
+ import org.junit.ClassRule;
+ import org.junit.Rule;
+@@ -731,6 +737,48 @@ public void testBatchReadBetweenTimestamps() throws IOException {
+     runReadWithBoundary(false, false);
+   }
+ 
++  @Test
++  public void testTimestampUpdateCompat() throws IOException {
++    String val = "2026-07-15T13:18:20.053123+03:27";
++    OffsetDateTime ts = OffsetDateTime.parse(val);
++
++    TableIdentifier tableId =
++        TableIdentifier.of("default", "table" + Long.toString(UUID.randomUUID().hashCode(), 16));
++    org.apache.iceberg.Schema schema =
++        new org.apache.iceberg.Schema(
++            Collections.singletonList(required(1, "ts", Types.TimestampType.withZone())),
++            ImmutableSet.of(1));
++    Table table = warehouse.createTable(tableId, schema);
++    DataFile file =
++        warehouse.writeData(
++            "date.parquet", schema, Collections.singletonList(ImmutableMap.of("ts", ts)));
++    table.newFastAppend().appendFile(file).commit();
++
++    IcebergIO.ReadRows read = IcebergIO.readRows(catalogConfig()).from(tableId);
++    if (useIncrementalScan) {
++      read = read.withCdc().toSnapshot(table.currentSnapshot().snapshotId());
++    }
++
++    Schema expectedBeamSchema =
++        Schema.builder().addLogicalTypeField("ts", Timestamp.MICROS).build();
++    Row expectedRow = Row.withSchema(expectedBeamSchema).addValue(ts.toInstant()).build();
++
++    PCollection<Row> output = testPipeline.apply(read).apply(new PrintRow());
++    PAssert.that(output).containsInAnyOrder(expectedRow);
++    testPipeline.run().waitUntilFinish();
++
++    // test again but with older versions that require primitive DATETIME type
++    Schema expectedLegacyBeamSchema = Schema.builder().addDateTimeField("ts").build();
++    Row expectedLegacyRow =
++        Row.withSchema(expectedLegacyBeamSchema).addValue(DateTime.parse(val)).build();
++
++    Pipeline testPipeline2 = Pipeline.create();
++    testPipeline2.getOptions().as(StreamingOptions.class).setUpdateCompatibilityVersion("2.75.0");
++    PCollection<Row> outputLegacy = testPipeline2.apply(read).apply(new PrintRow());
++    PAssert.that(outputLegacy).containsInAnyOrder(expectedLegacyRow);
++    testPipeline2.run().waitUntilFinish();
++  }
++
+   public void runWithStartingStrategy(@Nullable StartingStrategy strategy, boolean streaming)
+       throws IOException {
+     assumeTrue(useIncrementalScan);
+diff --git a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergUtilsTest.java b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergUtilsTest.java
+index 3da31ecc2061..7e707717f3cf 100644
+--- a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergUtilsTest.java
++++ b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergUtilsTest.java
+@@ -42,6 +42,7 @@
+ import org.apache.beam.sdk.schemas.logicaltypes.FixedPrecisionNumeric;
+ import org.apache.beam.sdk.schemas.logicaltypes.FixedString;
+ import org.apache.beam.sdk.schemas.logicaltypes.SqlTypes;
++import org.apache.beam.sdk.schemas.logicaltypes.Timestamp;
+ import org.apache.beam.sdk.schemas.logicaltypes.UuidLogicalType;
+ import org.apache.beam.sdk.schemas.logicaltypes.VariableBytes;
+ import org.apache.beam.sdk.schemas.logicaltypes.VariableString;
+@@ -232,6 +233,13 @@ public void testTimestampWithZone() {
+       OffsetDateTime offsetDateTime = OffsetDateTime.parse(val);
+       LocalDateTime localDateTime =
+           offsetDateTime.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
++      // Timestamp.MICROS
++      checkRowValueToRecordValue(
++          Schema.FieldType.logicalType(Timestamp.MICROS),
++          offsetDateTime.toInstant(),
++          Types.TimestampType.withZone(),
++          offsetDateTime.withOffsetSameInstant(ZoneOffset.UTC));
++
+       // SqlTypes.DATETIME
+       checkRowValueToRecordValue(
+           Schema.FieldType.logicalType(SqlTypes.DATETIME),
+@@ -426,6 +434,24 @@ public void testTimestampWithZone() {
+       OffsetDateTime offsetDateTime = OffsetDateTime.parse(timestamp);
+       LocalDateTime localDateTime =
+           offsetDateTime.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
++
++      // Timestamp.MICROS
++      checkRecordValueToRowValue(
++          Types.TimestampType.withZone(),
++          offsetDateTime,
++          Schema.FieldType.logicalType(Timestamp.MICROS),
++          offsetDateTime.toInstant());
++      checkRecordValueToRowValue(
++          Types.TimestampType.withZone(),
++          DateTimeUtil.microsFromTimestamptz(offsetDateTime),
++          Schema.FieldType.logicalType(Timestamp.MICROS),
++          offsetDateTime.toInstant());
++      checkRecordValueToRowValue(
++          Types.TimestampType.withZone(),
++          timestamp,
++          Schema.FieldType.logicalType(Timestamp.MICROS),
++          offsetDateTime.toInstant());
++
+       // SqlTypes.DATETIME
+       checkRecordValueToRowValue(
+           Types.TimestampType.withZone(),
+@@ -458,6 +484,21 @@ public void testTimestampWithZone() {
+           Types.TimestampType.withZone(), timestamp, Schema.FieldType.DATETIME, dateTime);
+     }
+ 
++    @Test
++    public void testUpdateCompatibilityVersionGatesTimestamptzMapping() {
++      org.apache.iceberg.Schema icebergSchema =
++          new org.apache.iceberg.Schema(required(0, "ts", Types.TimestampType.withZone()));
++
++      // A pinned, older update-compatibility version keeps the legacy DATETIME mapping on read.
++      Schema pinnedOld = IcebergUtils.icebergSchemaToBeamSchema(icebergSchema, "2.50.0");
++      assertEquals(Schema.FieldType.DATETIME, pinnedOld.getField("ts").getType());
++
++      // An unset (null) or future update-compatibility version uses the new micros mapping.
++      Schema unpinned = IcebergUtils.icebergSchemaToBeamSchema(icebergSchema, null);
++      assertEquals(
++          Schema.FieldType.logicalType(Timestamp.MICROS), unpinned.getField("ts").getType());
++    }
++
+     @Test
+     public void testFixed() {}
+ 
+@@ -868,7 +909,7 @@ public void testMapBeamFieldTypeToIcebergFieldType() {
+             .addNullableStringField("str")
+             .addNullableBooleanField("bool")
+             .addByteArrayField("bytes")
+-            .addDateTimeField("datetime_tz")
++            .addLogicalTypeField("datetime_tz", Timestamp.MICROS)
+             .addLogicalTypeField("datetime", SqlTypes.DATETIME)
+             .addLogicalTypeField("time", SqlTypes.TIME)
+             .addLogicalTypeField("date", SqlTypes.DATE)
+diff --git a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergWriteSchemaTransformProviderTest.java b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergWriteSchemaTransformProviderTest.java
+index c5fc5a6b6fe7..5a7aa11e10a9 100644
+--- a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergWriteSchemaTransformProviderTest.java
++++ b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/IcebergWriteSchemaTransformProviderTest.java
+@@ -38,6 +38,8 @@
+ import java.util.UUID;
+ import org.apache.beam.sdk.Pipeline;
+ import org.apache.beam.sdk.managed.Managed;
++import org.apache.beam.sdk.options.PipelineOptions;
++import org.apache.beam.sdk.options.StreamingOptions;
+ import org.apache.beam.sdk.schemas.Schema;
+ import org.apache.beam.sdk.schemas.logicaltypes.SqlTypes;
+ import org.apache.beam.sdk.testing.PAssert;
+@@ -484,7 +486,12 @@ public void writePartitionedData(boolean autosharding) {
+         .satisfies(new VerifyOutputs(Collections.singletonList(identifier), "append"));
+     testPipeline.run().waitUntilFinish();
+ 
+-    Pipeline p = Pipeline.create(TestPipeline.testingPipelineOptions());
++    // This table has timestamptz columns written as joda DateTime. Pin an older update
++    // compatibility version so the read keeps the legacy DATETIME mapping and matches the written
++    // rows
++    PipelineOptions readOptions = TestPipeline.testingPipelineOptions();
++    readOptions.as(StreamingOptions.class).setUpdateCompatibilityVersion("2.75.0");
++    Pipeline p = Pipeline.create(readOptions);
+     PCollection<Row> readRows =
+         p.apply(Managed.read(Managed.ICEBERG).withConfig(config)).getSinglePCollection();
+     PAssert.that(readRows).containsInAnyOrder(rows);
+@@ -554,7 +561,9 @@ public void testWriteCreateTableWithPartitionSpec() {
+         .satisfies(new VerifyOutputs(Collections.singletonList(identifier), "append"));
+     testPipeline.run().waitUntilFinish();
+ 
+-    Pipeline p = Pipeline.create(TestPipeline.testingPipelineOptions());
++    PipelineOptions readOptions = TestPipeline.testingPipelineOptions();
++    readOptions.as(StreamingOptions.class).setUpdateCompatibilityVersion("2.75.0");
++    Pipeline p = Pipeline.create(readOptions);
+     PCollection<Row> readRows =
+         p.apply(Managed.read(Managed.ICEBERG).withConfig(config)).getSinglePCollection();
+     PAssert.that(readRows).containsInAnyOrder(rows);
+diff --git a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/catalog/BigQueryMetastoreCatalogIT.java b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/catalog/BigQueryMetastoreCatalogIT.java
+index eb3ebfbf5219..a34e580d29b7 100644
+--- a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/catalog/BigQueryMetastoreCatalogIT.java
++++ b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/catalog/BigQueryMetastoreCatalogIT.java
+@@ -58,6 +58,7 @@ public Catalog createCatalog() {
+             .put("gcp_project", OPTIONS.getProject())
+             .put("gcp_location", "us-central1")
+             .put("warehouse", warehouse)
++            .put("io-impl", "org.apache.iceberg.gcp.gcs.GCSFileIO")
+             .build(),
+         new Configuration());
+   }
+diff --git a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/catalog/IcebergCatalogBaseIT.java b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/catalog/IcebergCatalogBaseIT.java
+index f0c7ae925df7..5c28f0192a61 100644
+--- a/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/catalog/IcebergCatalogBaseIT.java
++++ b/sdks/java/io/iceberg/src/test/java/org/apache/beam/sdk/io/iceberg/catalog/IcebergCatalogBaseIT.java
+@@ -59,6 +59,7 @@
+ import org.apache.beam.sdk.managed.Managed;
+ import org.apache.beam.sdk.schemas.Schema;
+ import org.apache.beam.sdk.schemas.logicaltypes.SqlTypes;
++import org.apache.beam.sdk.schemas.logicaltypes.Timestamp;
+ import org.apache.beam.sdk.testing.PAssert;
+ import org.apache.beam.sdk.testing.TestPipeline;
+ import org.apache.beam.sdk.transforms.Create;
+@@ -106,8 +107,6 @@
+ import org.apache.iceberg.util.DateTimeUtil;
+ import org.apache.iceberg.util.PartitionUtil;
+ import org.checkerframework.checker.nullness.qual.Nullable;
+-import org.joda.time.DateTime;
+-import org.joda.time.DateTimeZone;
+ import org.joda.time.Duration;
+ import org.joda.time.Instant;
+ import org.joda.time.LocalDate;
+@@ -272,7 +271,7 @@ public void cleanUp() throws Exception {
+           .addArrayField("arr_long", Schema.FieldType.INT64)
+           .addNullableRowField("nullable_row", NESTED_ROW_SCHEMA)
+           .addNullableInt64Field("nullable_long")
+-          .addDateTimeField("datetime_tz")
++          .addLogicalTypeField("datetime_tz", Timestamp.MICROS)
+           .addLogicalTypeField("datetime", SqlTypes.DATETIME)
+           .addLogicalTypeField("date", SqlTypes.DATE)
+           .addLogicalTypeField("time", SqlTypes.TIME)
+@@ -309,8 +308,10 @@ public Row apply(Long num) {
+               .addValue(LongStream.range(0, num % 10).boxed().collect(Collectors.toList()))
+               .addValue(num % 2 == 0 ? null : nestedRow)
+               .addValue(num)
+-              .addValue(new DateTime(timestampMillis).withZone(DateTimeZone.forOffsetHours(4)))
+-              .addValue(DateTimeUtil.timestampFromMicros(timestampMillis * 1000))
++              .addValue(
++                  DateTimeUtil.timestamptzFromMicros(timestampMillis * 1000 + 123456789)
++                      .toInstant())
++              .addValue(DateTimeUtil.timestampFromMicros(timestampMillis * 1000 + 123456789))
+               .addValue(DateTimeUtil.dateFromDays(Integer.parseInt(strNum)))
+               .addValue(DateTimeUtil.timeFromMicros(num))
+               .build();
+diff --git a/sdks/python/apache_beam/transforms/managed_iceberg_it_test.py b/sdks/python/apache_beam/transforms/managed_iceberg_it_test.py
+index 458855c4b966..23d19c504970 100644
+--- a/sdks/python/apache_beam/transforms/managed_iceberg_it_test.py
++++ b/sdks/python/apache_beam/transforms/managed_iceberg_it_test.py
+@@ -26,6 +26,7 @@
+ from apache_beam.testing.test_pipeline import TestPipeline
+ from apache_beam.testing.util import assert_that
+ from apache_beam.testing.util import equal_to
++from apache_beam.utils.timestamp import Timestamp
+ 
+ 
+ @pytest.mark.uses_io_java_expansion_service
+@@ -51,7 +52,8 @@ def _create_row(self, num: int):
+         bool_=(num % 2 == 0),
+         float_=(num + float(num) / 100),
+         arr_=[num, num, num],
+-        date_=datetime.date.today() - datetime.timedelta(days=num))
++        date_=datetime.date.today() - datetime.timedelta(days=num),
++        timestamp_=Timestamp(123 * num, 456 * num))
+ 
+   def test_write_read_pipeline(self):
+     biglake_catalog_props = {

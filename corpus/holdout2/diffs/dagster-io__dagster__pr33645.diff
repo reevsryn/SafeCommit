@@ -1,0 +1,253 @@
+diff --git a/docs/scripts/build-api-docs.sh b/docs/scripts/build-api-docs.sh
+index df7a9eb8d0fe3..1699150a037cd 100755
+--- a/docs/scripts/build-api-docs.sh
++++ b/docs/scripts/build-api-docs.sh
+@@ -1,4 +1,4 @@
+-#!/bin/bash
++#!/usr/bin/env bash
+ #
+ # Builds and synchronizes mdx API docs, and objects.inv using Sphinx
+ #
+@@ -59,4 +59,4 @@ else
+   echo "Running sphinx and copying \`object.inv\` to \`static/\`"
+   tox -e sphinx-inv-local
+   cp sphinx/_build/json/objects.inv static/.
+-fi
+\ No newline at end of file
++fi
+diff --git a/docs/scripts/build-kinds-tags.sh b/docs/scripts/build-kinds-tags.sh
+index fc1fd7e6628af..dadccc6f11217 100755
+--- a/docs/scripts/build-kinds-tags.sh
++++ b/docs/scripts/build-kinds-tags.sh
+@@ -1,4 +1,4 @@
+-#!/bin/bash
++#!/usr/bin/env bash
+ 
+ set -e
+ 
+diff --git a/docs/sphinx/_ext/dagster-sphinx/dagster_sphinx/__init__.py b/docs/sphinx/_ext/dagster-sphinx/dagster_sphinx/__init__.py
+index 53c913ed9c141..ebd1f22695ef6 100644
+--- a/docs/sphinx/_ext/dagster-sphinx/dagster_sphinx/__init__.py
++++ b/docs/sphinx/_ext/dagster-sphinx/dagster_sphinx/__init__.py
+@@ -18,7 +18,7 @@
+ )
+ from dagster._record import get_original_class, is_record
+ from sphinx.application import Sphinx
+-from sphinx.domains.python import ObjectEntry
++from sphinx.domains.python import ModuleEntry, ObjectEntry
+ from sphinx.environment import BuildEnvironment
+ from sphinx.ext.autodoc import (
+     ClassDocumenter,
+@@ -171,67 +171,99 @@ def get_child_as(node: nodes.Node, index: int, node_type: type[T_Node]) -> T_Nod
+     return child
+ 
+ 
+-def transform_inventory_uri(uri: str) -> str:
+-    """Transform Sphinx source paths to final documentation URLs.
++def _strip_sections_prefix(docname: str) -> str:
++    """Strip the ``sections/`` prefix from a Sphinx docname.
+ 
+-    Transforms paths like:
+-        sections/api/apidocs/dagster/internals/
+-    to:
+-        api/dagster/internals
++    The RST source files live under ``docs/sphinx/sections/`` but the built
++    documentation is served without that prefix (e.g. ``api/dagster/pipes``
++    rather than ``sections/api/dagster/pipes``).
+     """
+-    # Remove the 'sections/api/apidocs/' prefix
+-    if uri.startswith("sections/api/apidocs/"):
+-        transformed = uri.replace("sections/api/apidocs/", "api/", 1)
+-        # Remove trailing slash if present
+-        if transformed.endswith("/"):
+-            transformed = transformed[:-1]
+-        return transformed
+-    return uri
+-
+-
+-def fix_inventory_uris(app: Sphinx, env) -> None:
+-    """Fix URIs in the Sphinx inventory before it's written.
+-
+-    This hook runs during env-updated which happens after all documents are read
+-    and before the build writes output files, allowing us to transform the URIs
+-    in the domain data.
++    if docname.startswith("sections/"):
++        return docname[len("sections/") :]
++    return docname
++
++
++def fix_inventory_uris(app: Sphinx, env: BuildEnvironment | None) -> None:
++    """Strip ``sections/`` from inventory docnames so ``objects.inv`` URIs
++    match the published URL structure.
++
++    Only touches explicitly listed domain stores whose entries are known to
++    store a *docname* as their first tuple element.
+     """
+     if env is None:
+         return
+ 
+-    # Access the inventory data from the Python domain
+-    py_domain = env.domaindata.get("py", {})
+-    objects = py_domain.get("objects", {})
++    # Each entry is (domain_name, store_key).  Only stores whose values are
++    # tuples with a docname as the first element should appear here.
++    DOMAIN_STORES: list[tuple[str, str]] = [
++        ("py", "objects"),
++        ("py", "modules"),
++        ("std", "labels"),
++        ("std", "anonlabels"),
++        ("std", "objects"),
++        ("std", "progoptions"),
++    ]
++    targeted = {(d, k) for d, k in DOMAIN_STORES}
+ 
+-    # Transform each URI
+-    # In modern Sphinx (8.x), objects is dict[str, ObjectEntry]
+-    # ObjectEntry is a namedtuple/dataclass with (docname, node_id, objtype, aliased)
+     modified_count = 0
+-    for name, obj_data in list(objects.items()):
+-        if isinstance(obj_data, ObjectEntry):
+-            # New format: ObjectEntry with docname attribute
+-            old_docname = obj_data.docname
+-            new_docname = transform_inventory_uri(old_docname)
+-            if new_docname != old_docname:
+-                # Create a new ObjectEntry with the transformed docname
+-                objects[name] = ObjectEntry(
+-                    docname=new_docname,
+-                    node_id=obj_data.node_id,
+-                    objtype=obj_data.objtype,
+-                    aliased=obj_data.aliased,
+-                )
++    for domain_name, store_key in DOMAIN_STORES:
++        domain_data = env.domaindata.get(domain_name)
++        if domain_data is None:
++            continue
++        store = domain_data.get(store_key)
++        if not isinstance(store, dict):
++            continue
++        for name, entry in list(store.items()):
++            if not isinstance(entry, tuple) or not entry or not isinstance(entry[0], str):
++                continue
++            new_docname = _strip_sections_prefix(entry[0])
++            if new_docname == entry[0]:
++                continue
++            if isinstance(entry, ObjectEntry):
++                store[name] = ObjectEntry(new_docname, *entry[1:])
+                 modified_count += 1
+-        elif isinstance(obj_data, tuple):
+-            # Old format: (docname, node_id, objtype, aliased)
+-            docname, node_id, objtype, aliased = obj_data
+-            new_docname = transform_inventory_uri(docname)
+-            if new_docname != docname:
+-                objects[name] = (new_docname, node_id, objtype, aliased)
++            elif isinstance(entry, ModuleEntry):
++                store[name] = ModuleEntry(new_docname, *entry[1:])
+                 modified_count += 1
++            elif type(entry) is tuple:
++                # std domain stores use plain tuples
++                store[name] = (new_docname, *entry[1:])
++                modified_count += 1
++            else:
++                logger.warning(
++                    f"[dagster_sphinx] Unexpected entry type {type(entry).__name__} "
++                    f"in {domain_name}/{store_key}: {name}"
++                )
+ 
+-    if modified_count > 0:
+-        logger.info(
+-            f"[dagster_sphinx] Transformed {modified_count} inventory URIs for correct URL structure"
++    if modified_count == 0:
++        logger.warning(
++            "[dagster_sphinx] fix_inventory_uris transformed 0 entries — "
++            "has the Sphinx source tree structure changed?"
++        )
++    else:
++        logger.info(f"[dagster_sphinx] Transformed {modified_count} inventory URIs")
++
++    # Warn about any untransformed sections/ docnames in stores we didn't target.
++    # This catches new Sphinx domain stores that may need to be added to DOMAIN_STORES.
++    missed = 0
++    for domain_name, domain_data in env.domaindata.items():
++        for store_key, store in domain_data.items():
++            if (domain_name, store_key) in targeted:
++                continue
++            if not isinstance(store, dict):
++                continue
++            for _name, entry in store.items():
++                if (
++                    isinstance(entry, tuple)
++                    and entry
++                    and isinstance(entry[0], str)
++                    and entry[0].startswith("sections/")
++                ):
++                    missed += 1
++    if missed > 0:
++        logger.warning(
++            f"[dagster_sphinx] {missed} domain entries still have 'sections/' "
++            f"prefix in stores not listed in DOMAIN_STORES — consider updating the list"
+         )
+ 
+ 
+@@ -245,7 +277,6 @@ def setup(app):
+     app.add_node(flag, html=(visit_flag, depart_flag))
+     app.add_role("inline-flag", inline_flag_role)
+     app.connect("autodoc-process-docstring", process_docstring)
+-    # Connect to env-updated event which happens after reading all docs and before writing
+     app.connect("env-updated", fix_inventory_uris)
+     # app.connect("doctree-resolved", substitute_deprecated_text)
+ 
+diff --git a/docs/sphinx/_ext/dagster-sphinx/tox.ini b/docs/sphinx/_ext/dagster-sphinx/tox.ini
+index ff5b83d5cf4db..b79b664210ab6 100644
+--- a/docs/sphinx/_ext/dagster-sphinx/tox.ini
++++ b/docs/sphinx/_ext/dagster-sphinx/tox.ini
+@@ -10,6 +10,7 @@ passenv =
+     PYTEST_PLUGINS
+ allowlist_externals =
+   /bin/bash
++  /usr/bin/env
+ commands =
+-  !windows: /bin/bash -c '! pip list --exclude-editable | grep -e dagster'
++  !windows: /usr/bin/env bash -c '! pip list --exclude-editable | grep -e dagster'
+   pytest -vv {posargs}
+diff --git a/docs/sphinx/_ext/sphinx-mdx-builder/sphinxcontrib/mdxbuilder/builders/mdx.py b/docs/sphinx/_ext/sphinx-mdx-builder/sphinxcontrib/mdxbuilder/builders/mdx.py
+index 16ce42ca6cc61..be7f83fb80512 100644
+--- a/docs/sphinx/_ext/sphinx-mdx-builder/sphinxcontrib/mdxbuilder/builders/mdx.py
++++ b/docs/sphinx/_ext/sphinx-mdx-builder/sphinxcontrib/mdxbuilder/builders/mdx.py
+@@ -61,11 +61,12 @@ def get_outdated_docs(self) -> Iterator[str]:
+                 pass
+ 
+     def get_target_uri(self, docname: str, typ: str | None = None) -> str:
+-        # Transform the docname to match the actual documentation URL structure
+-        # Remove 'sections/api/apidocs/' prefix if present
++        # Transform the docname to match the actual documentation URL structure.
++        # Sphinx source files live under a sections/ directory, but the built
++        # documentation is served without that prefix.
+         transformed = docname
+-        if transformed.startswith("sections/api/apidocs/"):
+-            transformed = transformed.replace("sections/api/apidocs/", "api/", 1)
++        if transformed.startswith("sections/"):
++            transformed = transformed[len("sections/") :]
+         return self.link_transform(transformed)
+ 
+     def prepare_writing(self, docnames: set[str]) -> None:
+diff --git a/docs/tox.ini b/docs/tox.ini
+index 05071f8594f4d..b95b9af355251 100644
+--- a/docs/tox.ini
++++ b/docs/tox.ini
+@@ -14,6 +14,7 @@ passenv =
+     PYTEST_PLUGINS
+ allowlist_externals =
+   /bin/bash
++  /usr/bin/env
+   uv
+   make
+ install_command = uv pip install -b ../python_modules/libraries/dagster-pyspark/build-constraints {opts} {packages}
+@@ -73,7 +74,7 @@ deps =
+ # Since M3 Macs and Windows systems cannot parallelize the build,
+ # do not set -j flag
+ commands =
+-  !windows: /bin/bash -c '! pip list --exclude-editable | grep -e dagster | grep -v dagster-iceberg | grep -v dagster-polars'
++  !windows: /usr/bin/env bash -c '! pip list --exclude-editable | grep -e dagster | grep -v dagster-iceberg | grep -v dagster-polars'
+   make --directory=sphinx clean
+   make --directory=sphinx mdx SPHINXOPTS="-W"
+ 

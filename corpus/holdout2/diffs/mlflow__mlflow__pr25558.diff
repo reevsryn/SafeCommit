@@ -1,0 +1,251 @@
+diff --git a/docs/src/constants.ts b/docs/src/constants.ts
+index 175819baac6e0..25c21e1efefc3 100644
+--- a/docs/src/constants.ts
++++ b/docs/src/constants.ts
+@@ -1 +1 @@
+-export const Version = '3.15.3.dev0';
++export const Version = '3.16.0';
+diff --git a/libs/skinny/pyproject.toml b/libs/skinny/pyproject.toml
+index 45d05e8c54022..c70fe001f1703 100644
+--- a/libs/skinny/pyproject.toml
++++ b/libs/skinny/pyproject.toml
+@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "mlflow-skinny"
+-version = "3.15.3.dev0"
++version = "3.16.0"
+ description = "MLflow is an open source platform for the complete machine learning lifecycle"
+ readme = "README_SKINNY.md"
+ keywords = ["mlflow", "ai", "databricks"]
+@@ -29,6 +29,7 @@ requires-python = ">=3.10"
+ # installable within the existing ranges, and pinning them is the responsibility of the
+ # application. See https://sethmlarson.dev/library-version-specifiers-not-for-vulnerabilities
+ dependencies = [
++  "anyio<5,>=3.6.2,!=4.15.0",
+   "cachetools<8,>=5.0.0",
+   "click<9,>=7.0",
+   "cloudpickle<4",
+diff --git a/libs/tracing/pyproject.toml b/libs/tracing/pyproject.toml
+index 84e2b7a3dc985..b9051122afb9a 100644
+--- a/libs/tracing/pyproject.toml
++++ b/libs/tracing/pyproject.toml
+@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "mlflow-tracing"
+-version = "3.15.3.dev0"
++version = "3.16.0"
+ description = "MLflow Tracing SDK is an open-source, lightweight Python package that only includes the minimum set of dependencies and functionality to instrument your code/models/agents with MLflow Tracing."
+ readme = "README.md"
+ keywords = ["mlflow", "ai", "databricks"]
+diff --git a/mlflow/R/mlflow/DESCRIPTION b/mlflow/R/mlflow/DESCRIPTION
+index d107876fd3169..0d2a4740bf20a 100644
+--- a/mlflow/R/mlflow/DESCRIPTION
++++ b/mlflow/R/mlflow/DESCRIPTION
+@@ -1,7 +1,7 @@
+ Type: Package
+ Package: mlflow
+ Title: Interface to 'MLflow'
+-Version: 3.15.3
++Version: 3.16.0
+ Authors@R: 
+     c(person(given = "Ben",
+              family = "Wilson",
+diff --git a/mlflow/java/client/pom.xml b/mlflow/java/client/pom.xml
+index cbbb614c616f1..3afa430ca67a8 100644
+--- a/mlflow/java/client/pom.xml
++++ b/mlflow/java/client/pom.xml
+@@ -5,7 +5,7 @@
+   <parent>
+     <groupId>org.mlflow</groupId>
+     <artifactId>mlflow-parent</artifactId>
+-    <version>3.15.3-SNAPSHOT</version>
++    <version>3.16.0</version>
+     <relativePath>../pom.xml</relativePath>
+   </parent>
+ 
+diff --git a/mlflow/java/pom.xml b/mlflow/java/pom.xml
+index d8957beed48fb..0c056e30d0d19 100644
+--- a/mlflow/java/pom.xml
++++ b/mlflow/java/pom.xml
+@@ -3,7 +3,7 @@
+   <modelVersion>4.0.0</modelVersion>
+   <groupId>org.mlflow</groupId>
+   <artifactId>mlflow-parent</artifactId>
+-  <version>3.15.3-SNAPSHOT</version>
++  <version>3.16.0</version>
+   <packaging>pom</packaging>
+   <name>MLflow Parent POM</name>
+   <url>http://mlflow.org</url>
+@@ -49,7 +49,7 @@
+   </scm>
+ 
+   <properties>
+-    <mlflow-version>3.15.3-SNAPSHOT</mlflow-version>
++    <mlflow-version>3.16.0</mlflow-version>
+     <maven.compiler.source>1.8</maven.compiler.source>
+     <maven.compiler.target>1.8</maven.compiler.target>
+     <scala.version>2.11.12</scala.version>
+diff --git a/mlflow/java/spark_2.12/pom.xml b/mlflow/java/spark_2.12/pom.xml
+index 3c4843b420c83..1082838a80223 100644
+--- a/mlflow/java/spark_2.12/pom.xml
++++ b/mlflow/java/spark_2.12/pom.xml
+@@ -1,7 +1,7 @@
+ <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+   <modelVersion>4.0.0</modelVersion>
+   <artifactId>mlflow-spark_2.12</artifactId>
+-  <version>3.15.3-SNAPSHOT</version>
++  <version>3.16.0</version>
+   <name>${project.artifactId}</name>
+   <properties>
+     <maven.compiler.source>1.8</maven.compiler.source>
+@@ -15,7 +15,7 @@
+   <parent>
+     <groupId>org.mlflow</groupId>
+     <artifactId>mlflow-parent</artifactId>
+-    <version>3.15.3-SNAPSHOT</version>
++    <version>3.16.0</version>
+     <relativePath>../pom.xml</relativePath>
+   </parent>
+ 
+diff --git a/mlflow/java/spark_2.13/pom.xml b/mlflow/java/spark_2.13/pom.xml
+index 7bc7349ce7509..8f4c967aa9af1 100644
+--- a/mlflow/java/spark_2.13/pom.xml
++++ b/mlflow/java/spark_2.13/pom.xml
+@@ -1,7 +1,7 @@
+ <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+   <modelVersion>4.0.0</modelVersion>
+   <artifactId>mlflow-spark_2.13</artifactId>
+-  <version>3.15.3-SNAPSHOT</version>
++  <version>3.16.0</version>
+   <name>${project.artifactId}</name>
+   <properties>
+     <maven.compiler.source>1.8</maven.compiler.source>
+@@ -15,7 +15,7 @@
+   <parent>
+     <groupId>org.mlflow</groupId>
+     <artifactId>mlflow-parent</artifactId>
+-    <version>3.15.3-SNAPSHOT</version>
++    <version>3.16.0</version>
+     <relativePath>../pom.xml</relativePath>
+   </parent>
+ 
+diff --git a/mlflow/server/js/src/common/constants.tsx b/mlflow/server/js/src/common/constants.tsx
+index 8c71326a05da8..02a5b70f58225 100644
+--- a/mlflow/server/js/src/common/constants.tsx
++++ b/mlflow/server/js/src/common/constants.tsx
+@@ -9,7 +9,7 @@ export const ErrorCodes = {
+   RESOURCE_CONFLICT: 'RESOURCE_CONFLICT',
+ };
+ 
+-export const Version = '3.15.3.dev0';
++export const Version = '3.16.0';
+ 
+ const DOCS_VERSION = 'latest';
+ 
+diff --git a/mlflow/version.py b/mlflow/version.py
+index 8ca7f090d66e2..6a2e6e0a0c9d3 100644
+--- a/mlflow/version.py
++++ b/mlflow/version.py
+@@ -2,7 +2,7 @@
+ import importlib.metadata
+ import re
+ 
+-VERSION = "3.15.3.dev0"
++VERSION = "3.16.0"
+ 
+ 
+ def is_release_version():
+diff --git a/pyproject.release.toml b/pyproject.release.toml
+index dcef052924875..bb9e8fcf758dd 100644
+--- a/pyproject.release.toml
++++ b/pyproject.release.toml
+@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "mlflow"
+-version = "3.15.3.dev0"
++version = "3.16.0"
+ description = "MLflow is an open source platform for the complete machine learning lifecycle"
+ readme = "README.md"
+ keywords = ["mlflow", "ai", "databricks"]
+@@ -31,8 +31,8 @@ requires-python = ">=3.10"
+ # installable within the existing ranges, and pinning them is the responsibility of the
+ # application. See https://sethmlarson.dev/library-version-specifiers-not-for-vulnerabilities
+ dependencies = [
+-  "mlflow-skinny==3.15.3.dev0",
+-  "mlflow-tracing==3.15.3.dev0",
++  "mlflow-skinny==3.16.0",
++  "mlflow-tracing==3.16.0",
+   "Flask-CORS<7",
+   "Flask<4",
+   "aiohttp<4,>=3.7.0",
+diff --git a/pyproject.toml b/pyproject.toml
+index 4b957180b3f64..8e01dc2dbdc92 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "mlflow"
+-version = "3.15.3.dev0"
++version = "3.16.0"
+ description = "MLflow is an open source platform for the complete machine learning lifecycle"
+ readme = "README.md"
+ keywords = ["mlflow", "ai", "databricks"]
+@@ -35,6 +35,7 @@ dependencies = [
+   "Flask<4",
+   "aiohttp<4,>=3.7.0",
+   "alembic<2,!=1.10.0",
++  "anyio<5,>=3.6.2,!=4.15.0",
+   "cachetools<8,>=5.0.0",
+   "click<9,>=7.0",
+   "cloudpickle<4",
+diff --git a/requirements/skinny-requirements.yaml b/requirements/skinny-requirements.yaml
+index 5291e623eac76..ba765a7cb1a1f 100644
+--- a/requirements/skinny-requirements.yaml
++++ b/requirements/skinny-requirements.yaml
+@@ -4,6 +4,16 @@
+ # and Databricks. When we release a new major/minor version, this file is automatically
+ # updated as a part of the release process.
+ 
++anyio:
++  pip_release: anyio
++  # Imported directly by mlflow/server/fastapi_app.py and pulled in transitively via
++  # starlette's WSGI bridge. anyio 4.15.0 dropped `from_thread` from its top-level
++  # lazy-import shim, which breaks starlette's WSGIResponder.start_response and makes
++  # the server /health endpoint return 500 (readiness probes then fail).
++  minimum: "3.6.2"
++  max_major_version: 4
++  unsupported: ["4.15.0"]
++
+ click:
+   pip_release: click
+   minimum: "7.0"
+diff --git a/uv.lock b/uv.lock
+index c77b9c310d236..eb9a4dd0c74c2 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -4242,11 +4242,12 @@ wheels = [
+ 
+ [[package]]
+ name = "mlflow"
+-version = "3.15.3.dev0"
++version = "3.16.0"
+ source = { editable = "." }
+ dependencies = [
+     { name = "aiohttp" },
+     { name = "alembic" },
++    { name = "anyio" },
+     { name = "cachetools" },
+     { name = "click" },
+     { name = "cloudpickle" },
+@@ -4479,6 +4480,7 @@ requires-dist = [
+     { name = "aiohttp", specifier = ">=3.7.0,<4" },
+     { name = "alembic", specifier = "!=1.10.0,<2" },
+     { name = "aliyunstoreplugin", marker = "extra == 'aliyun-oss'" },
++    { name = "anyio", specifier = ">=3.6.2,!=4.15.0,<5" },
+     { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.6.1" },
+     { name = "azure-storage-blob", marker = "extra == 'azure'", specifier = ">=12" },
+     { name = "azure-storage-file-datalake", marker = "extra == 'databricks'", specifier = ">12" },

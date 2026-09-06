@@ -1,0 +1,47 @@
+diff --git a/sdks/python/apache_beam/yaml/main.py b/sdks/python/apache_beam/yaml/main.py
+index 804798b82e02..4a36c9da59e4 100644
+--- a/sdks/python/apache_beam/yaml/main.py
++++ b/sdks/python/apache_beam/yaml/main.py
+@@ -61,7 +61,17 @@ def _preparse_jinja_flags(argv):
+     return argv
+ 
+   jinja_variable_parser = argparse.ArgumentParser(allow_abbrev=False)
++  # Guard against jinja_variable_flags colliding with pipeline options.
++  # If a flag collides with a known pipeline option, skip it and require
++  # the variable to be provided via --jinja_variables JSON instead.
++  try:
++    from apache_beam.options.pipeline_options import PipelineOptions
++    _pipeline_option_names = set(PipelineOptions([]).get_all_options().keys())
++  except Exception:
++    _pipeline_option_names = set()
+   for flag_name in jinja_args.jinja_variable_flags:
++    if flag_name.replace('-', '_') in _pipeline_option_names:
++      continue
+     jinja_variable_parser.add_argument('--' + flag_name)
+   jinja_flag_variables, pipeline_args = jinja_variable_parser.parse_known_args(
+       other_args)
+diff --git a/sdks/python/apache_beam/yaml/main_test.py b/sdks/python/apache_beam/yaml/main_test.py
+index 43b8caa1853b..3ef4feef11d1 100644
+--- a/sdks/python/apache_beam/yaml/main_test.py
++++ b/sdks/python/apache_beam/yaml/main_test.py
+@@ -145,6 +145,20 @@ def test_preparse_jinja_flags(self):
+             'pos_arg',
+         ])
+ 
++  def test_preparse_jinja_flags_pipeline_option_collision(self):
++    # A jinja_variable_flags entry that collides with a known pipeline
++    # option (e.g. runner) must not swallow the pipeline flag.
++    argv = [
++        '--jinja_variable_flags=runner,var',
++        '--runner=DirectRunner',
++        '--var=my_line',
++    ]
++    self.assertCountEqual(
++        main._preparse_jinja_flags(argv), [
++            '--runner=DirectRunner',
++            '--jinja_variables=' + '{"var": "my_line"}',
++        ])
++
+   def test_jinja_datetime(self):
+     with tempfile.TemporaryDirectory() as tmpdir:
+       out_path = os.path.join(tmpdir, 'out.txt')

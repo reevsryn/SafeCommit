@@ -1,0 +1,610 @@
+diff --git a/doc/source/ray-core/sandboxes.md b/doc/source/ray-core/sandboxes.md
+index 6dcbc5929e7c..16e9acd13e94 100644
+--- a/doc/source/ray-core/sandboxes.md
++++ b/doc/source/ray-core/sandboxes.md
+@@ -241,6 +241,10 @@ ray.get(sb.delete.remote())
+ 
+ Sandboxes boot from OCI container images. The image manager pulls an image straight from the registry's HTTP API (anonymously, with no Docker daemon and no credentials), extracts its root filesystem into `/tmp/ray/sandbox/images` on the node, and caches it for reuse by subsequent sandboxes on that node using the same image. Sandboxes with write access to the filesystem get their own private writable overlay on top of the cached root filesystem.
+ 
++### Bound the image cache
++
++The cache is bounded so that a node that runs many distinct images doesn't fill its disk. Before each pull, Ray evicts the least recently extracted images until the cache fits under the cap. Images that a running sandbox uses are never evicted. The cap defaults to half of the filesystem that holds the cache. Set `RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES` on worker nodes to choose a cap in bytes, or set it to `0` to disable eviction.
++
+ ### Route Docker Hub pulls through a mirror
+ 
+ Because image pulls are anonymous, every node pulling from Docker Hub consumes the anonymous pull-rate limit and downloads the image over the WAN. In a large cluster, concurrent pulls of multi-GB images can quickly hit the rate limit or saturate network bandwidth, causing image pulls to fail or become slow.
+@@ -355,6 +359,7 @@ For detailed signatures, parameters, and return types, see {ref}`ray-sandbox-ref
+ 
+ * **`runsc` not found in `$PATH`**: Verify that gVisor's `runsc` binary is installed on all Ray worker nodes and sits in a directory on the system `$PATH`, such as `/usr/local/bin/runsc`.
+ * **cgroup or permission errors**: In containerized environments such as Kubernetes without root permissions, keep the default `rootless=True`. Where cgroups are restricted, set `RAY_SANDBOX_IGNORE_CGROUPS=1`.
++* **Node disk filling up with images**: The image cache is capped at half of its filesystem by default. Lower the cap with `RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES` (bytes) on worker nodes, or move the cache to a larger volume. Images that running sandboxes use are never evicted, so many concurrent sandboxes on distinct large images still need that much disk.
+ * **Image pull failures**: Verify that the node can reach the container registry, such as Docker Hub or GHCR, or pre-populate the image cache directory at `/tmp/ray/sandbox/images`. When many nodes pull large images at once, Docker Hub's anonymous rate limits are a likely cause; see [Route Docker Hub pulls through a mirror](#route-docker-hub-pulls-through-a-mirror).
+ 
+ ## Next steps
+diff --git a/python/ray/experimental/sandbox/_internal/image_utils.py b/python/ray/experimental/sandbox/_internal/image_utils.py
+index de596a9fc847..c8163e72146e 100644
+--- a/python/ray/experimental/sandbox/_internal/image_utils.py
++++ b/python/ray/experimental/sandbox/_internal/image_utils.py
+@@ -360,10 +360,169 @@ def extract_tar_layer(
+             pass
+ 
+ 
++_IMAGE_CACHE_MAX_BYTES_ENV = "RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES"
++# Subdirectory of each cached image holding one marker file per live sandbox.
++_USERS_SUBDIR = ".users"
++
++
++def image_cache_max_bytes(images_dir: str) -> int:
++    """Return the image cache size cap in bytes, or 0 for no cap.
++
++    ``RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES`` sets the cap explicitly; ``0``
++    disables eviction. Unset, the cap defaults to half of the filesystem
++    that holds ``images_dir``.
++
++    Args:
++        images_dir: Root image cache directory.
++
++    Returns:
++        The cap in bytes; 0 disables eviction.
++    """
++    raw = os.environ.get(_IMAGE_CACHE_MAX_BYTES_ENV)
++    if raw is not None and raw.strip():
++        try:
++            return max(int(raw), 0)
++        except ValueError:
++            logger.warning(
++                "Ignoring %s=%r: expected an integer number of bytes.",
++                _IMAGE_CACHE_MAX_BYTES_ENV,
++                raw,
++            )
++    try:
++        return shutil.disk_usage(images_dir).total // 2
++    except OSError:
++        return 0
++
++
++def _mark_image_in_use(image_dir: str, instance_id: str) -> None:
++    """Record ``instance_id`` as a live user of the cached image.
++
++    Called by ``pull_and_extract_container_image`` while it holds the
++    image's lock, so eviction (which re-checks users under the same lock)
++    can never remove an image between its pull and its first use.
++    """
++    users_dir = os.path.join(image_dir, _USERS_SUBDIR)
++    os.makedirs(users_dir, exist_ok=True)
++    with open(os.path.join(users_dir, instance_id), "w", encoding="utf-8"):
++        pass
++
++
++def _release_image_use(image_dir: str, instance_id: str) -> None:
++    """Drop ``instance_id``'s in-use record; a no-op if it was never marked."""
++    try:
++        os.remove(os.path.join(image_dir, _USERS_SUBDIR, instance_id))
++    except OSError:
++        pass
++
++
++def _has_users(image_dir: str) -> bool:
++    try:
++        return bool(os.listdir(os.path.join(image_dir, _USERS_SUBDIR)))
++    except OSError:
++        return False
++
++
++def _dir_size_bytes(path: str) -> int:
++    total = 0
++    for dirpath, _, filenames in os.walk(path):
++        for name in filenames:
++            try:
++                total += os.lstat(os.path.join(dirpath, name)).st_size
++            except OSError:
++                pass
++    return total
++
++
++def _file_size_bytes(path: str) -> int:
++    try:
++        return os.path.getsize(path)
++    except OSError:
++        return 0
++
++
++def evict_least_recently_used_images(
++    images_dir: str, max_bytes: int, keep: Optional[str] = None
++) -> None:
++    """Evict least-recently-extracted images until the cache fits ``max_bytes``.
++
++    Nodes cache every image they ever ran, so without a cap a long-lived
++    node eventually fills its disk. Candidates are fully extracted images
++    (``.extracted`` marker present) and ``<name>.tar`` archives left behind
++    by earlier Ray versions, oldest first. An image is skipped when a live sandbox uses it, when its
++    per-image lock is held (a pull in progress), or when it is ``keep``. The
++    in-use check is repeated under the lock, which is also where pulls
++    register their users, so a marked image is never removed.
++
++    Args:
++        images_dir: Root image cache directory.
++        max_bytes: The cache size cap in bytes.
++        keep: Sanitized name of an image that must survive this pass.
++    """
++    try:
++        names = os.listdir(images_dir)
++    except OSError:
++        return
++    entries = []  # (mtime, name, image_dir or None, tar_path, size)
++    for name in names:
++        path = os.path.join(images_dir, name)
++        if name.endswith(".tar") and os.path.isfile(path):
++            stem = name[: -len(".tar")]
++            if not os.path.isdir(os.path.join(images_dir, stem)):
++                # Archive without an image: left by an earlier Ray version.
++                try:
++                    entries.append(
++                        (
++                            os.path.getmtime(path),
++                            stem,
++                            None,
++                            path,
++                            _file_size_bytes(path),
++                        )
++                    )
++                except OSError:
++                    pass
++            continue
++        marker = os.path.join(path, ".extracted")
++        try:
++            if not (os.path.isdir(path) and os.path.exists(marker)):
++                continue
++            mtime = os.path.getmtime(marker)
++        except OSError:
++            continue  # Concurrently deleted; keep going.
++        tar_path = os.path.join(images_dir, f"{name}.tar")
++        size = _dir_size_bytes(path) + _file_size_bytes(tar_path)
++        entries.append((mtime, name, path, tar_path, size))
++
++    total = sum(entry[-1] for entry in entries)
++    for _, name, img_dir, tar_path, size in sorted(entries):
++        if total <= max_bytes:
++            return
++        if name == keep or (img_dir is not None and _has_users(img_dir)):
++            continue
++        lock_path = os.path.join(images_dir, f"{name}.lock")
++        try:
++            with open(lock_path, "w", encoding="utf-8") as f_lock:
++                fcntl.flock(f_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                # A pull may have registered a user since the scan.
++                if img_dir is not None and _has_users(img_dir):
++                    continue
++                if img_dir is not None:
++                    shutil.rmtree(img_dir, ignore_errors=True)
++                try:
++                    os.remove(tar_path)
++                except OSError:
++                    pass
++        except OSError:
++            continue  # Locked by an in-progress pull; try the next one.
++        total -= size
++        logger.info("Evicted cached sandbox image %s (%d bytes)", name, size)
++
++
+ def pull_and_extract_container_image(
+     image: str,
+     images_dir: str = DEFAULT_IMAGES_DIR,
+     timeout_seconds: float = 120.0,
++    instance_id: Optional[str] = None,
+ ) -> str:
+     """Pull container image via Registry v2 HTTP API and extract rootfs into local directory.
+ 
+@@ -371,6 +530,9 @@ def pull_and_extract_container_image(
+         image: Container image name (e.g. 'python:3.10-slim') or path to local tar archive.
+         images_dir: Root directory for caching container images.
+         timeout_seconds: Network request timeout.
++        instance_id: When given, the sandbox instance is registered as a
++            user of the image under the image lock, so cache eviction
++            leaves the image alone until the instance releases it.
+ 
+     Returns:
+         Absolute directory path containing the extracted container filesystem.
+@@ -386,6 +548,15 @@ def pull_and_extract_container_image(
+     target_dir = os.path.join(images_dir, safe_name)
+     lock_path = os.path.join(images_dir, f"{safe_name}.lock")
+ 
++    max_cache = image_cache_max_bytes(images_dir)
++    if max_cache > 0:
++        evict_least_recently_used_images(images_dir, max_cache, keep=safe_name)
++
++    def _finish() -> str:
++        if instance_id is not None:
++            _mark_image_in_use(target_dir, instance_id)
++        return target_dir
++
+     with open(lock_path, "w", encoding="utf-8") as f_lock:
+         try:
+             fcntl.flock(f_lock, fcntl.LOCK_EX)
+@@ -393,9 +564,9 @@ def pull_and_extract_container_image(
+             if os.path.isdir(target_dir) and os.path.exists(marker_path):
+                 if os.path.isfile(image):
+                     if os.path.getmtime(marker_path) >= os.path.getmtime(image):
+-                        return target_dir
++                        return _finish()
+                 else:
+-                    return target_dir
++                    return _finish()
+ 
+             tmp_extract_dir = os.path.join(
+                 images_dir, f"{safe_name}.tmp.{uuid.uuid4().hex}"
+@@ -405,8 +576,6 @@ def pull_and_extract_container_image(
+             tmp_rootfs_dir = os.path.join(tmp_extract_dir, "rootfs")
+             os.makedirs(tmp_rootfs_dir, mode=0o755, exist_ok=True)
+ 
+-            tar_path = os.path.join(images_dir, f"{safe_name}.tar")
+-
+             if os.path.isfile(image):
+                 try:
+                     with open(image, "rb") as f:
+@@ -416,15 +585,6 @@ def pull_and_extract_container_image(
+                     raise SandboxCreationError(
+                         f"Failed to extract local image archive '{image}': {err}"
+                     ) from err
+-            elif os.path.isfile(tar_path):
+-                try:
+-                    with open(tar_path, "rb") as f:
+-                        extract_tar_layer(f, tmp_extract_dir)
+-                except Exception as err:
+-                    shutil.rmtree(tmp_extract_dir, ignore_errors=True)
+-                    raise SandboxCreationError(
+-                        f"Failed to extract cached image archive '{tar_path}': {err}"
+-                    ) from err
+             else:
+                 if (
+                     image.endswith(".tar")
+@@ -531,16 +691,8 @@ def pull_and_extract_container_image(
+                                 tmp_blob_file.seek(0)
+                                 extract_tar_layer(tmp_blob_file, tmp_rootfs_dir)
+ 
+-                    with tarfile.open(tar_path, "w") as tar:
+-                        tar.add(tmp_extract_dir, arcname=".")
+-
+                 except Exception as err:
+                     shutil.rmtree(tmp_extract_dir, ignore_errors=True)
+-                    if os.path.exists(tar_path):
+-                        try:
+-                            os.remove(tar_path)
+-                        except OSError:
+-                            pass
+                     if isinstance(err, SandboxCreationError):
+                         raise
+                     raise SandboxCreationError(
+@@ -556,7 +708,7 @@ def pull_and_extract_container_image(
+                 shutil.rmtree(target_dir, ignore_errors=True)
+             os.replace(tmp_extract_dir, target_dir)
+ 
+-            return target_dir
++            return _finish()
+         finally:
+             try:
+                 fcntl.flock(f_lock, fcntl.LOCK_UN)
+diff --git a/python/ray/experimental/sandbox/backend/gvisor.py b/python/ray/experimental/sandbox/backend/gvisor.py
+index 442808799c32..b30a146854a3 100644
+--- a/python/ray/experimental/sandbox/backend/gvisor.py
++++ b/python/ray/experimental/sandbox/backend/gvisor.py
+@@ -54,8 +54,12 @@ def create_sandbox(self, config: SandboxConfig) -> str:
+         try:
+             os.makedirs(root_dir, mode=0o777, exist_ok=True)
+ 
++            # The instance id pins the image in the cache while this sandbox
++            # lives (its extracted rootfs is the overlay lower layer).
+             self._image_manager.pull_image(
+-                config.image, timeout_seconds=config.timeout_seconds
++                config.image,
++                timeout_seconds=config.timeout_seconds,
++                instance_id=sandbox_id,
+             )
+             # The process cwd: an explicit workdir, else the image's WORKDIR.
+             container_cwd = (
+@@ -81,25 +85,30 @@ def create_sandbox(self, config: SandboxConfig) -> str:
+                     )
+                 os.makedirs(workdir_path, mode=0o777, exist_ok=True)
+         except Exception as err:
++            self._image_manager.release_image(config.image, sandbox_id)
+             raise SandboxCreationError(
+                 f"Failed to initialize local sandbox directory '{root_dir}': {err}"
+             ) from err
+ 
+         # Prepare OCI bundle config for long-running container process
+-        self._image_manager.prepare_oci_bundle(
+-            root_dir=root_dir,
+-            workdir_path=workdir_path,
+-            container_cwd=container_cwd,
+-            image=config.image,
+-            env_dict=config.env,
+-            cpu=config.cpu,
+-            memory=config.memory,
+-            readonly=config.readonly,
+-            capabilities=config.capabilities,
+-            network=config.network,
+-            dns=config.dns,
+-            _oci_spec_transform_fn=config._oci_spec_transform_fn,
+-        )
++        try:
++            self._image_manager.prepare_oci_bundle(
++                root_dir=root_dir,
++                workdir_path=workdir_path,
++                container_cwd=container_cwd,
++                image=config.image,
++                env_dict=config.env,
++                cpu=config.cpu,
++                memory=config.memory,
++                readonly=config.readonly,
++                capabilities=config.capabilities,
++                network=config.network,
++                dns=config.dns,
++                _oci_spec_transform_fn=config._oci_spec_transform_fn,
++            )
++        except Exception:
++            self._image_manager.release_image(config.image, sandbox_id)
++            raise
+         run_args = self._runsc_base_args(config)
+         if config.network:
+             # "public" = host egress + generated resolv.conf (handled in the
+@@ -167,6 +176,9 @@ def create_sandbox(self, config: SandboxConfig) -> str:
+             del_args = self._runsc_base_args(config) + ["delete", sandbox_id]
+             subprocess.run(del_args, capture_output=True)
+             shutil.rmtree(root_dir, ignore_errors=True)
++            # The sandbox never registered, so delete_sandbox will not run
++            # for it: release the image here to keep it evictable.
++            self._image_manager.release_image(config.image, sandbox_id)
+             raise
+ 
+         self._sandbox_metadata[sandbox_id] = {
+@@ -214,6 +226,8 @@ def delete_sandbox(self, sandbox_id: str) -> None:
+             subprocess.run(del_args, capture_output=True)
+ 
+             shutil.rmtree(root_dir, ignore_errors=True)
++            # Only now is the overlay's lower layer unused.
++            self._image_manager.release_image(config.image, sandbox_id)
+ 
+     def exec_command(
+         self,
+diff --git a/python/ray/experimental/sandbox/image_manager.py b/python/ray/experimental/sandbox/image_manager.py
+index bd928706e108..e06a87a78060 100644
+--- a/python/ray/experimental/sandbox/image_manager.py
++++ b/python/ray/experimental/sandbox/image_manager.py
+@@ -9,6 +9,7 @@
+ 
+ from ray.experimental.sandbox._internal.image_utils import (
+     DEFAULT_IMAGES_DIR,
++    _release_image_use,
+     pull_and_extract_container_image,
+     sanitize_image_name,
+ )
+@@ -54,18 +55,33 @@ def pull_image(
+         self,
+         image: str,
+         timeout_seconds: float = 120.0,
++        instance_id: Optional[str] = None,
+     ) -> str:
+         """Pull container image and extract rootfs into local cache or storage.
+ 
+         Args:
+             image: Container image reference (e.g. 'python:3.10-slim') or path to local tar archive.
+             timeout_seconds: Timeout for network operations.
++            instance_id: The sandbox instance that will use the image. When
++                given, the image is pinned in the cache until
++                ``release_image`` is called for the same instance.
+ 
+         Returns:
+             Absolute directory path containing the extracted container filesystem.
+         """
+         pass
+ 
++    def release_image(self, image: str, instance_id: str) -> None:
++        """Release an instance's pin on an image taken by ``pull_image``.
++
++        Managers without a cache need not override this.
++
++        Args:
++            image: Container image reference or tar path passed to ``pull_image``.
++            instance_id: The sandbox instance that no longer uses the image.
++        """
++        return None
++
+     @abstractmethod
+     def get_image_dir(self, image: str) -> str:
+         """Get the cached local directory path for an image.
+@@ -227,12 +243,17 @@ def pull_image(
+         self,
+         image: str,
+         timeout_seconds: float = 120.0,
++        instance_id: Optional[str] = None,
+     ) -> str:
+         """Pull container image and extract rootfs into local images cache directory.
+ 
++        The cache is bounded (see ``RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES``);
++        passing ``instance_id`` pins the image until ``release_image``.
++
+         Args:
+             image: Container image name (e.g. 'busybox:latest') or path to local tar archive.
+             timeout_seconds: Timeout for network operations.
++            instance_id: The sandbox instance that will use the image.
+ 
+         Returns:
+             Absolute directory path containing the extracted container filesystem.
+@@ -241,8 +262,18 @@ def pull_image(
+             image,
+             images_dir=self._images_dir,
+             timeout_seconds=timeout_seconds,
++            instance_id=instance_id,
+         )
+ 
++    def release_image(self, image: str, instance_id: str) -> None:
++        """Release an instance's pin on a cached image.
++
++        Args:
++            image: Container image name or tar path passed to ``pull_image``.
++            instance_id: The sandbox instance that no longer uses the image.
++        """
++        _release_image_use(self.get_image_dir(image), instance_id)
++
+     def get_image_dir(self, image: str) -> str:
+         """Get the cached local directory path for an image.
+ 
+diff --git a/python/ray/experimental/sandbox/tests/test_gvisor_backend.py b/python/ray/experimental/sandbox/tests/test_gvisor_backend.py
+index 8684755f4e6a..1dd13e354076 100644
+--- a/python/ray/experimental/sandbox/tests/test_gvisor_backend.py
++++ b/python/ray/experimental/sandbox/tests/test_gvisor_backend.py
+@@ -81,7 +81,8 @@ def test_gvisor_backend_container_image_support():
+         assert os.path.exists(extracted_dir)
+         assert os.path.isdir(extracted_dir)
+         assert os.path.exists(os.path.join(extracted_dir, ".extracted"))
+-        assert os.path.exists("/tmp/ray/sandbox/images/busybox_latest.tar")
++        # Only the extracted rootfs is cached; no archive doubles its footprint.
++        assert not os.path.exists("/tmp/ray/sandbox/images/busybox_latest.tar")
+ 
+         res = backend.exec_command(sandbox_id, "/bin/sh -c 'echo hello from busybox'")
+         assert res.exit_code == 0
+diff --git a/python/ray/experimental/sandbox/tests/test_image_manager.py b/python/ray/experimental/sandbox/tests/test_image_manager.py
+index e1a6c7d7d392..73000aa7bd83 100644
+--- a/python/ray/experimental/sandbox/tests/test_image_manager.py
++++ b/python/ray/experimental/sandbox/tests/test_image_manager.py
+@@ -589,6 +589,53 @@ def test_extract_tar_layer_preserves_mtimes(tmp_path):
+     assert int(os.path.getmtime(dest / "etc")) == archived_mtime
+ 
+ 
++def test_image_cache_eviction(tmp_path):
++    """LRU eviction under a size cap skips in-use, kept, and unextracted images."""
++    import os
++    import time
++
++    from ray.experimental.sandbox._internal.image_utils import (
++        _mark_image_in_use,
++        evict_least_recently_used_images,
++    )
++
++    def make_image(name, size, extracted=True, age=0):
++        d = tmp_path / name
++        d.mkdir()
++        (d / "blob").write_bytes(b"x" * size)
++        if extracted:
++            marker = d / ".extracted"
++            marker.write_text("ok")
++            past = time.time() - age
++            os.utime(marker, (past, past))
++        return d
++
++    oldest = make_image("old", 1000, age=5000)
++    busy = make_image("busy", 1000, age=4000)
++    kept = make_image("kept", 1000, age=3000)
++    newer = make_image("new", 1000, age=2000)
++    newest = make_image("newest", 1000, age=1000)
++    partial = make_image("partial", 1000, extracted=False)
++    # An archive without an image directory (left by the old tarball default)
++    # counts toward the cap and is evictable on its own.
++    orphan_tar = tmp_path / "orphan.tar"
++    orphan_tar.write_bytes(b"t" * 1000)
++    os.utime(orphan_tar, (time.time() - 6000, time.time() - 6000))
++    _mark_image_in_use(str(busy), "sb-live")
++
++    # ~6000 bytes counted (partial has no marker): three evictions, oldest
++    # first, bring the cache under the cap.
++    evict_least_recently_used_images(str(tmp_path), max_bytes=3100, keep="kept")
++
++    assert not orphan_tar.exists()  # oldest evictable goes first
++    assert not oldest.exists()
++    assert busy.exists()  # in use: protected
++    assert kept.exists()  # the image being pulled: protected
++    assert not newer.exists()  # third eviction reaches the cap
++    assert newest.exists()
++    assert partial.exists()  # mid-pull (no marker): protected
++
++
+ def test_oci_spec_docker_parity_hosts_and_tmp(tmp_path):
+     """/etc/hosts is a per-sandbox read-write bind (localhost must resolve),
+     and /tmp stays on the rootfs (readonly sandboxes get an explicit tmpfs
+diff --git a/python/ray/experimental/sandbox/tests/test_image_utils.py b/python/ray/experimental/sandbox/tests/test_image_utils.py
+index 1e9009ad4798..d807d5c26764 100644
+--- a/python/ray/experimental/sandbox/tests/test_image_utils.py
++++ b/python/ray/experimental/sandbox/tests/test_image_utils.py
+@@ -207,6 +207,72 @@ def test_pull_and_extract_local_tar(tmp_path):
+     )
+ 
+ 
++def _write_sample_tar(path):
++    with tarfile.open(str(path), "w") as tar:
++        data = b"hello"
++        ti = tarfile.TarInfo("hello.txt")
++        ti.size = len(data)
++        tar.addfile(ti, io.BytesIO(data))
++
++
++def test_pull_pins_image_until_release(tmp_path, monkeypatch):
++    """A pull with an instance id survives eviction until the id is released."""
++    from ray.experimental.sandbox._internal.image_utils import (
++        _release_image_use,
++        evict_least_recently_used_images,
++    )
++
++    monkeypatch.setenv("RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES", "0")
++    local_tar = tmp_path / "sample.tar"
++    _write_sample_tar(local_tar)
++    images_dir = tmp_path / "images"
++
++    extracted_dir = pull_and_extract_container_image(
++        str(local_tar), images_dir=str(images_dir), instance_id="sb-1"
++    )
++    assert os.path.exists(os.path.join(extracted_dir, ".users", "sb-1"))
++    # A cache hit re-pins for another instance.
++    pull_and_extract_container_image(
++        str(local_tar), images_dir=str(images_dir), instance_id="sb-2"
++    )
++    assert os.path.exists(os.path.join(extracted_dir, ".users", "sb-2"))
++
++    evict_least_recently_used_images(str(images_dir), max_bytes=0)
++    assert os.path.exists(extracted_dir)
++
++    _release_image_use(extracted_dir, "sb-1")
++    _release_image_use(extracted_dir, "sb-2")
++    evict_least_recently_used_images(str(images_dir), max_bytes=0)
++    assert not os.path.exists(extracted_dir)
++
++
++def test_image_cache_max_bytes_default_and_env(tmp_path, monkeypatch):
++    import shutil
++
++    from ray.experimental.sandbox._internal.image_utils import image_cache_max_bytes
++
++    monkeypatch.delenv("RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES", raising=False)
++    half_disk = shutil.disk_usage(str(tmp_path)).total // 2
++    assert image_cache_max_bytes(str(tmp_path)) == half_disk
++
++    monkeypatch.setenv("RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES", "12345")
++    assert image_cache_max_bytes(str(tmp_path)) == 12345
++
++    monkeypatch.setenv("RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES", "0")
++    assert image_cache_max_bytes(str(tmp_path)) == 0
++
++    monkeypatch.setenv("RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES", "10G")
++    with patch(
++        "ray.experimental.sandbox._internal.image_utils.logger.warning"
++    ) as warning:
++        assert image_cache_max_bytes(str(tmp_path)) == half_disk
++    warning.assert_called_once_with(
++        "Ignoring %s=%r: expected an integer number of bytes.",
++        "RAY_SANDBOX_IMAGE_CACHE_MAX_BYTES",
++        "10G",
++    )
++
++
+ def test_pull_and_extract_remote_image(tmp_path):
+     images_dir = tmp_path / "images"
+     extracted_dir = pull_and_extract_container_image(
+@@ -217,7 +283,8 @@ def test_pull_and_extract_remote_image(tmp_path):
+     assert os.path.exists(
+         os.path.join(extracted_dir, "rootfs", "bin", "sh")
+     ) or os.path.exists(os.path.join(extracted_dir, "rootfs", "bin", "busybox"))
+-    assert os.path.exists(str(images_dir / "busybox_latest.tar"))
++    # Only the extracted rootfs is cached; no archive doubles its footprint.
++    assert not os.path.exists(str(images_dir / "busybox_latest.tar"))
+ 
+ 
+ def test_pull_and_extract_docker_io_prefixed_image(tmp_path):

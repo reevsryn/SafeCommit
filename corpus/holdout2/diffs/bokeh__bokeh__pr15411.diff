@@ -1,0 +1,227 @@
+diff --git a/.github/workflows/bokeh-ci.yml b/.github/workflows/bokeh-ci.yml
+index 38540dd2222..1992086674a 100644
+--- a/.github/workflows/bokeh-ci.yml
++++ b/.github/workflows/bokeh-ci.yml
+@@ -1,6 +1,6 @@
+ name: Bokeh-CI
+ 
+-# Standard testing for faster feedback on common configurations
++# Standard testing for pull requests and protected branches
+ # Runs unit tests on latest Python across all platforms, everything else on Linux only
+ 
+ on:
+@@ -9,11 +9,12 @@ on:
+       - main
+       - branch-*
+   pull_request:
+-    types: [opened, synchronize, reopened, labeled]
++    types: [opened, synchronize, reopened]
++  merge_group:
++    types: [checks_requested]
+ 
+ concurrency:
+-  # Unrelated label events still start the workflow, but must not cancel active CI.
+-  group: ${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:full' && github.run_id || github.event.pull_request.number || github.ref }}
++  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+ 
+ defaults:
+@@ -42,17 +43,13 @@ jobs:
+ 
+     steps:
+       - uses: actions/checkout@v6
+-        if: >-
+-          github.event_name == 'pull_request' &&
+-          (github.event.action != 'labeled' || github.event.label.name == 'ci:full')
++        if: github.event_name == 'pull_request'
+         with:
+           fetch-depth: 0
+           ref: ${{ github.event.pull_request.head.sha }}
+ 
+       - name: Classify changed paths
+-        if: >-
+-          github.event_name == 'pull_request' &&
+-          (github.event.action != 'labeled' || github.event.label.name == 'ci:full')
++        if: github.event_name == 'pull_request'
+         id: filter
+         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
+         with:
+@@ -65,11 +62,8 @@ jobs:
+         id: full
+         if: >-
+           github.event_name != 'pull_request' ||
+-          (github.event.action == 'labeled' && github.event.label.name == 'ci:full') ||
+-          (github.event.action != 'labeled' &&
+-            (contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+-             steps.filter.outputs.full == 'true' ||
+-             steps.filter.outputs.ci == 'true'))
++          steps.filter.outputs.full == 'true' ||
++          steps.filter.outputs.ci == 'true'
+         run: echo "selected=true" >> "$GITHUB_OUTPUT"
+ 
+   build:
+diff --git a/.github/workflows/bokehjs-ci.yml b/.github/workflows/bokehjs-ci.yml
+index 524ec36eedb..c91aaaa3944 100644
+--- a/.github/workflows/bokehjs-ci.yml
++++ b/.github/workflows/bokehjs-ci.yml
+@@ -6,11 +6,12 @@ on:
+       - main
+       - branch-*
+   pull_request:
+-    types: [opened, synchronize, reopened, labeled]
++    types: [opened, synchronize, reopened]
++  merge_group:
++    types: [checks_requested]
+ 
+ concurrency:
+-  # Unrelated label events still start the workflow, but must not cancel active CI.
+-  group: ${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:full' && github.run_id || github.event.pull_request.number || github.ref }}
++  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+ 
+ env:
+@@ -31,17 +32,13 @@ jobs:
+ 
+     steps:
+       - uses: actions/checkout@v6
+-        if: >-
+-          github.event_name == 'pull_request' &&
+-          (github.event.action != 'labeled' || github.event.label.name == 'ci:full')
++        if: github.event_name == 'pull_request'
+         with:
+           fetch-depth: 0
+           ref: ${{ github.event.pull_request.head.sha }}
+ 
+       - name: Classify changed paths
+-        if: >-
+-          github.event_name == 'pull_request' &&
+-          (github.event.action != 'labeled' || github.event.label.name == 'ci:full')
++        if: github.event_name == 'pull_request'
+         id: filter
+         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
+         with:
+@@ -54,11 +51,8 @@ jobs:
+         id: full
+         if: >-
+           github.event_name != 'pull_request' ||
+-          (github.event.action == 'labeled' && github.event.label.name == 'ci:full') ||
+-          (github.event.action != 'labeled' &&
+-            (contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+-             steps.filter.outputs.full == 'true' ||
+-             steps.filter.outputs.ci == 'true'))
++          steps.filter.outputs.full == 'true' ||
++          steps.filter.outputs.ci == 'true'
+         run: echo "selected=true" >> "$GITHUB_OUTPUT"
+ 
+   test:
+diff --git a/.github/workflows/codeql-analysis.yml b/.github/workflows/codeql-analysis.yml
+index b04f4492805..0047bcaaf08 100644
+--- a/.github/workflows/codeql-analysis.yml
++++ b/.github/workflows/codeql-analysis.yml
+@@ -14,6 +14,8 @@ on:
+       - '.github/codeql/**'
+       - '.github/codeql-path-filters.yml'
+       - '.github/workflows/codeql-analysis.yml'
++  merge_group:
++    types: [checks_requested]
+ 
+ jobs:
+   changes:
+diff --git a/tests/codebase/test_ci_workflows.py b/tests/codebase/test_ci_workflows.py
+new file mode 100644
+index 00000000000..3500d524961
+--- /dev/null
++++ b/tests/codebase/test_ci_workflows.py
+@@ -0,0 +1,92 @@
++# -----------------------------------------------------------------------------
++# Copyright (c) Anaconda, Inc., and Bokeh Contributors.
++# All rights reserved.
++#
++# The full license is in the file LICENSE.txt, distributed with this software.
++# -----------------------------------------------------------------------------
++
++from __future__ import annotations
++
++# Standard library imports
++from typing import Any
++
++# External imports
++import pytest
++import yaml
++
++# Bokeh imports
++# Bokeh test imports
++from tests.support.util.project import TOP_PATH
++
++WORKFLOWS = {
++    "bokeh-ci.yml": "Bokeh-CI / result",
++    "bokehjs-ci.yml": "BokehJS-CI / result",
++}
++
++ROUTED_JOBS = {
++    "bokeh-ci.yml": {
++        "build": "build",
++        "codebase": "codebase",
++        "tools": "tools",
++        "typing": "typing",
++        "examples": "examples",
++        "unit-test": "unit_test",
++        "minimal-deps": "minimal_deps",
++        "core-deps": "core_deps",
++        "documentation": "documentation",
++    },
++    "bokehjs-ci.yml": {
++        "test": "bokehjs",
++    },
++}
++
++
++def _load_workflow(filename: str) -> dict[str, Any]:
++    with open(TOP_PATH / ".github" / "workflows" / filename) as f:
++        return yaml.load(f, Loader=yaml.BaseLoader)
++
++
++@pytest.mark.parametrize("filename", WORKFLOWS)
++def test_standard_ci_uses_unambiguous_pr_and_merge_group_events(filename: str) -> None:
++    workflow = _load_workflow(filename)
++    events = workflow["on"]
++
++    assert events["pull_request"]["types"] == ["opened", "synchronize", "reopened"]
++    assert events["merge_group"]["types"] == ["checks_requested"]
++
++    concurrency = workflow["concurrency"]
++    assert concurrency["group"] == "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
++    assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
++
++
++@pytest.mark.parametrize(("filename", "result_name"), WORKFLOWS.items())
++def test_standard_ci_routes_paths_without_label_overrides(filename: str, result_name: str) -> None:
++    workflow = _load_workflow(filename)
++    jobs = workflow["jobs"]
++    changes = jobs["changes"]
++    result = jobs["result"]
++
++    classifier = next(step for step in changes["steps"] if step.get("name") == "Classify changed paths")
++    assert classifier["with"]["filters"] == ".github/ci-path-filters.yml"
++
++    select_full = next(step for step in changes["steps"] if step.get("name") == "Select full CI")
++    assert "label" not in select_full["if"]
++    assert "github.event_name != 'pull_request'" in select_full["if"]
++    assert "steps.filter.outputs.full == 'true'" in select_full["if"]
++    assert "steps.filter.outputs.ci == 'true'" in select_full["if"]
++
++    for job_name, output in ROUTED_JOBS[filename].items():
++        assert f"needs.changes.outputs.{output} == 'true'" in jobs[job_name]["if"]
++
++    assert result["name"] == result_name
++    assert set(result["needs"]) == set(jobs) - {"result"}
++
++    aggregate = next(step for step in result["steps"] if step["name"] == "Require every selected job to pass")
++    assert 'changes.result == "success"' in aggregate["run"]
++    assert 'result == "skipped"' in aggregate["run"]
++
++
++def test_codeql_runs_for_merge_groups() -> None:
++    workflow = _load_workflow("codeql-analysis.yml")
++
++    assert workflow["on"]["merge_group"]["types"] == ["checks_requested"]

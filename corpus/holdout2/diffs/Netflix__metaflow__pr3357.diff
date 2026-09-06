@@ -1,0 +1,45 @@
+diff --git a/metaflow/plugins/metadata_providers/service.py b/metaflow/plugins/metadata_providers/service.py
+index c9db2a31822..1616d143d76 100644
+--- a/metaflow/plugins/metadata_providers/service.py
++++ b/metaflow/plugins/metadata_providers/service.py
+@@ -363,7 +363,9 @@ def filter_tasks_by_metadata(
+             if field_name:
+                 query_params["metadata_field_name"] = field_name
+             if pattern:
+-                query_params["pattern"] = pattern
++                # The service performs an unanchored regex search, so anchor the
++                # pattern to match the local provider's fullmatch behavior.
++                query_params["pattern"] = "^(?:%s)$" % pattern
+ 
+         url = ServiceMetadataProvider._obj_path(flow_name, run_id, step_name)
+         url = f"{url}/filtered_tasks?{urlencode(query_params)}"
+diff --git a/test/unit/test_service_metadata_provider.py b/test/unit/test_service_metadata_provider.py
+new file mode 100644
+index 00000000000..568f4cc3516
+--- /dev/null
++++ b/test/unit/test_service_metadata_provider.py
+@@ -0,0 +1,24 @@
++from urllib.parse import parse_qs, urlparse
++
++from metaflow.plugins.metadata_providers.service import ServiceMetadataProvider
++
++
++def test_filter_tasks_by_metadata_anchors_patterns(monkeypatch):
++    captured = {}
++
++    def fake_request(cls, callback, url, method, *args, **kwargs):
++        captured["url"] = url
++        return [], None
++
++    monkeypatch.setattr(ServiceMetadataProvider, "_request", classmethod(fake_request))
++
++    def forwarded_pattern(pattern):
++        ServiceMetadataProvider.filter_tasks_by_metadata(
++            "Flow", "run", "middle", "foreach-execution-path", pattern
++        )
++        query = parse_qs(urlparse(captured["url"]).query)
++        return query.get("pattern", [None])[0]
++
++    assert forwarded_pattern("middle:1") == "^(?:middle:1)$"
++    assert forwarded_pattern("middle:1,.*") == "^(?:middle:1,.*)$"
++    assert forwarded_pattern(".*") is None

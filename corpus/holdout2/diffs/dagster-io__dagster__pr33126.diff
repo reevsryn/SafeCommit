@@ -1,0 +1,1238 @@
+diff --git a/docs/docs/integrations/libraries/aws/component.md b/docs/docs/integrations/libraries/aws/component.md
+new file mode 100644
+index 0000000000000..a348025335308
+--- /dev/null
++++ b/docs/docs/integrations/libraries/aws/component.md
+@@ -0,0 +1,86 @@
++---
++title: AWS Components
++sidebar_label: Components
++sidebar_position: 1
++description: Configuration-driven AWS resources using Dagster Components.
++tags: [dagster-supported, aws, components]
++---
++
++<p>{frontMatter.description}</p>
++
++The `dagster-aws` library provides a set of components that allow you to configure AWS resources directly in YAML. These components wrap existing `dagster-aws` resources, enabling faster setup and better reusability.
++
++## Installation
++
++<PackageInstallInstructions packageName="dagster-aws" />
++
++## Credentials configuration
++
++All AWS components use a unified credential resolution pattern. You can provide credentials **inline** or **reference** a standalone component.
++
++### Shared Credential Components
++
++- **`Boto3CredentialsComponent`**: Standard AWS SDK (Boto3) configuration.
++- **`S3CredentialsComponent`**: Specialized for S3, including unsigned session support.
++- **`AthenaCredentialsComponent`**: Athena-specific settings (workgroups, polling).
++- **`RedshiftCredentialsComponent`**: Redshift connection settings (host, port, sslmode).
++
++## Service Components
++
++### Amazon S3
++
++Components for interacting with S3 buckets and managing files.
++
++- **`S3ResourceComponent`**: Provides a standard `S3Resource`.
++- **`S3FileManagerComponent`**: Provides an `S3FileManager` for artifact storage.
++
++### AWS Systems Manager (SSM)
++
++Manage configurations and parameters.
++
++- **`SSMResourceComponent`**: Standard client for SSM operations.
++- **`ParameterStoreResourceComponent`**: Fetches parameters and supports nested `ParameterStoreTag` objects.
++
++### AWS Secrets Manager
++
++Manage and fetch secrets securely.
++
++- **`SecretsManagerResourceComponent`**: General client for Secrets Manager.
++- **`SecretsManagerSecretsResourceComponent`**: Efficiently fetches specific secret ARNs.
++
++### Database and Query Services
++
++- **`AthenaClientResourceComponent`**: Executes SQL queries via Amazon Athena.
++- **`RedshiftClientResourceComponent`**: Connects to and queries Amazon Redshift.
++- **`RDSResourceComponent`**: Interacts with Amazon RDS instances.
++
++### Container Registry
++
++- **`ECRPublicResourceComponent`**: Retrieves login passwords for AWS Public ECR.
++
++## Examples
++
++### Inline Credentials
++
++Perfect for simple setups where credentials are used by a single service.
++
++```yaml
++type: dagster_aws.ParameterStoreResourceComponent
++attributes:
++  credentials:
++    region_name: us-west-2
++  parameters:
++    - /myapp/db/password
++  resource_key: parameter_store
++```
++
++### Component Referencing
++
++Best for production environments where credentials are shared across multiple services.
++
++```yaml
++type: dagster_aws.S3ResourceComponent
++attributes:
++  credentials: "{{ context.load_component('shared/aws_credentials') }}"
++  resource_key: s3
++```
+diff --git a/docs/sphinx/sections/integrations/libraries/aws/dagster-aws.rst b/docs/sphinx/sections/integrations/libraries/aws/dagster-aws.rst
+index 1e2af8d186d21..ea844ac320069 100644
+--- a/docs/sphinx/sections/integrations/libraries/aws/dagster-aws.rst
++++ b/docs/sphinx/sections/integrations/libraries/aws/dagster-aws.rst
+@@ -148,6 +148,45 @@ Clients
+ 
+ .. autoclass:: dagster_aws.pipes.PipesEMRServerlessClient
+ 
++Components
++----------
++
++Resource components for use with Dagster's component system.
++
++Credentials Components
++^^^^^^^^^^^^^^^^^^^^^^
++
++.. autoclass:: dagster_aws.Boto3CredentialsComponent
++
++.. autoclass:: dagster_aws.S3CredentialsComponent
++
++.. autoclass:: dagster_aws.AthenaCredentialsComponent
++
++.. autoclass:: dagster_aws.redshift.RedshiftCredentialsComponent
++
++Resource Components
++^^^^^^^^^^^^^^^^^^^
++
++.. autoclass:: dagster_aws.S3ResourceComponent
++
++.. autoclass:: dagster_aws.S3FileManagerResourceComponent
++
++.. autoclass:: dagster_aws.AthenaClientResourceComponent
++
++.. autoclass:: dagster_aws.redshift.RedshiftClientResourceComponent
++
++.. autoclass:: dagster_aws.SSMResourceComponent
++
++.. autoclass:: dagster_aws.ParameterStoreResourceComponent
++
++.. autoclass:: dagster_aws.SecretsManagerResourceComponent
++
++.. autoclass:: dagster_aws.SecretsManagerSecretsResourceComponent
++
++.. autoclass:: dagster_aws.RDSResourceComponent
++
++.. autoclass:: dagster_aws.ECRPublicResourceComponent
++
+ Legacy
+ --------
+ 
+diff --git a/python_modules/automation/automation/dagster_docs/exclude_lists.py b/python_modules/automation/automation/dagster_docs/exclude_lists.py
+index c9e02dcbe14ba..f0cbd293051f8 100644
+--- a/python_modules/automation/automation/dagster_docs/exclude_lists.py
++++ b/python_modules/automation/automation/dagster_docs/exclude_lists.py
+@@ -78,6 +78,13 @@
+     "dagster.SqlComponent",
+     # Library components
+     "dagster_snowflake.components.sql_component.component.SnowflakeConnectionComponentBase",
++    # Tableau component - validator uses internal path but it's exported at dagster_tableau.TableauComponent
++    # and documented in RST. The mismatch is due to validator finding it at source path.
++    "dagster_tableau.components.tableau_component.TableauComponent",
++    # Redshift components - validator uses internal path but they're exported at dagster_aws.redshift.*
++    # and documented in RST. The mismatch is due to validator finding them at source path.
++    "dagster_aws.redshift.components.RedshiftCredentialsComponent",
++    "dagster_aws.redshift.components.RedshiftClientResourceComponent",
+     # Component testing utils
+     "dagster.components.testing.utils.DefsFolderSandbox",
+     "dagster.components.testing.utils.create_defs_folder_sandbox",
+@@ -103,6 +110,8 @@
+     "dagster.components.scaffold.scaffold.scaffold_with",
+     "dagster.components.scaffold.scaffold.ScaffoldRequest",
+     "dagster.components.scaffold.scaffold.Scaffolder",
++    # Tableau component - validator uses internal path but it's exported at dagster_tableau.TableauComponent
++    "dagster_tableau.components.tableau_component.TableauComponent",
+ }
+ 
+ # Hardcoded list of all RST symbols missing @public decorators
+@@ -420,8 +429,12 @@
+     # Component testing utils - RST references them without full path
+     "dagster.DefsFolderSandbox",
+     "dagster.create_defs_folder_sandbox",
++    # Tableau component - RST uses top-level path but validator finds @public at internal path
++    "dagster_tableau.TableauComponent",
++    # Redshift components - RST uses top-level path but validator finds @public at internal path
++    "dagster_aws.redshift.RedshiftCredentialsComponent",
++    "dagster_aws.redshift.RedshiftClientResourceComponent",
+ }
+-# Total: 305 symbols
+ 
+ # Modules to exclude from @public scanning
+ EXCLUDE_MODULES_FROM_PUBLIC_SCAN = set()
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/__init__.py b/python_modules/libraries/dagster-aws/dagster_aws/__init__.py
+index 685868c1fc8ac..d940e481feb24 100644
+--- a/python_modules/libraries/dagster-aws/dagster_aws/__init__.py
++++ b/python_modules/libraries/dagster-aws/dagster_aws/__init__.py
+@@ -1,5 +1,19 @@
+ from dagster_shared.libraries import DagsterLibraryRegistry
+ 
++from dagster_aws.components import (
++    AthenaClientResourceComponent as AthenaClientResourceComponent,
++    AthenaCredentialsComponent as AthenaCredentialsComponent,
++    Boto3CredentialsComponent as Boto3CredentialsComponent,
++    ECRPublicResourceComponent as ECRPublicResourceComponent,
++    ParameterStoreResourceComponent as ParameterStoreResourceComponent,
++    RDSResourceComponent as RDSResourceComponent,
++    S3CredentialsComponent as S3CredentialsComponent,
++    S3FileManagerResourceComponent as S3FileManagerResourceComponent,
++    S3ResourceComponent as S3ResourceComponent,
++    SecretsManagerResourceComponent as SecretsManagerResourceComponent,
++    SecretsManagerSecretsResourceComponent as SecretsManagerSecretsResourceComponent,
++    SSMResourceComponent as SSMResourceComponent,
++)
+ from dagster_aws.version import __version__
+ 
+ DagsterLibraryRegistry.register("dagster-aws", __version__)
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/components/__init__.py b/python_modules/libraries/dagster-aws/dagster_aws/components/__init__.py
+new file mode 100644
+index 0000000000000..fcf809027db6a
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/components/__init__.py
+@@ -0,0 +1,22 @@
++from dagster_aws.components.athena import (
++    AthenaClientResourceComponent as AthenaClientResourceComponent,
++)
++from dagster_aws.components.credentials import (
++    AthenaCredentialsComponent as AthenaCredentialsComponent,
++    Boto3CredentialsComponent as Boto3CredentialsComponent,
++    S3CredentialsComponent as S3CredentialsComponent,
++)
++from dagster_aws.components.ecr import ECRPublicResourceComponent as ECRPublicResourceComponent
++from dagster_aws.components.rds import RDSResourceComponent as RDSResourceComponent
++from dagster_aws.components.s3 import (
++    S3FileManagerResourceComponent as S3FileManagerResourceComponent,
++    S3ResourceComponent as S3ResourceComponent,
++)
++from dagster_aws.components.secretsmanager import (
++    SecretsManagerResourceComponent as SecretsManagerResourceComponent,
++    SecretsManagerSecretsResourceComponent as SecretsManagerSecretsResourceComponent,
++)
++from dagster_aws.components.ssm import (
++    ParameterStoreResourceComponent as ParameterStoreResourceComponent,
++    SSMResourceComponent as SSMResourceComponent,
++)
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/components/athena.py b/python_modules/libraries/dagster-aws/dagster_aws/components/athena.py
+new file mode 100644
+index 0000000000000..6ea21e2fd95a6
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/components/athena.py
+@@ -0,0 +1,35 @@
++from functools import cached_property
++from typing import Optional
++
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_aws.athena.resources import AthenaClientResource
++from dagster_aws.components.credentials import AthenaCredentialsComponent
++
++
++@public
++@preview
++class AthenaClientResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides an AthenaClientResource for executing queries against Amazon Athena."""
++
++    credentials: AthenaCredentialsComponent = Field(
++        description="Credentials for connecting to Athena."
++    )
++
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the Athena resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> AthenaClientResource:
++        """Resolves credentials and returns a configured Athena resource."""
++        return AthenaClientResource(**self.credentials.render_as_dict())
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        """Binds the Athena resource to the specified resource key in the definitions."""
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/components/credentials.py b/python_modules/libraries/dagster-aws/dagster_aws/components/credentials.py
+new file mode 100644
+index 0000000000000..d64638987c7c3
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/components/credentials.py
+@@ -0,0 +1,98 @@
++from typing import Optional
++
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import BaseModel, Field
++
++
++class CredentialsRenderMixin:
++    """A mixin to provide shared dictionary rendering logic for AWS credentials."""
++
++    def render_as_dict(self) -> dict:
++        """Returns the credentials as a dictionary, excluding None values."""
++        assert isinstance(self, BaseModel)
++        return self.model_dump(exclude_none=True)
++
++
++@public
++@preview
++class Boto3CredentialsComponent(dg.Component, dg.Resolvable, dg.Model, CredentialsRenderMixin):
++    """Configuration for standard AWS SDK (Boto3) credentials and session settings."""
++
++    region_name: Optional[str] = Field(
++        default=None, description="Specifies a custom region for the Boto3 session"
++    )
++    endpoint_url: Optional[str] = Field(
++        default=None, description="Specifies a custom endpoint for the Boto3 session."
++    )
++    aws_access_key_id: Optional[str] = Field(
++        default=None, description="AWS access key ID to use when creating the boto3 session."
++    )
++    aws_secret_access_key: Optional[str] = Field(
++        default=None, description="AWS secret access key to use when creating the boto3 session."
++    )
++    aws_session_token: Optional[str] = Field(
++        default=None, description="AWS session token to use when creating the boto3 session."
++    )
++    profile_name: Optional[str] = Field(
++        default=None, description="Specifies a profile to connect that session"
++    )
++    use_ssl: bool = Field(
++        default=True, description="Whether or not to use SSL. By default, SSL is used."
++    )
++    verify: Optional[bool] = Field(
++        default=True,
++        description="Whether or not to verify SSL certificates. By default SSL certificates are verified.",
++    )
++    max_attempts: int = Field(
++        default=5,
++        description=(
++            "This provides Boto3's retry handler with a value of maximum retry attempts, where the"
++            " initial call counts toward the max_attempts value that you provide"
++        ),
++    )
++    retry_mode: Optional[str] = Field(
++        default=None, description="Specifies the retry mode to use for the Boto3 session."
++    )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        return dg.Definitions()
++
++
++@public
++@preview
++class S3CredentialsComponent(Boto3CredentialsComponent):
++    """Configuration for S3-specific credentials, including unsigned session support."""
++
++    use_unsigned_session: Optional[bool] = Field(
++        default=None, description="Specifies whether to use an unsigned S3 session."
++    )
++
++
++@public
++@preview
++class AthenaCredentialsComponent(Boto3CredentialsComponent):
++    """Configuration for Athena-specific authentication and query settings."""
++
++    workgroup: Optional[str] = Field(
++        default="primary",
++        description=(
++            "The Athena WorkGroup to use."
++            " https://docs.aws.amazon.com/athena/latest/ug/manage-queries-control-costs-with-workgroups.html"
++        ),
++    )
++    polling_interval: int = Field(
++        default=5,
++        description=(
++            "Time in seconds between checks to see if a query execution is finished. 5 seconds"
++            " by default. Must be non-negative."
++        ),
++    )
++    max_polls: int = Field(
++        default=120,
++        description=(
++            "Number of times to poll before timing out. 120 attempts by default. When coupled"
++            " with the default polling_interval, queries will timeout after 10 minutes (120 * 5"
++            " seconds). Must be greater than 0."
++        ),
++    )
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/components/ecr.py b/python_modules/libraries/dagster-aws/dagster_aws/components/ecr.py
+new file mode 100644
+index 0000000000000..7f51fbf54d58a
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/components/ecr.py
+@@ -0,0 +1,36 @@
++from functools import cached_property
++from typing import Optional
++
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_aws.components.credentials import Boto3CredentialsComponent
++from dagster_aws.ecr import ECRPublicResource
++
++
++@public
++@preview
++class ECRPublicResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides an ECRPublicResource for connecting to AWS Public ECR."""
++
++    credentials: Optional[Boto3CredentialsComponent] = Field(
++        default=None,
++        description="Optional AWS credentials. If not provided, environment defaults will be used.",
++    )
++
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the ECR Public resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> ECRPublicResource:
++        if self.credentials:
++            return ECRPublicResource(**self.credentials.render_as_dict())
++        return ECRPublicResource()
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/components/rds.py b/python_modules/libraries/dagster-aws/dagster_aws/components/rds.py
+new file mode 100644
+index 0000000000000..3576f2e8edd0e
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/components/rds.py
+@@ -0,0 +1,33 @@
++from functools import cached_property
++from typing import Optional
++
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_aws.components.credentials import Boto3CredentialsComponent
++from dagster_aws.rds.resources import RDSResource
++
++
++@public
++@preview
++class RDSResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides an RDSResource for interacting with AWS RDS service."""
++
++    credentials: Boto3CredentialsComponent = Field(
++        description="AWS credentials - inline configuration."
++    )
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the RDS resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> RDSResource:
++        """Resolves credentials and returns a configured RDS resource."""
++        return RDSResource(**self.credentials.render_as_dict())
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/components/s3.py b/python_modules/libraries/dagster-aws/dagster_aws/components/s3.py
+new file mode 100644
+index 0000000000000..f654bd3ff27f3
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/components/s3.py
+@@ -0,0 +1,67 @@
++from functools import cached_property
++from typing import Optional
++
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_aws.components.credentials import S3CredentialsComponent
++from dagster_aws.s3.resources import S3FileManagerResource, S3Resource
++
++
++@public
++@preview
++class S3ResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides an S3Resource for interacting with AWS S3."""
++
++    credentials: S3CredentialsComponent = Field(description="Credentials for connecting to S3.")
++
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the S3 resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> S3Resource:
++        """Resolves credentials and returns a configured S3 resource."""
++        return S3Resource(**self.credentials.render_as_dict())
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
++
++
++@public
++@preview
++class S3FileManagerResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides an S3FileManagerResource for file management operations on AWS S3."""
++
++    s3_bucket: str = Field(description="S3 bucket to use for the file manager.")
++    s3_prefix: str = Field(
++        default="dagster", description="Prefix to use for the S3 bucket for this file manager."
++    )
++
++    credentials: S3CredentialsComponent = Field(description="Credentials for connecting to S3.")
++
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the S3FileManager resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> S3FileManagerResource:
++        """Resolves credentials and returns a configured S3FileManagerResource."""
++        return S3FileManagerResource(
++            s3_bucket=self.s3_bucket, s3_prefix=self.s3_prefix, **self.credentials.render_as_dict()
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
++
++
++S3ResourceComponent.model_rebuild()
++
++S3FileManagerResourceComponent.model_rebuild()
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/components/secretsmanager.py b/python_modules/libraries/dagster-aws/dagster_aws/components/secretsmanager.py
+new file mode 100644
+index 0000000000000..394dc8690d47a
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/components/secretsmanager.py
+@@ -0,0 +1,71 @@
++from functools import cached_property
++from typing import Optional
++
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_aws.components.credentials import Boto3CredentialsComponent
++from dagster_aws.secretsmanager.resources import (
++    SecretsManagerResource,
++    SecretsManagerSecretsResource,
++)
++
++
++@public
++@preview
++class SecretsManagerResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a SecretsManagerResource for interacting with AWS Secrets Manager."""
++
++    credentials: Boto3CredentialsComponent = Field(
++        description="AWS credentials - inline configuration."
++    )
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the SecretsManager resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> SecretsManagerResource:
++        """Resolves credentials and returns a configured SecretsManager resource."""
++        return SecretsManagerResource(**self.credentials.render_as_dict())
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
++
++
++@public
++@preview
++class SecretsManagerSecretsResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a SecretsManagerSecretsResource for fetching secrets from AWS Secrets Manager."""
++
++    credentials: Boto3CredentialsComponent = Field(
++        description="AWS credentials - inline configuration."
++    )
++    secrets: list[str] = Field(
++        default=[], description="An array of AWS Secrets Manager secrets ARNs to fetch."
++    )
++    secrets_tag: Optional[str] = Field(
++        default=None,
++        description="AWS Secrets Manager secrets with this tag will be fetched and made available.",
++    )
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the SecretsManagerSecrets resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> SecretsManagerSecretsResource:
++        creds_data = self.credentials.render_as_dict()
++        return SecretsManagerSecretsResource(
++            **creds_data,
++            secrets=self.secrets,
++            secrets_tag=self.secrets_tag,
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/components/ssm.py b/python_modules/libraries/dagster-aws/dagster_aws/components/ssm.py
+new file mode 100644
+index 0000000000000..60e1cf98423b5
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/components/ssm.py
+@@ -0,0 +1,79 @@
++from functools import cached_property
++from typing import Optional
++
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import Field
++
++from dagster_aws.components.credentials import Boto3CredentialsComponent
++from dagster_aws.ssm.resources import ParameterStoreResource, ParameterStoreTag, SSMResource
++
++
++@public
++@preview
++class SSMResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a SSMResource for interacting with AWS Systems Manager."""
++
++    credentials: Boto3CredentialsComponent = Field(
++        description="AWS credentials - inline configuration."
++    )
++    resource_key: Optional[str] = Field(
++        default=None, description="The key under which the resource will be bound in definitions."
++    )
++
++    @cached_property
++    def resource(self) -> SSMResource:
++        """Resolves credentials and returns a configured SSM resource."""
++        return SSMResource(**self.credentials.render_as_dict())
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
++
++
++@public
++@preview
++class ParameterStoreResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a ParameterStoreResource for fetching parameters from AWS SSM Parameter Store."""
++
++    credentials: Boto3CredentialsComponent = Field(
++        description="AWS credentials - inline configuration."
++    )
++
++    parameters: list[str] = Field(
++        default=[],
++        description="AWS SSM Parameter store parameters with this tag will be fetched and made available.",
++    )
++
++    parameter_tags: list[ParameterStoreTag] = Field(
++        default=[],
++        description="AWS SSM Parameter store parameters with this tag will be fetched and made available.",
++    )
++
++    parameter_paths: list[str] = Field(
++        default=[], description="List of path prefixes to pull parameters from."
++    )
++    with_decryption: bool = Field(
++        default=False, description="Whether to decrypt secure string parameters."
++    )
++
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the ParameterStore resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> ParameterStoreResource:
++        return ParameterStoreResource(
++            **self.credentials.render_as_dict(),
++            parameters=self.parameters,
++            parameter_paths=self.parameter_paths,
++            parameter_tags=self.parameter_tags,
++            with_decryption=self.with_decryption,
++        )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/redshift/__init__.py b/python_modules/libraries/dagster-aws/dagster_aws/redshift/__init__.py
+index 8375307d8d507..e7ed5c5b458fe 100644
+--- a/python_modules/libraries/dagster-aws/dagster_aws/redshift/__init__.py
++++ b/python_modules/libraries/dagster-aws/dagster_aws/redshift/__init__.py
+@@ -1,3 +1,7 @@
++from dagster_aws.redshift.components import (
++    RedshiftClientResourceComponent as RedshiftClientResourceComponent,
++    RedshiftCredentialsComponent as RedshiftCredentialsComponent,
++)
+ from dagster_aws.redshift.resources import (
+     FakeRedshiftClient as FakeRedshiftClient,
+     FakeRedshiftClientResource as FakeRedshiftClientResource,
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/redshift/components.py b/python_modules/libraries/dagster-aws/dagster_aws/redshift/components.py
+new file mode 100644
+index 0000000000000..0e57082ebff02
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws/redshift/components.py
+@@ -0,0 +1,73 @@
++from functools import cached_property
++from typing import Optional
++
++import dagster as dg
++from dagster._annotations import preview, public
++from pydantic import BaseModel, Field
++
++from dagster_aws.redshift.resources import RedshiftClientResource
++
++
++class CredentialsRenderMixin:
++    """A mixin to provide shared dictionary rendering logic for AWS credentials."""
++
++    def render_as_dict(self) -> dict:
++        """Returns the credentials as a dictionary, excluding None values."""
++        assert isinstance(self, BaseModel)
++        return self.model_dump(exclude_none=True)
++
++
++@public
++@preview
++class RedshiftCredentialsComponent(dg.Component, dg.Resolvable, dg.Model, CredentialsRenderMixin):
++    """Credentials and connection configuration for Redshift."""
++
++    host: Optional[str] = Field(default=None, description="Redshift host")
++    port: int = Field(default=5439, description="Redshift port")
++    user: Optional[str] = Field(default=None, description="Username for Redshift connection")
++    password: Optional[str] = Field(default=None, description="Password for Redshift connection")
++    database: Optional[str] = Field(
++        default=None,
++        description=(
++            "Name of the default database to use. After login, you can use USE DATABASE to change"
++            " the database."
++        ),
++    )
++    autocommit: Optional[bool] = Field(default=None, description="Whether to autocommit queries")
++    connect_timeout: int = Field(
++        default=5, description="Timeout for connection to Redshift cluster. Defaults to 5 seconds."
++    )
++    sslmode: Optional[str] = Field(
++        default="require",
++        description=(
++            "SSL mode to use. See the Redshift documentation for reference:"
++            " https://docs.aws.amazon.com/redshift/latest/mgmt/connecting-ssl-support.html"
++        ),
++    )
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        return dg.Definitions()
++
++
++@public
++@preview
++class RedshiftClientResourceComponent(dg.Component, dg.Resolvable, dg.Model):
++    """A component that provides a RedshiftClientResource for connecting to and querying Amazon Redshift."""
++
++    credentials: RedshiftCredentialsComponent = Field(
++        description="Redshift credentials - inline configuration."
++    )
++    resource_key: Optional[str] = Field(
++        default=None,
++        description="The key under which the Redshift resource will be bound to the definitions.",
++    )
++
++    @cached_property
++    def resource(self) -> RedshiftClientResource:
++        """Resolves credentials and returns a configured Redshift resource."""
++        return RedshiftClientResource(**self.credentials.render_as_dict())
++
++    def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
++        if self.resource_key is None:
++            return dg.Definitions()
++        return dg.Definitions(resources={self.resource_key: self.resource})
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws/ssm/resources.py b/python_modules/libraries/dagster-aws/dagster_aws/ssm/resources.py
+index 64ad0d761ee0c..7c13d9b09adae 100644
+--- a/python_modules/libraries/dagster-aws/dagster_aws/ssm/resources.py
++++ b/python_modules/libraries/dagster-aws/dagster_aws/ssm/resources.py
+@@ -2,6 +2,7 @@
+ from contextlib import contextmanager
+ from typing import TYPE_CHECKING, Any, Optional, cast
+ 
++import dagster as dg
+ from dagster import (
+     Config,
+     Field as LegacyDagsterField,
+@@ -136,7 +137,7 @@ def example_job():
+ 
+ 
+ @beta
+-class ParameterStoreTag(Config):
++class ParameterStoreTag(dg.Resolvable, Config):
+     key: str = Field(description="Tag key to search for.")
+     values: Optional[list[str]] = Field(default=None, description="List")
+ 
+diff --git a/python_modules/libraries/dagster-aws/dagster_aws_tests/components_tests/test_components.py b/python_modules/libraries/dagster-aws/dagster_aws_tests/components_tests/test_components.py
+new file mode 100644
+index 0000000000000..69d925e625b9b
+--- /dev/null
++++ b/python_modules/libraries/dagster-aws/dagster_aws_tests/components_tests/test_components.py
+@@ -0,0 +1,409 @@
++from typing import get_args, get_origin
++
++import pytest
++from dagster._utils.test.definitions import scoped_definitions_load_context
++from dagster.components.testing import create_defs_folder_sandbox
++
++from dagster_aws.athena.resources import AthenaClientResource, ResourceWithAthenaConfig
++from dagster_aws.components import (
++    AthenaClientResourceComponent,
++    AthenaCredentialsComponent,
++    Boto3CredentialsComponent,
++    ECRPublicResourceComponent,
++    ParameterStoreResourceComponent,
++    RDSResourceComponent,
++    S3CredentialsComponent,
++    S3FileManagerResourceComponent,
++    S3ResourceComponent,
++    SecretsManagerResourceComponent,
++    SecretsManagerSecretsResourceComponent,
++    SSMResourceComponent,
++)
++from dagster_aws.ecr import ECRPublicResource
++from dagster_aws.rds.resources import RDSResource
++from dagster_aws.redshift import RedshiftClientResourceComponent, RedshiftCredentialsComponent
++from dagster_aws.redshift.resources import RedshiftClientResource
++from dagster_aws.s3.resources import S3FileManagerResource, S3Resource
++from dagster_aws.secretsmanager.resources import (
++    SecretsManagerResource,
++    SecretsManagerSecretsResource,
++)
++from dagster_aws.ssm.resources import ParameterStoreResource, SSMResource
++from dagster_aws.utils import ResourceWithBoto3Configuration
++
++# --- Field Sync Tests ---
++
++
++@pytest.mark.parametrize(
++    "component_class, resource_class",
++    [
++        (Boto3CredentialsComponent, ResourceWithBoto3Configuration),
++        (S3CredentialsComponent, S3Resource),
++        (AthenaCredentialsComponent, ResourceWithAthenaConfig),
++        (RedshiftCredentialsComponent, RedshiftClientResource),
++        (S3ResourceComponent, S3Resource),
++        (S3FileManagerResourceComponent, S3FileManagerResource),
++        (AthenaClientResourceComponent, AthenaClientResource),
++        (RedshiftClientResourceComponent, RedshiftClientResource),
++        (SSMResourceComponent, SSMResource),
++        (ParameterStoreResourceComponent, ParameterStoreResource),
++        (SecretsManagerResourceComponent, SecretsManagerResource),
++        (SecretsManagerSecretsResourceComponent, SecretsManagerSecretsResource),
++        (RDSResourceComponent, RDSResource),
++        (ECRPublicResourceComponent, ECRPublicResource),
++    ],
++)
++def test_component_fields_sync_with_resource(component_class, resource_class):
++    """Validates that component configuration schemas are fully synchronized with their underlying resource definitions."""
++    component_fields = set(component_class.model_fields.keys())
++
++    if "credentials" in component_class.model_fields:
++        creds_field = component_class.model_fields["credentials"]
++        creds_annotation = creds_field.annotation
++        origin = get_origin(creds_annotation)
++        if origin:
++            args = get_args(creds_annotation)
++            actual_creds_class = next((arg for arg in args if hasattr(arg, "model_fields")), None)
++        else:
++            actual_creds_class = creds_annotation
++
++        if actual_creds_class and hasattr(actual_creds_class, "model_fields"):
++            component_fields.update(actual_creds_class.model_fields.keys())
++
++    resource_fields = set(resource_class.model_fields.keys())
++    missing = resource_fields - component_fields
++    assert resource_fields.issubset(component_fields), (
++        f"Missing fields in {component_class.__name__}: {missing}"
++    )
++
++
++# --- S3 Component Tests ---
++
++
++def test_s3_component_integration(monkeypatch):
++    """Verifies successful instantiation of S3Resource from YAML with environment variable resolution."""
++    monkeypatch.setenv("AWS_REGION", "us-east-1")
++    monkeypatch.setenv("MAX_ATTEMPTS", "5")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=S3ResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.S3ResourceComponent",
++                "attributes": {
++                    "credentials": {
++                        "region_name": "{{ env.AWS_REGION }}",
++                        "max_attempts": "{{ env.MAX_ATTEMPTS }}",
++                    },
++                    "resource_key": "my_s3",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert isinstance(defs.resources["my_s3"], S3Resource)
++                assert defs.resources["my_s3"].region_name == "us-east-1"
++                assert defs.resources["my_s3"].max_attempts == 5
++
++
++def test_s3_no_resource_key():
++    """Verifies that when resource_key is not provided, the resources dict is empty."""
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=S3ResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.S3ResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "us-east-1"},
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources == {}
++
++
++def test_s3_explicit_key():
++    """Verifies that the component registers correctly when resource_key is provided."""
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=S3ResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.S3ResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "us-east-1"},
++                    "resource_key": "s3",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert "s3" in defs.resources
++                assert isinstance(defs.resources["s3"], S3Resource)
++
++
++def test_s3_file_manager_integration(monkeypatch):
++    """Validates S3FileManagerResourceComponent instantiation and parameter mapping."""
++    monkeypatch.setenv("AWS_REGION", "us-east-1")
++    monkeypatch.setenv("MY_BUCKET", "test-bucket-artifacts")
++    monkeypatch.setenv("MY_PREFIX", "dagster/logs")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=S3FileManagerResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.S3FileManagerResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "{{ env.AWS_REGION }}"},
++                    "s3_bucket": "{{ env.MY_BUCKET }}",
++                    "s3_prefix": "{{ env.MY_PREFIX }}",
++                    "resource_key": "my_file_manager",
++                },
++            },
++        )
++
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert "my_file_manager" in defs.resources
++                resource = defs.resources["my_file_manager"]
++                assert isinstance(resource, S3FileManagerResource)
++                assert resource.s3_bucket == "test-bucket-artifacts"
++                assert resource.s3_prefix == "dagster/logs"
++                assert resource.region_name == "us-east-1"
++
++
++# --- Athena Component Tests ---
++
++
++def test_athena_component_integration(monkeypatch):
++    """Verifies AthenaClientResource loading with nested credentials configuration."""
++    monkeypatch.setenv("ATHENA_WORKGROUP", "primary")
++    monkeypatch.setenv("AWS_REGION", "us-west-2")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=AthenaClientResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.AthenaClientResourceComponent",
++                "attributes": {
++                    "credentials": {
++                        "region_name": "{{ env.AWS_REGION }}",
++                        "workgroup": "{{ env.ATHENA_WORKGROUP }}",
++                    },
++                    "resource_key": "athena",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert defs.resources["athena"].workgroup == "primary"
++
++
++# --- Redshift Component Tests ---
++
++
++def test_redshift_component_integration(monkeypatch):
++    """Verifies RedshiftClientResource loading and type conversion (string env vars to integer ports)."""
++    monkeypatch.setenv("REDSHIFT_HOST", "cluster.redshift.amazonaws.com")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=RedshiftClientResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.redshift.RedshiftClientResourceComponent",
++                "attributes": {
++                    "credentials": {
++                        "host": "{{ env.REDSHIFT_HOST }}",
++                        "port": 5439,
++                        "database": "dev",
++                        "user": "admin",
++                    },
++                    "resource_key": "redshift",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert defs.resources["redshift"].host == "cluster.redshift.amazonaws.com"
++                assert defs.resources["redshift"].port == 5439
++
++
++# --- SSM Component Tests ---
++
++
++def test_ssm_component_integration(monkeypatch):
++    """Verifies SSMResource loading with basic regional configuration."""
++    monkeypatch.setenv("AWS_REGION", "us-east-1")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=SSMResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.SSMResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "{{ env.AWS_REGION }}"},
++                    "resource_key": "ssm",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert defs.resources["ssm"].region_name == "us-east-1"
++
++
++# --- Parameter Store Component Tests ---
++
++
++def test_parameter_store_defaults_behavior():
++    """Verifies that ParameterStoreResource defaults to an empty parameter list when not specified."""
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=ParameterStoreResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.ParameterStoreResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "us-east-1"},
++                    "resource_key": "parameter_store",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert defs.resources["parameter_store"].parameters == []
++
++
++def test_parameter_store_complex_integration(monkeypatch):
++    """Verifies ParameterStoreResource handling of complex types (lists) and boolean flags."""
++    monkeypatch.setenv("AWS_REGION", "us-west-1")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=ParameterStoreResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.ParameterStoreResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "{{ env.AWS_REGION }}"},
++                    "parameters": ["/app/db/password"],
++                    "with_decryption": True,
++                    "resource_key": "parameter_store",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                res = defs.resources["parameter_store"]
++                assert res.region_name == "us-west-1"
++                assert res.parameters == ["/app/db/password"]
++                assert res.with_decryption is True
++
++
++# --- Secrets Manager Component Tests ---
++
++
++def test_secrets_manager_integration(monkeypatch):
++    """Verifies SecretsManagerResource (Client) instantiation from configuration."""
++    monkeypatch.setenv("AWS_REGION", "us-east-1")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=SecretsManagerResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.SecretsManagerResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "{{ env.AWS_REGION }}"},
++                    "resource_key": "secretsmanager",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert isinstance(defs.resources["secretsmanager"], SecretsManagerResource)
++                assert defs.resources["secretsmanager"].region_name == "us-east-1"
++
++
++def test_secrets_manager_secrets_integration(monkeypatch):
++    """Verifies SecretsManagerSecretsResource loads specific secret ARNs correctly from YAML."""
++    monkeypatch.setenv("SECRET_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:db")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=SecretsManagerSecretsResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.SecretsManagerSecretsResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "us-east-1"},
++                    "secrets": ["{{ env.SECRET_ARN }}"],
++                    "resource_key": "my_secrets",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert defs.resources["my_secrets"].secrets == [
++                    "arn:aws:secretsmanager:us-east-1:123:secret:db"
++                ]
++
++
++# --- RDS Component Tests ---
++
++
++def test_rds_component_integration(monkeypatch):
++    """Verifies RDSResource loading with endpoint URL and region configuration."""
++    monkeypatch.setenv("RDS_ENDPOINT", "https://rds.amazonaws.com")
++    monkeypatch.setenv("AWS_REGION", "eu-central-1")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=RDSResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.RDSResourceComponent",
++                "attributes": {
++                    "credentials": {
++                        "endpoint_url": "{{ env.RDS_ENDPOINT }}",
++                        "region_name": "{{ env.AWS_REGION }}",
++                    },
++                    "resource_key": "production_db",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert isinstance(defs.resources["production_db"], RDSResource)
++                assert defs.resources["production_db"].endpoint_url == "https://rds.amazonaws.com"
++
++
++# --- ECR Component Tests ---
++
++
++def test_ecr_public_component_integration(monkeypatch):
++    """Verifies ECRPublicResource instantiation via the Dagster Sandbox."""
++    monkeypatch.setenv("AWS_REGION", "us-east-1")
++
++    with create_defs_folder_sandbox() as sandbox:
++        defs_path = sandbox.scaffold_component(
++            component_cls=ECRPublicResourceComponent,
++            defs_yaml_contents={
++                "type": "dagster_aws.components.ECRPublicResourceComponent",
++                "attributes": {
++                    "credentials": {"region_name": "{{ env.AWS_REGION }}"},
++                    "resource_key": "public_ecr",
++                },
++            },
++        )
++        with scoped_definitions_load_context():
++            with sandbox.load_component_and_build_defs(defs_path=defs_path) as (component, defs):
++                assert defs.resources
++                assert "public_ecr" in defs.resources
++                resource = defs.resources["public_ecr"]
++                assert isinstance(resource, ECRPublicResource)
+diff --git a/python_modules/libraries/dagster-aws/setup.py b/python_modules/libraries/dagster-aws/setup.py
+index dcfa416738ae1..b649f91789968 100644
+--- a/python_modules/libraries/dagster-aws/setup.py
++++ b/python_modules/libraries/dagster-aws/setup.py
+@@ -56,5 +56,10 @@ def get_version() -> str:
+             "s3fs",
+         ],
+     },
++    entry_points={
++        "dagster_dg_cli.registry_modules": [
++            "dagster_aws = dagster_aws.components",
++        ],
++    },
+     zip_safe=False,
+ )

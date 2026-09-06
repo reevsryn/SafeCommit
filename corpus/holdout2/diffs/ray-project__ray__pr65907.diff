@@ -1,0 +1,176 @@
+diff --git a/release/ray_release/buildkite/step.py b/release/ray_release/buildkite/step.py
+index 4e6f288c0bff..5491a57cc7ce 100644
+--- a/release/ray_release/buildkite/step.py
++++ b/release/ray_release/buildkite/step.py
+@@ -63,7 +63,7 @@
+         "automatic": [
+             {
+                 "exit_status": os.environ.get("BUILDKITE_RETRY_CODE", 79),
+-                "limit": os.environ.get("BUILDKITE_MAX_RETRIES", 1),
++                "limit": int(os.environ.get("BUILDKITE_MAX_RETRIES") or 1),
+             }
+         ]
+     },
+@@ -146,10 +146,6 @@ def get_step(
+     if smoke_test:
+         cmd += ["--smoke-test"]
+ 
+-    num_retries = test.get("run", {}).get("num_retries")
+-    if num_retries:
+-        step["retry"]["automatic"][0]["limit"] = num_retries
+-
+     step["commands"] = [" ".join(cmd)]
+ 
+     env_to_use = test.get("env", DEFAULT_ENVIRONMENT)
+@@ -165,6 +161,15 @@ def get_step(
+ 
+     step["env"].update(env_dict)
+ 
++    # Set after the env update above so a per-test environment cannot clobber it.
++    num_retries = test.get("run", {}).get("num_retries")
++    # An explicit 0 disables retries, so it has to be distinguished from unset.
++    if num_retries is not None:
++        step["retry"]["automatic"][0]["limit"] = num_retries
++        # Keep the in-job view of the retry budget aligned with Buildkite's, so
++        # that _is_transient_error knows which attempt is the last one.
++        step["env"]["BUILDKITE_MAX_RETRIES"] = str(num_retries)
++
+     commit = get_test_env_var("RAY_COMMIT")
+     branch = get_test_env_var("RAY_BRANCH")
+     label = commit[:7] if commit else branch
+diff --git a/release/ray_release/tests/test_run_script.py b/release/ray_release/tests/test_run_script.py
+index 71095bd38143..4d49031f6379 100644
+--- a/release/ray_release/tests/test_run_script.py
++++ b/release/ray_release/tests/test_run_script.py
+@@ -133,6 +133,58 @@ def test_parameters(setup):
+     assert "--smoke-test" in data
+ 
+ 
++def test_buildkite_max_retries_is_inherited(tmpdir):
++    """The step publishes the retry budget; the script must not clobber it."""
++    recorder = os.path.join(tmpdir, "recorder.sh")
++    recorded = os.path.join(tmpdir, "recorded.txt")
++    with open(recorder, "wt") as fp:
++        fp.write(f'echo "${{BUILDKITE_MAX_RETRIES:-unset}}" > {recorded}\n')
++
++    test_script = os.path.join(
++        os.path.dirname(__file__), "..", "..", "run_release_test.sh"
++    )
++    env = {
++        **os.environ,
++        "NO_INSTALL": "1",
++        "NO_CLONE": "1",
++        "NO_ARTIFACTS": "1",
++        "OVERRIDE_SLEEP_TIME": "0",
++        "MAX_RETRIES": "1",
++        "RAY_TEST_SCRIPT": f"bash {recorder}",
++        "BUILDKITE_MAX_RETRIES": "3",
++    }
++    subprocess.run(f"{test_script} test_name", shell=True, env=env, check=False)
++
++    with open(recorded, "rt") as fp:
++        assert fp.read().strip() == "3"
++
++
++def test_buildkite_max_retries_defaults_to_one(tmpdir):
++    """Without a published budget the job keeps the historical default."""
++    recorder = os.path.join(tmpdir, "recorder.sh")
++    recorded = os.path.join(tmpdir, "recorded.txt")
++    with open(recorder, "wt") as fp:
++        fp.write(f'echo "${{BUILDKITE_MAX_RETRIES:-unset}}" > {recorded}\n')
++
++    test_script = os.path.join(
++        os.path.dirname(__file__), "..", "..", "run_release_test.sh"
++    )
++    env = {
++        **os.environ,
++        "NO_INSTALL": "1",
++        "NO_CLONE": "1",
++        "NO_ARTIFACTS": "1",
++        "OVERRIDE_SLEEP_TIME": "0",
++        "MAX_RETRIES": "1",
++        "RAY_TEST_SCRIPT": f"bash {recorder}",
++    }
++    env.pop("BUILDKITE_MAX_RETRIES", None)
++    subprocess.run(f"{test_script} test_name", shell=True, env=env, check=False)
++
++    with open(recorded, "rt") as fp:
++        assert fp.read().strip() == "1"
++
++
+ if __name__ == "__main__":
+     import pytest
+ 
+diff --git a/release/ray_release/tests/test_step.py b/release/ray_release/tests/test_step.py
+index b744b9577514..ccd518ee7c90 100644
+--- a/release/ray_release/tests/test_step.py
++++ b/release/ray_release/tests/test_step.py
+@@ -5,7 +5,11 @@
+ import pytest
+ 
+ from ray_release.bazel import bazel_runfile
+-from ray_release.buildkite.step import get_step, get_step_for_test_group
++from ray_release.buildkite.step import (
++    _DEFAULT_STEP_TEMPLATE,
++    get_step,
++    get_step_for_test_group,
++)
+ from ray_release.configs.global_config import init_global_config
+ from ray_release.test import Test
+ 
+@@ -39,12 +43,42 @@ def test_get_step(mock):
+         step = get_step(_stub_test({}), run_id=2)
+     assert step["label"] == "test with spaces (None) (2)"
+     assert step["retry"]["automatic"][0]["limit"] == 3
++    # run_release_test.sh reads this to know whether the current attempt is the
++    # last one, so it has to match the limit Buildkite retries against.
++    assert step["env"]["BUILDKITE_MAX_RETRIES"] == "3"
+     assert "commands" in step
+     first_command = shlex.split(step["commands"][0])
+     assert first_command[0] == "./release/run_release_test.sh"
+     assert first_command[1] == "test with spaces"
+ 
+ 
++@patch("ray_release.test.Test.update_from_s3", return_value=None)
++def test_get_step_without_num_retries(mock):
++    test = _stub_test({"run": {"script": "python test.py", "timeout": 100}})
++    with patch.dict("os.environ", {"RAYCI_BUILD_ID": "a1b2c3d4"}):
++        step = get_step(test, run_id=2)
++    # Neither the buildkite limit nor the in-job budget is overridden; the job
++    # falls back to the default in run_release_test.sh.
++    assert (
++        step["retry"]["automatic"][0]["limit"]
++        == _DEFAULT_STEP_TEMPLATE["retry"]["automatic"][0]["limit"]
++    )
++    assert "BUILDKITE_MAX_RETRIES" not in step["env"]
++
++
++@patch("ray_release.test.Test.update_from_s3", return_value=None)
++def test_get_step_with_zero_num_retries(mock):
++    test = _stub_test(
++        {"run": {"script": "python test.py", "timeout": 100, "num_retries": 0}}
++    )
++    with patch.dict("os.environ", {"RAYCI_BUILD_ID": "a1b2c3d4"}):
++        step = get_step(test, run_id=2)
++    # An explicit 0 disables retries on both sides, rather than being read as
++    # "not configured" and falling back to the default.
++    assert step["retry"]["automatic"][0]["limit"] == 0
++    assert step["env"]["BUILDKITE_MAX_RETRIES"] == "0"
++
++
+ @patch("ray_release.test.Test.update_from_s3", return_value=None)
+ def test_get_step_for_test_group(mock):
+     grouped_tests = {
+diff --git a/release/run_release_test.sh b/release/run_release_test.sh
+index 45370c80f70b..8c734960dfe9 100755
+--- a/release/run_release_test.sh
++++ b/release/run_release_test.sh
+@@ -25,7 +25,7 @@ reason() {
+ 
+ RAY_TEST_SCRIPT=${RAY_TEST_SCRIPT-"python ray_release/scripts/run_release_test.py"}
+ RELEASE_RESULTS_DIR=${RELEASE_RESULTS_DIR-/tmp/artifacts}
+-BUILDKITE_MAX_RETRIES=1
++BUILDKITE_MAX_RETRIES=${BUILDKITE_MAX_RETRIES:-1}
+ BUILDKITE_RETRY_CODE=79
+ BUILDKITE_TIME_LIMIT_FOR_RETRY=10800 # 3 hours
+ 

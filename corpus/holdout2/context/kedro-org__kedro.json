@@ -1,0 +1,224 @@
+{
+ "top_level": [
+  "docs",
+  "features",
+  "kedro",
+  "kedro_benchmarks",
+  "static",
+  "tests",
+  "tools",
+  "{{ cookiecutter.pipeline_name }}",
+  "{{ cookiecutter.python_package }}"
+ ],
+ "siblings": {
+  "": [
+   "docs",
+   "features",
+   "kedro",
+   "kedro_benchmarks",
+   "static",
+   "tests",
+   "tools"
+  ],
+  "docs/extend": [
+   "hooks"
+  ],
+  "features": [
+   "__init__",
+   "environment",
+   "steps",
+   "test_plugin",
+   "test_starter"
+  ],
+  "features/steps": [
+   "__init__",
+   "cli_steps",
+   "sh_run",
+   "util",
+   "validation_steps"
+  ],
+  "kedro": [
+   "__init__",
+   "__main__",
+   "config",
+   "framework",
+   "inspection",
+   "io",
+   "ipython",
+   "logging",
+   "pipeline",
+   "runner",
+   "server",
+   "templates",
+   "utils",
+   "validation"
+  ],
+  "kedro/config": [
+   "__init__",
+   "abstract_config",
+   "omegaconf_config"
+  ],
+  "kedro/framework/context": [
+   "__init__",
+   "catalog_mixins",
+   "context"
+  ],
+  "kedro/framework/project": [
+   "__init__"
+  ],
+  "kedro/framework/session": [
+   "__init__",
+   "abstract_session",
+   "service_session",
+   "session",
+   "store"
+  ],
+  "kedro/inspection": [
+   "__init__",
+   "helper",
+   "models",
+   "snapshot"
+  ],
+  "kedro/io": [
+   "__init__",
+   "cached_dataset",
+   "catalog_config_resolver",
+   "core",
+   "data_catalog",
+   "memory_dataset",
+   "shared_memory_dataset"
+  ],
+  "kedro/ipython": [
+   "__init__"
+  ],
+  "kedro/server": [
+   "__init__",
+   "http_server",
+   "models",
+   "utils"
+  ],
+  "kedro/validation": [
+   "__init__",
+   "api",
+   "core",
+   "exceptions",
+   "model_factory",
+   "pandera_validator",
+   "parameter_validator",
+   "type_extractor",
+   "utils"
+  ],
+  "kedro_benchmarks": [
+   "__init__",
+   "_utils",
+   "benchmark_datacatalog",
+   "benchmark_ocl",
+   "benchmark_runner",
+   "benchmark_service_session",
+   "benchmark_session",
+   "benchmark_validation"
+  ],
+  "tests": [
+   "__init__",
+   "config",
+   "conftest",
+   "framework",
+   "inspection",
+   "io",
+   "ipython",
+   "pipeline",
+   "runner",
+   "server",
+   "test_import",
+   "test_utils",
+   "validation"
+  ],
+  "tests/config": [
+   "__init__",
+   "test_omegaconf_config"
+  ],
+  "tests/framework/context": [
+   "__init__",
+   "test_catalog_commands_mixin",
+   "test_context"
+  ],
+  "tests/framework/project": [
+   "__init__",
+   "test_logging",
+   "test_pipeline_discovery",
+   "test_pipeline_registry",
+   "test_settings"
+  ],
+  "tests/framework/session": [
+   "__init__",
+   "conftest",
+   "test_service_session",
+   "test_session",
+   "test_session_extension_hooks",
+   "test_session_hook_manager",
+   "test_store"
+  ],
+  "tests/inspection": [
+   "__init__",
+   "test_dataset_snapshot",
+   "test_helper",
+   "test_metadata_snapshot",
+   "test_node_pipeline_snapshot",
+   "test_project_snapshot",
+   "test_public_api"
+  ],
+  "tests/io": [
+   "__init__",
+   "conftest",
+   "test_cached_dataset",
+   "test_catalog_config_resolver",
+   "test_core",
+   "test_data_catalog",
+   "test_memory_dataset",
+   "test_shared_memory_dataset"
+  ],
+  "tests/ipython": [
+   "__init__",
+   "conftest",
+   "dummy_function_fixtures",
+   "dummy_multiline_fixtures",
+   "test_ipython"
+  ],
+  "tests/runner": [
+   "__init__",
+   "conftest",
+   "test_only_missing_outputs",
+   "test_parallel_runner",
+   "test_resume_logic",
+   "test_run_generator_node",
+   "test_run_validation",
+   "test_sequential_runner",
+   "test_task",
+   "test_thread_runner"
+  ],
+  "tests/server": [
+   "__init__",
+   "conftest",
+   "test_http_server",
+   "test_run_endpoint",
+   "test_snapshot_endpoint",
+   "test_utils"
+  ],
+  "tests/validation": [
+   "__init__",
+   "conftest",
+   "test_api",
+   "test_catalog_validation",
+   "test_core",
+   "test_exceptions",
+   "test_model_factory",
+   "test_pandera_validator",
+   "test_parameter_validator",
+   "test_type_extractor",
+   "test_utils"
+  ]
+ },
+ "_repo": "kedro-org/kedro",
+ "_ref": "HEAD",
+ "_truncated": false
+}

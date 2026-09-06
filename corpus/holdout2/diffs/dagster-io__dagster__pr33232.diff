@@ -1,0 +1,446 @@
+diff --git a/docs/docs/integrations/libraries/dbt/index.md b/docs/docs/integrations/libraries/dbt/index.md
+index f3840a1aeb9ab..1e65bc25e88f2 100644
+--- a/docs/docs/integrations/libraries/dbt/index.md
++++ b/docs/docs/integrations/libraries/dbt/index.md
+@@ -48,6 +48,9 @@ Then, add the `dagster-dbt` library to the project, along with a duckdb adapter:
+ 
+ ## 2. Set up a dbt project
+ 
++<Tabs groupId="dbt-project-location">
++<TabItem value="colocate" label="Colocate with Dagster">
++
+ For this tutorial, we'll use the jaffle shop dbt project as an example. Clone it into your project:
+ 
+ <CliInvocationExample path="docs_snippets/docs_snippets/guides/components/integrations/dbt-component/3-jaffle-clone.txt" />
+@@ -60,8 +63,24 @@ We will create a `profiles.yml` file in the `dbt` directory to configure the pro
+   language="yaml"
+ />
+ 
++</TabItem>
++<TabItem value="external" label="External Git repository">
++
++If your dbt project lives in a separate Git repository, you don't need to clone it locally. For this tutorial, we'll use the [Jaffle Platform](https://github.com/dagster-io/jaffle-platform) example repository, which already has a `profiles.yml` configured.
++
++:::info
++
++When using an external Git repository, Dagster manages the project as part of [component state](/guides/build/components/state-backed-components). For details on how state is managed, see [Configuring state-backed components](/guides/build/components/state-backed-components/configuring-state-backed-components).
++:::
++
++</TabItem>
++</Tabs>
++
+ ## 3. Scaffold a dbt component definition
+ 
++<Tabs groupId="dbt-project-location">
++<TabItem value="colocate" label="Colocate with Dagster">
++
+ Now that you have a Dagster project with a dbt project, you can scaffold a dbt component definition. You'll need to provide the path to your dbt project:
+ 
+ <CliInvocationExample path="docs_snippets/docs_snippets/guides/components/integrations/dbt-component/5-scaffold-dbt-component.txt" />
+@@ -78,6 +97,46 @@ In its scaffolded form, the `defs.yaml` file contains the configuration for your
+   language="yaml"
+ />
+ 
++</TabItem>
++<TabItem value="external" label="External Git Repository">
++
++Now that you have a Dagster project, you can scaffold a dbt component definition that points to an external Git repository. You'll need to provide the Git URL and the path to the dbt project within the repository:
++
++<CliInvocationExample path="docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-1-scaffold-dbt-component.txt" />
++
++The `dg scaffold defs` call will generate a `defs.yaml` file in your project structure:
++
++<CliInvocationExample path="docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-2-tree.txt" />
++
++In its scaffolded form, the `defs.yaml` file contains the configuration for your remote dbt project:
++
++<CodeExample
++  path="docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-3-component.yaml"
++  title="my_project/defs/dbt_ingest/defs.yaml"
++  language="yaml"
++/>
++
++:::tip Private repositories
++
++In some cases, you may need to provide an authentication token for private Git repositories. You can do this by adding the `token` field to your `defs.yaml` file:
++
++```yaml
++type: dagster_dbt.DbtProjectComponent
++
++attributes:
++  project:
++    repo_url: https://some-host.com/your-org/your-dbt-project.git
++    repo_relative_path: path/to/dbt
++    token: '{{ env.GIT_TOKEN }}'
++```
++
++For Github-based repositories, this is typically unnecessary, as your credentials will be available locally as well as in the Github Actions that require access to the repository.
++
++:::
++
++</TabItem>
++</Tabs>
++
+ This is sufficient to load your dbt models as assets. You can use `dg list defs` to see the asset representation:
+ 
+ <WideContent maxSize={1100}>
+diff --git a/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-1-scaffold-dbt-component.txt b/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-1-scaffold-dbt-component.txt
+new file mode 100644
+index 0000000000000..35dd207523b23
+--- /dev/null
++++ b/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-1-scaffold-dbt-component.txt
+@@ -0,0 +1,5 @@
++dg scaffold defs dagster_dbt.DbtProjectComponent dbt_ingest \
++  --git-url "https://github.com/dagster-io/jaffle-platform.git" \
++  --project-path "jdbt"
++
++Creating defs at /.../my-project/src/my_project/defs/dbt_ingest.
+diff --git a/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-2-tree.txt b/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-2-tree.txt
+new file mode 100644
+index 0000000000000..004f47e4452ef
+--- /dev/null
++++ b/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-2-tree.txt
+@@ -0,0 +1,11 @@
++tree src/my_project
++
++src/my_project
++├── __init__.py
++├── definitions.py
++└── defs
++    ├── __init__.py
++    └── dbt_ingest
++        └── defs.yaml
++
++3 directories, 4 files
+diff --git a/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-3-component.yaml b/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-3-component.yaml
+new file mode 100644
+index 0000000000000..9689719f2da4e
+--- /dev/null
++++ b/examples/docs_snippets/docs_snippets/guides/components/integrations/dbt-component/remote-3-component.yaml
+@@ -0,0 +1,6 @@
++type: dagster_dbt.DbtProjectComponent
++
++attributes:
++  project:
++    repo_url: https://github.com/dagster-io/jaffle-platform.git
++    repo_relative_path: jdbt
+diff --git a/examples/docs_snippets/docs_snippets_tests/snippet_checks/guides/components/integrations/test_dbt_component_remote.py b/examples/docs_snippets/docs_snippets_tests/snippet_checks/guides/components/integrations/test_dbt_component_remote.py
+new file mode 100644
+index 0000000000000..cfa66495c9ced
+--- /dev/null
++++ b/examples/docs_snippets/docs_snippets_tests/snippet_checks/guides/components/integrations/test_dbt_component_remote.py
+@@ -0,0 +1,96 @@
++from contextlib import ExitStack
++from pathlib import Path
++
++from dagster_dg_core.utils import activate_venv
++
++from docs_snippets_tests.snippet_checks.guides.components.utils import (
++    DAGSTER_ROOT,
++    EDITABLE_DIR,
++)
++from docs_snippets_tests.snippet_checks.utils import (
++    _run_command,
++    compare_tree_output,
++    isolated_snippet_generation_environment,
++)
++
++MASK_MY_PROJECT = (r" \/.*?\/my-project", " /.../my-project")
++MASK_VENV = (r"Using.*\.venv.*", "")
++MASK_USING_LOG_MESSAGE = (r"Using.*\n", "")
++
++SNIPPETS_DIR = (
++    DAGSTER_ROOT
++    / "examples"
++    / "docs_snippets"
++    / "docs_snippets"
++    / "guides"
++    / "components"
++    / "integrations"
++    / "dbt-component"
++)
++
++
++def test_components_docs_dbt_project_remote(
++    update_snippets: bool,
++) -> None:
++    """Test that generates snippets for the 'External Git Repository' tab in the dbt component docs.
++
++    This test scaffolds a dbt component with --git-url to generate the remote configuration snippets.
++    Note: This test does NOT run `dg list defs` since that would require actually cloning the
++    remote repository. The list defs output is shown in the shared section of the docs.
++    """
++    with (
++        isolated_snippet_generation_environment(
++            should_update_snippets=update_snippets,
++            snapshot_base_dir=SNIPPETS_DIR,
++            global_snippet_replace_regexes=[
++                MASK_VENV,
++                MASK_USING_LOG_MESSAGE,
++                MASK_MY_PROJECT,
++            ],
++            # Don't clear the snapshot dir since we're adding to existing snippets
++            clear_snapshot_dir_before_update=False,
++        ) as context,
++        ExitStack() as stack,
++    ):
++        # Scaffold code location (same as existing test)
++        context.run_command_and_snippet_output(
++            cmd="create-dagster project my-project --uv-sync --use-editable-dagster && cd my-project",
++            snippet_path=None,  # Don't save - already covered by existing test
++            snippet_replace_regex=[
++                ("--uv-sync --use-editable-dagster ", ""),
++                ("--editable.*dagster-dbt", "dagster-dbt"),
++            ],
++            ignore_output=True,
++        )
++
++        stack.enter_context(activate_venv(".venv"))
++        context.run_command_and_snippet_output(
++            cmd=f"uv add --editable {EDITABLE_DIR / 'dagster-dbt'} && uv add dbt-duckdb",
++            snippet_path=None,  # Don't save - already covered by existing test
++            print_cmd="uv add dagster-dbt dbt-duckdb",
++            ignore_output=True,
++        )
++
++        # Scaffold dbt component with --git-url for remote repository
++        context.run_command_and_snippet_output(
++            cmd="dg scaffold defs dagster_dbt.DbtProjectComponent dbt_ingest \\\n"
++            '  --git-url "https://github.com/dagster-io/jaffle-platform.git" \\\n'
++            '  --project-path "jdbt"',
++            snippet_path="remote-1-scaffold-dbt-component.txt",
++        )
++
++        _run_command(r"find . -type d -name __pycache__ -exec rm -r {} \+")
++        _run_command(r"find . -type d -name my_project.egg-info -exec rm -r {} \+")
++
++        # Tree the project (same structure as colocated, but different content in defs.yaml)
++        context.run_command_and_snippet_output(
++            cmd="tree src/my_project",
++            snippet_path="remote-2-tree.txt",
++            custom_comparison_fn=compare_tree_output,
++        )
++
++        # Check the generated defs.yaml for remote configuration
++        context.check_file(
++            Path("src") / "my_project" / "defs" / "dbt_ingest" / "defs.yaml",
++            snippet_path="remote-3-component.yaml",
++        )
+diff --git a/python_modules/libraries/dagster-dbt/dagster_dbt/cloud/asset_defs.py b/python_modules/libraries/dagster-dbt/dagster_dbt/cloud/asset_defs.py
+index 7e849ba51fbf5..a77f6e205fce6 100644
+--- a/python_modules/libraries/dagster-dbt/dagster_dbt/cloud/asset_defs.py
++++ b/python_modules/libraries/dagster-dbt/dagster_dbt/cloud/asset_defs.py
+@@ -72,8 +72,10 @@ def __init__(
+             else dbt_cloud_resource_def(build_init_resource_context())
+         )
+         self._job_id = job_id
++        self._account_id: int = self._dbt_cloud._account_id  # noqa: SLF001
+         self._project_id: int
+         self._has_generate_docs: bool
++        self._environment_id: Optional[int] = None
+         self._job_commands: list[str]
+         self._job_materialization_command_step: int
+         self._node_info_to_asset_key = node_info_to_asset_key
+@@ -240,6 +242,7 @@ def _get_manifest_json_and_executed_unique_ids(
+         job = self._dbt_cloud.get_job(job_id=self._job_id)
+         self._project_id = job["project_id"]
+         self._has_generate_docs = job["generate_docs"]
++        self._environment_id = job.get("environment_id")
+ 
+         # We constraint the kinds of dbt Cloud jobs that we support running.
+         #
+@@ -380,7 +383,7 @@ def get_auto_materialize_policy(cls, dbt_resource_props):  # pyright: ignore[rep
+     def _build_dbt_cloud_assets_metadata(
+         self, resource_props: Mapping[str, Any]
+     ) -> RawMetadataMapping:
+-        metadata = {
++        metadata: dict[str, Any] = {
+             "dbt Cloud Job": MetadataValue.url(
+                 self._dbt_cloud.build_url_for_job(
+                     project_id=self._project_id,
+@@ -398,6 +401,12 @@ def _build_dbt_cloud_assets_metadata(
+                 )
+             )
+ 
++        # Add internal metadata for tracking/debugging
++        metadata["dagster_dbt/cloud_account_id"] = MetadataValue.int(self._account_id)
++        metadata["dagster_dbt/cloud_project_id"] = MetadataValue.int(self._project_id)
++        if self._environment_id is not None:
++            metadata["dagster_dbt/cloud_environment_id"] = MetadataValue.int(self._environment_id)
++
+         return metadata
+ 
+     def _rebuild_specs(self, cacheable_data: AssetsDefinitionCacheableData) -> Sequence[AssetSpec]:
+diff --git a/python_modules/libraries/dagster-dbt/dagster_dbt/dagster_dbt_translator.py b/python_modules/libraries/dagster-dbt/dagster_dbt/dagster_dbt_translator.py
+index c99715c99e1fe..5efc9e086f78b 100644
+--- a/python_modules/libraries/dagster-dbt/dagster_dbt/dagster_dbt_translator.py
++++ b/python_modules/libraries/dagster-dbt/dagster_dbt/dagster_dbt_translator.py
+@@ -12,6 +12,7 @@
+     AutoMaterializePolicy,
+     AutomationCondition,
+     DagsterInvalidDefinitionError,
++    MetadataValue,
+     PartitionMapping,
+ )
+ from dagster._annotations import beta, public
+@@ -210,6 +211,14 @@ def get_asset_spec(
+                 **({DAGSTER_DBT_PROJECT_METADATA_KEY: project} if project else {}),
+             }
+         )
++
++        # Add dbt Core project_id for tracking/debugging
++        project_id = manifest.get("metadata", {}).get("project_id")
++        if project_id:
++            spec = spec.merge_attributes(
++                metadata={"dagster_dbt/project_id": MetadataValue.text(project_id)}
++            )
++
+         if self.settings.enable_code_references:
+             if not project:
+                 raise DagsterInvalidDefinitionError(
+diff --git a/python_modules/libraries/dagster-dbt/dagster_dbt_tests/cloud/test_asset_defs.py b/python_modules/libraries/dagster-dbt/dagster_dbt_tests/cloud/test_asset_defs.py
+index 5c16996fc5742..d3e47f01d59b9 100644
+--- a/python_modules/libraries/dagster-dbt/dagster_dbt_tests/cloud/test_asset_defs.py
++++ b/python_modules/libraries/dagster-dbt/dagster_dbt_tests/cloud/test_asset_defs.py
+@@ -35,6 +35,7 @@
+ DBT_CLOUD_PROJECT_ID = 12
+ DBT_CLOUD_JOB_ID = 123
+ DBT_CLOUD_RUN_ID = 1234
++DBT_CLOUD_ENVIRONMENT_ID = 376530
+ 
+ with open(file_relative_path(__file__, "sample_manifest.json"), encoding="utf8") as f:
+     MANIFEST_JSON = json.load(f)
+@@ -56,6 +57,7 @@ def _add_dbt_cloud_job_responses(
+         json={
+             "data": {
+                 "project_id": DBT_CLOUD_PROJECT_ID,
++                "environment_id": DBT_CLOUD_ENVIRONMENT_ID,
+                 "generate_docs": True,
+                 "execute_steps": dbt_commands,
+                 "name": "A dbt Cloud job",
+@@ -173,13 +175,26 @@ def test_load_assets_from_dbt_cloud_job(
+ 
+     # Assert that the outputs have the correct metadata
+     for output in dbt_cloud_assets[0].op.output_dict.values():
+-        assert output.metadata.keys() == {"dbt Cloud Job", "dbt Cloud Documentation"}
++        # Check user-facing metadata
++        assert "dbt Cloud Job" in output.metadata
++        assert "dbt Cloud Documentation" in output.metadata
+         assert output.metadata["dbt Cloud Job"] == MetadataValue.url(
+             dbt_cloud_service.build_url_for_job(
+                 project_id=DBT_CLOUD_PROJECT_ID, job_id=DBT_CLOUD_JOB_ID
+             )
+         )
+ 
++        # Check internal tracking metadata
++        assert output.metadata["dagster_dbt/cloud_account_id"] == MetadataValue.int(
++            DBT_CLOUD_ACCOUNT_ID
++        )
++        assert output.metadata["dagster_dbt/cloud_project_id"] == MetadataValue.int(
++            DBT_CLOUD_PROJECT_ID
++        )
++        assert output.metadata["dagster_dbt/cloud_environment_id"] == MetadataValue.int(
++            DBT_CLOUD_ENVIRONMENT_ID
++        )
++
+     materialize_cereal_assets = define_asset_job(
+         name="materialize_cereal_assets",
+         selection=AssetSelection.assets(*dbt_cloud_assets),
+@@ -287,13 +302,26 @@ def test_load_assets_from_cached_compile_run(
+ 
+     # Assert that the outputs have the correct metadata
+     for output in dbt_cloud_assets[0].op.output_dict.values():
+-        assert output.metadata.keys() == {"dbt Cloud Job", "dbt Cloud Documentation"}
++        # Check user-facing metadata
++        assert "dbt Cloud Job" in output.metadata
++        assert "dbt Cloud Documentation" in output.metadata
+         assert output.metadata["dbt Cloud Job"] == MetadataValue.url(
+             dbt_cloud_service.build_url_for_job(
+                 project_id=DBT_CLOUD_PROJECT_ID, job_id=DBT_CLOUD_JOB_ID
+             )
+         )
+ 
++        # Check internal tracking metadata
++        assert output.metadata["dagster_dbt/cloud_account_id"] == MetadataValue.int(
++            DBT_CLOUD_ACCOUNT_ID
++        )
++        assert output.metadata["dagster_dbt/cloud_project_id"] == MetadataValue.int(
++            DBT_CLOUD_PROJECT_ID
++        )
++        assert output.metadata["dagster_dbt/cloud_environment_id"] == MetadataValue.int(
++            DBT_CLOUD_ENVIRONMENT_ID
++        )
++
+     materialize_cereal_assets = define_asset_job(
+         name="materialize_cereal_assets",
+         selection=AssetSelection.assets(*dbt_cloud_assets),
+@@ -683,3 +711,32 @@ def test_load_from_dbt_cloud_with_env_var(dbt_cloud_service) -> None:
+ 
+         # Implicitly, we check that requests are made with the right account ID, since that is a part of the URLs
+         # we set up in _add_dbt_cloud_job_responses
++
++
++@responses.activate
++def test_dbt_cloud_metadata_ids(dbt_cloud, dbt_cloud_service):
++    """Test that dbt Cloud asset specs contain the correct ID metadata."""
++    dbt_commands = ["dbt run"]
++    _add_dbt_cloud_job_responses(
++        dbt_cloud_service=dbt_cloud_service,
++        dbt_commands=dbt_commands,
++    )
++
++    dbt_cloud_cacheable_assets = load_assets_from_dbt_cloud_job(
++        dbt_cloud=dbt_cloud, job_id=DBT_CLOUD_JOB_ID
++    )
++
++    dbt_assets_definition_cacheable_data = dbt_cloud_cacheable_assets.compute_cacheable_data()
++    dbt_cloud_assets = dbt_cloud_cacheable_assets.build_definitions(
++        dbt_assets_definition_cacheable_data
++    )
++
++    # Verify that all outputs have the required ID metadata
++    for output in dbt_cloud_assets[0].op.output_dict.values():
++        metadata = output.metadata
++
++        assert metadata["dagster_dbt/cloud_account_id"] == MetadataValue.int(DBT_CLOUD_ACCOUNT_ID)
++        assert metadata["dagster_dbt/cloud_project_id"] == MetadataValue.int(DBT_CLOUD_PROJECT_ID)
++        assert metadata["dagster_dbt/cloud_environment_id"] == MetadataValue.int(
++            DBT_CLOUD_ENVIRONMENT_ID
++        )
+diff --git a/python_modules/libraries/dagster-dbt/dagster_dbt_tests/core/test_def_metadata.py b/python_modules/libraries/dagster-dbt/dagster_dbt_tests/core/test_def_metadata.py
+index d60b790c8d7df..367e8487bd093 100644
+--- a/python_modules/libraries/dagster-dbt/dagster_dbt_tests/core/test_def_metadata.py
++++ b/python_modules/libraries/dagster-dbt/dagster_dbt_tests/core/test_def_metadata.py
+@@ -2,9 +2,10 @@
+ from typing import Any
+ 
+ import pytest
+-from dagster import AssetExecutionContext, AssetKey
++from dagster import AssetExecutionContext, AssetKey, MetadataValue
+ from dagster._core.definitions.metadata.metadata_set import TableMetadataSet
+ from dagster_dbt.asset_decorator import dbt_assets
++from dagster_dbt.asset_utils import DAGSTER_DBT_UNIQUE_ID_METADATA_KEY
+ from dagster_dbt.core.resource import DbtCliResource
+ from dagster_dbt.metadata_set import DbtMetadataSet
+ 
+@@ -89,3 +90,20 @@ def my_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+         storage_address_metas["orders"].table_name
+         == f"{jaffle_shop_duckdb_dbfile_name}.main.dagster.orders"
+     )
++
++
++def test_dbt_core_project_id_metadata(test_jaffle_shop_manifest: dict[str, Any]) -> None:
++    """Test that dbt Core asset specs contain project_id metadata."""
++
++    @dbt_assets(manifest=test_jaffle_shop_manifest)
++    def my_dbt_assets(): ...
++
++    expected_project_id = test_jaffle_shop_manifest["metadata"]["project_id"]
++
++    # Verify that all specs have project_id metadata
++    for spec in my_dbt_assets.specs:
++        assert "dagster_dbt/project_id" in spec.metadata
++        assert spec.metadata["dagster_dbt/project_id"] == MetadataValue.text(expected_project_id)
++
++        # Verify unique_id is also present (already exists)
++        assert DAGSTER_DBT_UNIQUE_ID_METADATA_KEY in spec.metadata

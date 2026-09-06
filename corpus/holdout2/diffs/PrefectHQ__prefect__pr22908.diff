@@ -1,0 +1,115 @@
+diff --git a/client/pyproject.toml b/client/pyproject.toml
+index 03c621507c37..3aab927d1867 100644
+--- a/client/pyproject.toml
++++ b/client/pyproject.toml
+@@ -74,7 +74,7 @@ Documentation = "https://docs.prefect.io"
+ Source = "https://github.com/PrefectHQ/prefect"
+ Tracker = "https://github.com/PrefectHQ/prefect/issues"
+ [project.optional-dependencies]
+-notifications = ["apprise>=1.1.0, <2.0.0"]
++notifications = ["apprise>=1.13.0, <2.0.0"]
+ 
+ 
+ [tool.hatch.version]
+diff --git a/pyproject.toml b/pyproject.toml
+index 3442056263d6..f95616cc5172 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -27,7 +27,7 @@ dependencies = [
+     # Server dependencies
+     "aiosqlite>=0.17.0,<1.0.0",
+     "alembic>=1.7.5,<2.0.0",
+-    "apprise>=1.1.0,<2.0.0",
++    "apprise>=1.13.0,<2.0.0",
+     "asyncpg>=0.23,<1.0.0",
+     "click>=8.0,<9",
+     "cryptography>=36.0.1",
+diff --git a/tests/blocks/test_notifications.py b/tests/blocks/test_notifications.py
+index 2f7166a13ac7..449405ba1618 100644
+--- a/tests/blocks/test_notifications.py
++++ b/tests/blocks/test_notifications.py
+@@ -1223,6 +1223,8 @@ def test_notify_uses_updated_to_emails(self):
+ 
+ class TestMicrosoftTeamsWebhook:
+     SAMPLE_URL = "https://prod-NO.LOCATION.logic.azure.com:443/workflows/WFID/triggers/manual/paths/invoke?sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=SIGNATURE"
++    POWER_AUTOMATE_URL = "https://prod-NO.LOCATION.logic.azure.com:443/powerautomate/automations/direct/workflows/WFID/triggers/manual/paths/invoke?api-version=2022-03-01-preview&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=SIGNATURE"
++    POWER_AUTOMATE_URL_WITH_ROUTING_ID = "https://prod-NO.LOCATION.logic.azure.com:443/powerautomate/automations/direct/cu/12/workflows/WFID/triggers/manual/paths/invoke?api-version=2022-03-01-preview&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=SIGNATURE"
+ 
+     async def test_notify_async(self):
+         with patch("apprise.Apprise", autospec=True) as AppriseMock:
+@@ -1274,3 +1276,41 @@ def test_is_picklable(self):
+         pickled = cloudpickle.dumps(block)
+         unpickled = cloudpickle.loads(pickled)
+         assert isinstance(unpickled, MicrosoftTeamsWebhook)
++
++    async def test_notify_async_with_power_automate_url(self):
++        with patch("apprise.Apprise", autospec=True) as AppriseMock:
++            apprise_instance_mock = AppriseMock.return_value
++            apprise_instance_mock.async_notify = AsyncMock()
++
++            block = MicrosoftTeamsWebhook(url=self.POWER_AUTOMATE_URL)
++            await block.notify("test")
++
++            apprise_instance_mock.add.assert_called_once()
++            _assert_apprise_url_matches(
++                apprise_instance_mock.add.call_args.kwargs["servers"],
++                "workflow://prod-NO.LOCATION.logic.azure.com:443/WFID/SIGNATURE/"
++                "?image=yes&wrap=yes&pa=yes"
++                "&format=markdown&overflow=upstream",
++            )
++            apprise_instance_mock.async_notify.assert_awaited_once_with(
++                body="test", title="", notify_type=PREFECT_NOTIFY_TYPE_DEFAULT
++            )
++
++    async def test_notify_async_with_power_automate_url_with_routing_id(self):
++        with patch("apprise.Apprise", autospec=True) as AppriseMock:
++            apprise_instance_mock = AppriseMock.return_value
++            apprise_instance_mock.async_notify = AsyncMock()
++
++            block = MicrosoftTeamsWebhook(url=self.POWER_AUTOMATE_URL_WITH_ROUTING_ID)
++            await block.notify("test")
++
++            apprise_instance_mock.add.assert_called_once()
++            _assert_apprise_url_matches(
++                apprise_instance_mock.add.call_args.kwargs["servers"],
++                "workflow://prod-NO.LOCATION.logic.azure.com:443/WFID/SIGNATURE/"
++                "?image=yes&wrap=yes&pa=yes&route=12"
++                "&format=markdown&overflow=upstream",
++            )
++            apprise_instance_mock.async_notify.assert_awaited_once_with(
++                body="test", title="", notify_type=PREFECT_NOTIFY_TYPE_DEFAULT
++            )
+diff --git a/uv.lock b/uv.lock
+index 914f5f549afb..eca1b44f0b7b 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -293,7 +293,7 @@ wheels = [
+ 
+ [[package]]
+ name = "apprise"
+-version = "1.12.0"
++version = "1.13.0"
+ source = { registry = "https://pypi.org/simple" }
+ dependencies = [
+     { name = "certifi" },
+@@ -304,9 +304,9 @@ dependencies = [
+     { name = "requests-oauthlib" },
+     { name = "tzdata", marker = "sys_platform == 'win32'" },
+ ]
+-sdist = { url = "https://files.pythonhosted.org/packages/ff/f7/95a52cda9355f32c5db9ef77bac18e85977472d29c555fafd825cf60c309/apprise-1.12.0.tar.gz", hash = "sha256:ffe9860d99cbde05fd156c610d4bcb49d953200c4ed3cb2db001ed50722fc142", size = 2477874, upload-time = "2026-07-04T16:15:36.67Z" }
++sdist = { url = "https://files.pythonhosted.org/packages/0c/36/80a0e7f99f59902ca5a30051c2034938dc9387eeca7d78f750fb1585c890/apprise-1.13.0.tar.gz", hash = "sha256:9a56964bf3ca004b3e0db98ab8a8d87fad051d8edb377bc166dc4be826666c81", size = 2512349, upload-time = "2026-08-20T14:50:33.404Z" }
+ wheels = [
+-    { url = "https://files.pythonhosted.org/packages/d3/e9/acfea54abdd66a059ff82995d3703eca3a27df3dc1bdc6afaf8a30a854fe/apprise-1.12.0-py3-none-any.whl", hash = "sha256:28edabfec5a9d5dbcd9aa28bdfd8928ecb68764e40214b6e648eab6d974b5a93", size = 1797824, upload-time = "2026-07-04T16:15:34.228Z" },
++    { url = "https://files.pythonhosted.org/packages/c6/ab/199a88aa1cee354a0e9bc0d9fce9d14969214e3c95b466d75d63756112c5/apprise-1.13.0-py3-none-any.whl", hash = "sha256:cc8f4e2b138a46ff0397f649d73622ab268ddb94a0954399ff318a29a30146c8", size = 1817510, upload-time = "2026-08-20T14:50:31.346Z" },
+ ]
+ 
+ [[package]]
+@@ -4273,7 +4273,7 @@ requires-dist = [
+     { name = "alembic", specifier = ">=1.7.5,<2.0.0" },
+     { name = "amplitude-analytics", specifier = ">=1.2.1,<2.0.0" },
+     { name = "anyio", specifier = ">=4.4.0,<5.0.0" },
+-    { name = "apprise", specifier = ">=1.1.0,<2.0.0" },
++    { name = "apprise", specifier = ">=1.13.0,<2.0.0" },
+     { name = "asgi-lifespan", specifier = ">=1.0,<3.0" },
+     { name = "asyncpg", specifier = ">=0.23,<1.0.0" },
+     { name = "cachetools", specifier = ">=5.3,<8.0" },

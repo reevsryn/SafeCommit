@@ -1,0 +1,1197 @@
+diff --git a/integration-tests/test_flow_suspension.py b/integration-tests/test_flow_suspension.py
+index b15bff69bbf0..ef2dc27fc642 100644
+--- a/integration-tests/test_flow_suspension.py
++++ b/integration-tests/test_flow_suspension.py
+@@ -4,6 +4,7 @@
+ from pathlib import Path
+ from uuid import UUID, uuid4
+ 
++import pytest
+ import uv
+ 
+ import prefect
+@@ -84,6 +85,9 @@ def _task_marker_count(marker_dir: Path) -> int:
+     return len(list(marker_dir.glob(f"{TASK_MARKER_PREFIX}*")))
+ 
+ 
++# The waits below allow 270s in total, so the global 90s timeout would always fire
++# first, killing the test before its own failure messages could report anything.
++@pytest.mark.timeout(300)
+ def test_external_suspension_stops_flow_run_at_next_task_boundary(tmp_path: Path):
+     api_url = PREFECT_API_URL.value()
+     assert api_url, "PREFECT_API_URL must be configured for integration tests."
+diff --git a/src/integrations/prefect-kubernetes/prefect_kubernetes/observer.py b/src/integrations/prefect-kubernetes/prefect_kubernetes/observer.py
+index 630c492780b4..4ea1f9a0df06 100644
+--- a/src/integrations/prefect-kubernetes/prefect_kubernetes/observer.py
++++ b/src/integrations/prefect-kubernetes/prefect_kubernetes/observer.py
+@@ -662,9 +662,14 @@ async def _mark_flow_run_as_crashed(  # pyright: ignore[reportUnusedFunction]
+ 
+     # Check current job status from the event
+     current_job_failed = status.get("failed", 0) > backoff_limit
++    # A deleted job never retries, so nothing else finalizes the run — unless it
++    # succeeded, in which case the run is already terminal (TTL sweeps land here).
++    # Cancellation deletes jobs too, but leaves the run `CANCELLING`, which the check
++    # below skips, as it now also does for a job that failed while cancelling.
++    job_deleted = event["type"] == "DELETED" and not status.get("succeeded")
+ 
+     # If the job is still active or has succeeded, don't mark as crashed
+-    if not current_job_failed:
++    if not (current_job_failed or job_deleted):
+         logger.debug(f"Job {name} is still active or has succeeded, skipping")
+         return
+ 
+@@ -681,15 +686,13 @@ async def _mark_flow_run_as_crashed(  # pyright: ignore[reportUnusedFunction]
+ 
+     assert flow_run.state is not None, "Expected flow run state to be set"
+ 
+-    # Exit early for terminal/final/scheduled/paused states
+     if (
+         flow_run.state.is_final()
+         or flow_run.state.is_scheduled()
+         or flow_run.state.is_paused()
++        or flow_run.state.is_cancelling()
+     ):
+-        logger.debug(
+-            f"Flow run {flow_run_id} is in final, scheduled, or paused state, skipping"
+-        )
++        logger.debug(f"Flow run {flow_run_id} is in {flow_run.state.name!r}, skipping")
+         return
+ 
+     # Eagerly fetch pod logs while the flow run is still in a pre-connectivity
+@@ -760,7 +763,11 @@ async def _mark_flow_run_as_crashed(  # pyright: ignore[reportUnusedFunction]
+         try:
+             result_state = await propose_state(
+                 client=orchestration_client,
+-                state=Crashed(message="No active or succeeded pods found for any job"),
++                state=Crashed(
++                    message="Kubernetes job was deleted"
++                    if job_deleted
++                    else "No active or succeeded pods found for any job"
++                ),
+                 flow_run_id=uuid.UUID(flow_run_id),
+             )
+         except Abort:
+diff --git a/src/integrations/prefect-kubernetes/prefect_kubernetes/worker.py b/src/integrations/prefect-kubernetes/prefect_kubernetes/worker.py
+index f6edbefa3a57..a0f55c53609e 100644
+--- a/src/integrations/prefect-kubernetes/prefect_kubernetes/worker.py
++++ b/src/integrations/prefect-kubernetes/prefect_kubernetes/worker.py
+@@ -446,7 +446,6 @@ def prepare_for_flow_run(
+             flow_run, deployment, flow, work_pool, worker_name, worker_id=worker_id
+         )
+ 
+-        self._configure_eviction_handling()
+         self._update_prefect_api_url_if_local_server()
+ 
+         # Restore any special env vars with valueFrom before populating the manifest
+@@ -457,6 +456,10 @@ def prepare_for_flow_run(
+             env_list.extend(special_env_vars)
+             self.env = env_list
+ 
++        # After the restore, so a `valueFrom` behavior is visible here instead of
++        # being appended back on top of what we set.
++        self._configure_eviction_handling()
++
+         self._populate_env_in_manifest()
+         self._slugify_labels()
+         self._slugify_annotations()
+@@ -474,9 +477,9 @@ def _configure_eviction_handling(self):
+         not set in env, we'll tell the Runner to reschedule its flow run when it receives
+         a SIGTERM.
+ 
+-        If `backoffLimit` is set to a positive number, we'll ensure that the
+-        reschedule SIGTERM handling is not set. Having both a `backoffLimit` and
+-        reschedule handling set can cause duplicate flow run execution.
++        If `backoffLimit` is anything other than 0 (including absent, where Kubernetes
++        defaults it to 6), Kubernetes owns Job retries, so we tell the supervisor to
++        `relinquish` the run on SIGTERM instead of proposing a terminal state.
+         """
+         # If backoffLimit is set to 0, we'll tell the Runner to reschedule
+         # its flow run when it receives a SIGTERM.
+@@ -494,19 +497,22 @@ def _configure_eviction_handling(self):
+                         "value": "reschedule",
+                     }
+                 )
+-        # Otherwise, we'll ensure that the reschedule SIGTERM handling is not set.
++        # Otherwise Kubernetes owns retries, so the run must not be finalized.
+         else:
+             if isinstance(self.env, dict):
+-                self.env.pop("PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR", None)
+-            elif any(
+-                v.get("name") == "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR"
+-                for v in self.env
+-            ):
++                self.env["PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR"] = "relinquish"
++            else:
+                 self.env = [
+                     v
+                     for v in self.env
+                     if v.get("name") != "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR"
+                 ]
++                self.env.append(
++                    {
++                        "name": "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR",
++                        "value": "relinquish",
++                    }
++                )
+ 
+     def _populate_env_in_manifest(self):
+         """
+@@ -737,8 +743,8 @@ class KubernetesWorkerVariables(BaseVariables):
+         description=(
+             "The number of times Kubernetes will retry a job after pod eviction. "
+             "If set to 0, Prefect will reschedule the flow run when the pod is evicted "
+-            "unless PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR is set to value "
+-            "different from 'reschedule'."
++            "unless PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR is already set. "
++            "Otherwise Kubernetes retries the Job and Prefect relinquishes the run."
+         ),
+     )
+     finished_job_ttl: Optional[int] = Field(
+diff --git a/src/integrations/prefect-kubernetes/tests/test_observer.py b/src/integrations/prefect-kubernetes/tests/test_observer.py
+index 940a4aaf775e..c2947be1b44a 100644
+--- a/src/integrations/prefect-kubernetes/tests/test_observer.py
++++ b/src/integrations/prefect-kubernetes/tests/test_observer.py
+@@ -1368,6 +1368,62 @@ async def test_skips_scheduled_states(
+             await _mark_flow_run_as_crashed(**base_kwargs)
+             mock_propose.assert_not_called()
+ 
++    async def test_marks_run_crashed_when_job_deleted(
++        self,
++        mock_orchestration_client: AsyncMock,
++        flow_run_id,
++        base_kwargs,
++        monkeypatch,
++    ):
++        """A deleted job never retries, so nothing else would finalize the run."""
++        mock_orchestration_client.read_flow_run.return_value = FlowRun(
++            id=flow_run_id,
++            name="test-flow-run",
++            flow_id=uuid.uuid4(),
++            state=State(type="RUNNING", name="Running"),
++        )
++        monkeypatch.setattr(
++            "prefect_kubernetes.observer._get_k8s_jobs", AsyncMock(return_value=[])
++        )
++        mock_propose = AsyncMock()
++        monkeypatch.setattr("prefect_kubernetes.observer.propose_state", mock_propose)
++
++        await _mark_flow_run_as_crashed(
++            **{**base_kwargs, "event": {"type": "DELETED"}, "status": {}}
++        )
++
++        mock_propose.assert_called_once()
++        assert (
++            mock_propose.call_args.kwargs["state"].message
++            == "Kubernetes job was deleted"
++        )
++
++    async def test_skips_cancelling_run_when_job_deleted(
++        self,
++        mock_orchestration_client: AsyncMock,
++        flow_run_id,
++        base_kwargs,
++        monkeypatch,
++    ):
++        """Cancellation deletes the job itself and finalizes the run as Cancelled."""
++        mock_orchestration_client.read_flow_run.return_value = FlowRun(
++            id=flow_run_id,
++            name="test-flow-run",
++            flow_id=uuid.uuid4(),
++            state=State(type="CANCELLING", name="Cancelling"),
++        )
++        monkeypatch.setattr(
++            "prefect_kubernetes.observer._get_k8s_jobs", AsyncMock(return_value=[])
++        )
++        mock_propose = AsyncMock()
++        monkeypatch.setattr("prefect_kubernetes.observer.propose_state", mock_propose)
++
++        await _mark_flow_run_as_crashed(
++            **{**base_kwargs, "event": {"type": "DELETED"}, "status": {}}
++        )
++
++        mock_propose.assert_not_called()
++
+     async def test_abort_on_crash_proposal_is_noop(
+         self,
+         mock_orchestration_client: AsyncMock,
+diff --git a/src/integrations/prefect-kubernetes/tests/test_worker.py b/src/integrations/prefect-kubernetes/tests/test_worker.py
+index 95f0e8e18507..2675e1a3e5ea 100644
+--- a/src/integrations/prefect-kubernetes/tests/test_worker.py
++++ b/src/integrations/prefect-kubernetes/tests/test_worker.py
+@@ -880,6 +880,7 @@ def mock_api_auth_string_secret_name_and_key(monkeypatch: pytest.MonkeyPatch):
+                         worker_name=worker_name,
+                     ),
+                     "TEST_ENV": "test",
++                    "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR": "relinquish",
+                 },
+                 labels={
+                     "prefect.io/flow-run-id": str(flow_run.id),
+@@ -998,6 +999,10 @@ def mock_api_auth_string_secret_name_and_key(monkeypatch: pytest.MonkeyPatch):
+                                                 "name": "TEST_ENV",
+                                                 "value": "test",
+                                             },
++                                            {
++                                                "name": "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR",
++                                                "value": "relinquish",
++                                            },
+                                         ],
+                                         "image": "test-image:latest",
+                                         "args": ["echo", "hello"],
+@@ -1242,6 +1247,7 @@ def mock_api_auth_string_secret_name_and_key(monkeypatch: pytest.MonkeyPatch):
+                         worker_name=worker_name,
+                     ),
+                     "TEST_ENV": "test",
++                    "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR": "relinquish",
+                 },
+                 labels={
+                     "prefect.io/flow-run-id": str(flow_run.id),
+@@ -1357,6 +1363,10 @@ def mock_api_auth_string_secret_name_and_key(monkeypatch: pytest.MonkeyPatch):
+                                                 "name": "TEST_ENV",
+                                                 "value": "test",
+                                             },
++                                            {
++                                                "name": "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR",
++                                                "value": "relinquish",
++                                            },
+                                         ],
+                                         "image": "test-image:latest",
+                                         "args": ["echo", "hello"],
+@@ -2669,6 +2679,50 @@ async def test_does_not_overwrite_sigterm_behavior_env(
+                 }.items()
+             ]
+ 
++    @pytest.mark.parametrize(
++        "env",
++        [
++            {"PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR": "reschedule"},
++            [
++                {
++                    "name": "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR",
++                    "valueFrom": {"secretKeyRef": {"name": "s", "key": "k"}},
++                }
++            ],
++        ],
++        ids=["value", "valueFrom"],
++    )
++    async def test_overrides_user_behavior_when_backoff_limit_positive(
++        self,
++        env,
++        flow_run,
++        mock_core_client,
++        mock_watch,
++        mock_pods_stream_that_returns_running_pod,
++        mock_batch_client,
++    ):
++        """A user-set behavior must not survive alongside backoffLimit > 0; both retry
++        mechanisms at once would duplicate the flow run."""
++        mock_watch.return_value.stream = mock_pods_stream_that_returns_running_pod
++        configuration = await KubernetesWorkerJobConfiguration.from_template_and_values(
++            KubernetesWorker.get_default_base_job_template(),
++            {"backoff_limit": 6, "env": env},
++        )
++        configuration.prepare_for_flow_run(flow_run)
++
++        async with KubernetesWorker(work_pool_name="test") as k8s_worker:
++            await k8s_worker.run(flow_run, configuration)
++            manifest = mock_batch_client.return_value.create_namespaced_job.call_args[
++                0
++            ][1]
++            manifest_env = manifest["spec"]["template"]["spec"]["containers"][0]["env"]
++            behaviors = [
++                v.get("value")
++                for v in manifest_env
++                if v["name"] == "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR"
++            ]
++            assert behaviors == ["relinquish"]
++
+     async def test_uses_custom_env_list_from_base_template(
+         self,
+         flow_run,
+diff --git a/src/prefect/_internal/control_listener.py b/src/prefect/_internal/control_listener.py
+index fa4119bd825b..09780e46d1c8 100644
+--- a/src/prefect/_internal/control_listener.py
++++ b/src/prefect/_internal/control_listener.py
+@@ -13,7 +13,7 @@
+    one-shot env vars without connecting yet.
+ 3. The outermost `capture_sigterm()` calls `start()`, which connects back to
+    the runner and spawns a daemon thread blocked on the socket.
+-4. The runner writes a single-byte intent (`b"c"` today).
++4. The runner writes a single-byte intent (`b"c"`, `b"r"` or `b"q"`).
+ 5. If Prefect still owns the live SIGTERM bridge, the child writes `b"a"`,
+    commits the intent for engine dispatch, and on Windows triggers
+    `_thread.interrupt_main(SIGTERM)`.
+@@ -37,10 +37,12 @@
+ 
+ from prefect.utilities.engine import commit_control_intent_and_ack
+ 
+-Intent = Literal["cancel"]
++Intent = Literal["cancel", "reschedule", "relinquish"]
+ 
+ _INTENT_FOR_BYTE: dict[bytes, Intent] = {
+     b"c": "cancel",
++    b"r": "reschedule",
++    b"q": "relinquish",
+ }
+ 
+ _intent: Intent | None = None
+diff --git a/src/prefect/cli/flow_run.py b/src/prefect/cli/flow_run.py
+index 558c5959079e..16f2f1fd2207 100644
+--- a/src/prefect/cli/flow_run.py
++++ b/src/prefect/cli/flow_run.py
+@@ -6,17 +6,18 @@
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import logging
+ import os
+ import signal
+ import tempfile
+-import threading
+ import webbrowser
++from collections.abc import Callable
+ from pathlib import Path
+-from types import FrameType
+-from typing import TYPE_CHECKING, Annotated, Any, Optional
++from typing import TYPE_CHECKING, Annotated, Any, Optional, cast
+ from uuid import UUID
+ 
++import anyio
+ import cyclopts
+ import httpx
+ import orjson
+@@ -26,6 +27,7 @@
+ from starlette import status
+ 
+ import prefect.cli._app as _cli
++from prefect._internal.control_listener import Intent
+ from prefect.cli._utilities import (
+     exit_with_error,
+     exit_with_success,
+@@ -37,20 +39,46 @@
+ from prefect.client.schemas.objects import StateType
+ from prefect.client.schemas.responses import SetStateStatus
+ from prefect.client.schemas.sorting import FlowRunSort, LogSort
+-from prefect.exceptions import Abort, FlowRunWatchError, ObjectNotFound
++from prefect.exceptions import Abort, FlowRunWatchError, ObjectNotFound, Pause
+ from prefect.logging import get_logger
+ from prefect.runner._flow_run_executor import FlowRunExecutorContext
+ from prefect.runner._workspace_starter import WorkspaceResolvingEngineCommandStarter
+ from prefect.states import AwaitingRetry, State, exception_to_crashed_state
+ from prefect.types._datetime import human_friendly_diff
+ from prefect.utilities.asyncutils import run_sync_in_worker_thread
+-from prefect.utilities.engine import propose_state_sync
++from prefect.utilities.engine import propose_state
+ from prefect.utilities.urls import url_for
+ 
+ if TYPE_CHECKING:
+     from prefect.client.orchestration import PrefectClient
+     from prefect.client.schemas.objects import FlowRun, Log
+ 
++
++def _termination_intent() -> Intent | None:
++    """Resolve the control-channel intent for this supervisor's SIGTERM behavior.
++
++    `PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR` names the intent to signal, except
++    for `crash`, which has none and so leaves the engine to mark the run `Crashed`.
++    """
++    behavior = os.environ.get("PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR", "").lower()
++    return (
++        cast("Intent", behavior) if behavior in ("reschedule", "relinquish") else None
++    )
++
++
++def _install_termination_handler(handler: Callable[[], None]) -> bool:
++    """Install `handler` for SIGTERM on the running loop, returning whether it took.
++
++    The handler runs as a loop callback so it can await the control channel, which a
++    `signal.signal` handler cannot do.
++    """
++    try:
++        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, handler)
++    except (NotImplementedError, RuntimeError):
++        return False
++    return True
++
++
+ flow_run_app: cyclopts.App = cyclopts.App(
+     name="flow-run",
+     alias="flow-runs",
+@@ -729,43 +757,17 @@ async def execute(
+     if id is None:
+         exit_with_error("Could not determine the ID of the flow run to execute.")
+ 
++    intent = _termination_intent()
++    terminated = False
++
+     with tempfile.TemporaryDirectory(prefix="prefect-flow-run-") as workspace_root:
+         async with FlowRunExecutorContext() as ctx:
+             flow_run = await ctx.client.read_flow_run(id)
+ 
+-            on_sigterm = os.environ.get(
+-                "PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR", ""
+-            ).lower()
+-            reschedule_mode = (
+-                threading.current_thread() is threading.main_thread()
+-                and on_sigterm == "reschedule"
+-            )
+-
+-            def _handle_reschedule_sigterm(_signal: int, _frame: FrameType | None):
+-                """Reschedule the flow run and kill the child process (if running)."""
+-                logger.info("SIGTERM received, initiating graceful shutdown...")
+-                with get_client(sync_client=True) as sync_client:
+-                    try:
+-                        propose_state_sync(sync_client, AwaitingRetry(), flow_run_id=id)
+-                    except Abort:
+-                        pass
+-                    except Exception:
+-                        logger.exception("Failed to reschedule flow run")
+-
+-                handle = ctx.process_manager.get(id)
+-                if handle and handle.pid:
+-                    try:
+-                        os.kill(handle.pid, signal.SIGTERM)
+-                    except ProcessLookupError:
+-                        pass
+-                exit_with_success("Flow run successfully rescheduled.")
+-
+-            if reschedule_mode:
+-                signal.signal(signal.SIGTERM, _handle_reschedule_sigterm)
+-
+             starter = WorkspaceResolvingEngineCommandStarter(
+                 workspace_root=Path(workspace_root),
+                 control_channel=ctx.control_channel,
++                isolate_process_group=intent is not None,
+             )
+             executor = ctx.create_executor(
+                 flow_run,
+@@ -773,4 +775,58 @@ def _handle_reschedule_sigterm(_signal: int, _frame: FrameType | None):
+                 resolve_flow=starter.resolve_flow,
+                 propose_submitting=False,
+             )
+-            await executor.submit()
++
++            terminating = anyio.Event()
++            if intent is None or not _install_termination_handler(terminating.set):
++                await executor.submit()
++                return
++
++            async with anyio.create_task_group() as tg:
++
++                async def _terminate_on_signal() -> None:
++                    nonlocal terminated
++                    await terminating.wait()
++                    logger.info("SIGTERM received, initiating graceful shutdown...")
++
++                    # The engine must learn the intent before it sees a SIGTERM so it
++                    # exits without proposing a state we then override; one that never
++                    # acknowledged gets no chance to propose at all.
++                    acknowledged = await ctx.control_channel.signal(id, intent)
++                    if not acknowledged:
++                        logger.warning(
++                            "Engine did not acknowledge %s intent; stopping it without"
++                            " a graceful signal.",
++                            intent,
++                        )
++
++                    if intent == "reschedule":
++                        try:
++                            await propose_state(
++                                ctx.client, AwaitingRetry(), flow_run_id=id
++                            )
++                        except (Abort, Pause):
++                            pass
++                        except Exception:
++                            logger.exception("Failed to reschedule flow run")
++
++                    await ctx.process_manager.kill(id, force=not acknowledged)
++                    terminated = True
++                    # We own the run's next state now, so stop the executor before it
++                    # can start a process or propose a state of its own. Do not await
++                    # between the kill and this cancel, or the executor will observe
++                    # the exit code and propose `Crashed` from it.
++                    tg.cancel_scope.cancel()
++
++                tg.start_soon(_terminate_on_signal)
++                await executor.submit()
++                # Leave a shutdown already in flight alone; it cancels the group itself.
++                if not terminating.is_set():
++                    tg.cancel_scope.cancel()
++
++    # Exits go here, not inside the context: a `SystemExit` unwinding through an
++    # anyio task group gets wrapped in an exception group, losing the exit code.
++    if terminated:
++        if intent == "reschedule":
++            exit_with_success("Flow run successfully rescheduled.")
++        # Non-zero so the terminating infrastructure retries this attempt.
++        exit_with_error("Flow run relinquished to infrastructure retry.")
+diff --git a/src/prefect/engine.py b/src/prefect/engine.py
+index 13ab1f0ee686..05fa866cd3a8 100644
+--- a/src/prefect/engine.py
++++ b/src/prefect/engine.py
+@@ -100,16 +100,14 @@ def my_flow():
+         engine_logger.info(msg)
+         exit(0)
+     except TerminationSignal:
+-        # A TerminationSignal can mean either:
+-        # - an expected runner-driven control action (today: cancel intent),
+-        # - or a raw external termination with no runner intent attached.
+-        #
+-        # Only the first case should translate to a clean process exit.
+-        if get_intent() == "cancel":
++        # An intent means the runner or the `prefect flow-run execute` supervisor
++        # drove this termination and owns the flow run's next state, so exit cleanly.
++        # A raw external termination has no intent and must keep propagating.
++        if get_intent() is not None:
+             if flow_run_id:
+-                msg = f"Execution of flow run '{flow_run_id}' was cancelled."
++                msg = f"Execution of flow run '{flow_run_id}' was terminated."
+             else:
+-                msg = "Execution was cancelled."
++                msg = "Execution was terminated."
+             engine_logger.info(msg)
+             clear_intent()
+             exit(0)
+diff --git a/src/prefect/flow_engine.py b/src/prefect/flow_engine.py
+index deccb410d191..5f0ab03b6162 100644
+--- a/src/prefect/flow_engine.py
++++ b/src/prefect/flow_engine.py
+@@ -195,26 +195,17 @@ def _termination_intent() -> Intent | None:
+     for the outermost flow run as well as nested subflows running in the
+     same process.
+ 
+-    Today the only non-None value returned is `"cancel"`. A follow-up PR
+-    will add `"suspend"` by extending
+-    `Intent` in `prefect._internal.control_listener`; the engine's
+-    `except TerminationSignal` dispatch below will gain a matching branch.
++    Adding an intent means extending `Intent` in
++    `prefect._internal.control_listener` and the `except TerminationSignal`
++    dispatch below with a matching branch.
+     """
+     return get_intent()
+ 
+ 
+-def _should_bubble_raw_sigterm_for_reschedule() -> bool:
+-    """Return whether raw SIGTERM should bypass crash handling.
+-
+-    `prefect flow-run execute` supports a reschedule mode where the parent
+-    process proposes `AwaitingRetry` and then sends a plain SIGTERM to the
+-    child. That path does not use the control channel, so the child must not
+-    reinterpret the resulting `TerminationSignal` as a crash.
+-    """
+-    return (
+-        os.environ.get("PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR", "").lower()
+-        == "reschedule"
+-    )
++# Intents where the `prefect flow-run execute` supervisor owns the run's next state
++# (`reschedule` proposes it; `relinquish` leaves it to retrying infrastructure), so
++# the engine must exit without proposing one.
++_SUPERVISOR_OWNED_INTENTS: frozenset[Intent] = frozenset({"reschedule", "relinquish"})
+ 
+ 
+ def _is_async_runtime_cancellation(exc: BaseException) -> bool:
+@@ -1198,10 +1189,8 @@ def initialize_run(self):
+                     if intent == "cancel":
+                         self.handle_cancellation(exc)
+                     elif intent is None:
+-                        if _should_bubble_raw_sigterm_for_reschedule():
+-                            raise
+                         self.handle_crash(exc)
+-                    else:
++                    elif intent not in _SUPERVISOR_OWNED_INTENTS:
+                         # Defensive: an unknown intent means the control
+                         # listener was extended (e.g. "suspend" in a
+                         # follow-up PR) without extending this dispatch.
+@@ -1896,10 +1885,8 @@ async def initialize_run(self):
+                     if intent == "cancel":
+                         await self.handle_cancellation(exc)
+                     elif intent is None:
+-                        if _should_bubble_raw_sigterm_for_reschedule():
+-                            raise
+                         await self.handle_crash(exc)
+-                    else:
++                    elif intent not in _SUPERVISOR_OWNED_INTENTS:
+                         # Defensive: see sync engine's dispatch for why.
+                         self.logger.error(
+                             "Unhandled termination intent %r; treating as"
+@@ -1936,6 +1923,13 @@ async def initialize_run(self):
+                                 exc_info=exc,
+                             )
+                             raise
++                    if (
++                        _is_async_runtime_cancellation(exc)
++                        and _termination_intent() in _SUPERVISOR_OWNED_INTENTS
++                    ):
++                        # A supervisor-driven SIGTERM can surface here as a cancellation
++                        # rather than a TerminationSignal.
++                        raise TerminationSignal(signal.SIGTERM) from exc
+                     # We don't want to crash a flow run if the user code finished executing
+                     if self.flow_run.state and not self.flow_run.state.is_final():
+                         # BaseExceptions are caught and handled as crashes
+diff --git a/src/prefect/runner/AGENTS.md b/src/prefect/runner/AGENTS.md
+index bd48bcd19fdb..d02bb2542beb 100644
+--- a/src/prefect/runner/AGENTS.md
++++ b/src/prefect/runner/AGENTS.md
+@@ -77,9 +77,9 @@ This ordering is a hard constraint. Getting it wrong causes ClosedResourceError
+ - POSIX: ack only means "SIGTERM bridge is armed and intent is seeded." The runner's real `SIGTERM` is still the only trigger that interrupts blocking code. Kill happens immediately after ack.
+ - Windows: ack means the child has queued `_thread.interrupt_main(SIGTERM)`. The runner gives the child a 30 s grace window to self-exit before falling back to an external kill.
+ 
+-**Failure modes:** If the child never connects or never acks within 1 s, `signal()` returns `False` and the runner falls through to the normal kill path — the engine treats the termination as a crash, same as today.
++**Failure modes:** If the child never connects or never acks within 1 s, `signal()` returns `False`. `CancellationManager` falls through to the normal graceful kill and the engine treats the termination as a crash. The `prefect flow-run execute` supervisor instead calls `ProcessManager.kill(force=True)` (SIGKILL, no grace), because an unacked engine would propose `Crashed` and undo a `reschedule`/`relinquish`.
+ 
+-**Extending intents:** The only intent today is `"cancel"`. The byte map (`_BYTE_FOR_INTENT` in `_control_channel.py` and `_INTENT_FOR_BYTE` in `_internal/control_listener.py`) must stay in sync when adding new intents.
++**Extending intents:** The intents today are `"cancel"`, `"reschedule"` and `"relinquish"`. The byte map (`_BYTE_FOR_INTENT` in `_control_channel.py` and `_INTENT_FOR_BYTE` in `_internal/control_listener.py`) must stay in sync when adding new intents.
+ 
+ ## ProcessStarter Strategy Pattern
+ 
+diff --git a/src/prefect/runner/_control_channel.py b/src/prefect/runner/_control_channel.py
+index 4285ba9f537c..aa7f70abd872 100644
+--- a/src/prefect/runner/_control_channel.py
++++ b/src/prefect/runner/_control_channel.py
+@@ -29,13 +29,13 @@
+ the time the child's `SIGTERM` handler runs, `control_listener.get_intent()`
+ already returns the pre-seeded intent, so the engine's
+ `except TerminationSignal` block can dispatch on it (`on_cancellation` vs
+-`on_crashed` today, with room for a third `"suspend"` branch in a follow-up).
++`on_crashed`, or leaving the state alone for `"reschedule"`/`"relinquish"`).
+ 
+ The channel is loopback-only, per-token authenticated, and best-effort: if
+-the child never connects or never acks, `signal` returns `False` and the
+-runner falls through to the kill path anyway, where the engine will treat
+-the resulting termination as a crash — the same behavior as today for
+-unresponsive children.
++the child never connects or never acks, `signal` returns `False`. Callers
++decide what that means: cancellation falls through to a graceful kill and lets
++the engine crash the run, while `prefect flow-run execute` kills without a
++grace period so an unacked engine cannot crash a run it is about to retry.
+ 
+ This module is deliberately generic. The set of valid intents lives in
+ `prefect._internal.control_listener` as `Intent`; the wire
+@@ -68,6 +68,8 @@
+ # intent is a matched one-line change on each side.
+ _BYTE_FOR_INTENT: dict[Intent, bytes] = {
+     "cancel": b"c",
++    "reschedule": b"r",
++    "relinquish": b"q",
+ }
+ 
+ 
+@@ -92,9 +94,8 @@ class ControlChannel:
+     Use as an async context manager. Inside the context, `port` is the
+     listener's bound port (suitable for injecting into child env vars).
+ 
+-    The only intent exposed today is `"cancel"`. A future PR will add
+-    `"suspend"` by extending the `Intent` literal, the byte map, and
+-    the engine's `except TerminationSignal` dispatch.
++    Adding an intent means extending the `Intent` literal, the byte map, and the
++    engine's `except TerminationSignal` dispatch.
+     """
+ 
+     def __init__(
+diff --git a/src/prefect/runner/_process_manager.py b/src/prefect/runner/_process_manager.py
+index 08f3d53c88d3..46c77df74c9c 100644
+--- a/src/prefect/runner/_process_manager.py
++++ b/src/prefect/runner/_process_manager.py
+@@ -69,6 +69,18 @@ def _pid_is_alive(pid: int) -> bool:
+         kernel32.CloseHandle(handle)
+ 
+ 
++def _hard_kill(pid: int) -> None:
++    """Stop `pid` immediately, taking its process group when it leads one so a
++    wrapper command cannot leave the real process running orphaned."""
++    if sys.platform == "win32":
++        # Any signal other than the CTRL_* events is a TerminateProcess here.
++        os.kill(pid, signal.SIGTERM)
++    elif os.getpgid(pid) == pid:
++        os.killpg(pid, signal.SIGKILL)
++    else:
++        os.kill(pid, signal.SIGKILL)
++
++
+ @dataclass
+ class ProcessHandle:
+     _process: anyio.abc.Process | multiprocessing.context.SpawnProcess
+@@ -197,7 +209,14 @@ async def wait_for_exit(self, flow_run_id: UUID, grace_seconds: float = 30) -> b
+ 
+             await anyio.sleep(min(check_interval, remaining))
+ 
+-    async def kill(self, flow_run_id: UUID, grace_seconds: float = 30) -> None:
++    async def kill(
++        self, flow_run_id: UUID, grace_seconds: float = 30, *, force: bool = False
++    ) -> None:
++        """Stop the process for `flow_run_id`.
++
++        `force` skips the graceful signal, for callers that must not let the process
++        run any more code; `grace_seconds` is unused in that case.
++        """
+         handle = self._process_map.get(flow_run_id)
+         if handle is None:
+             self._logger.warning(
+@@ -214,10 +233,22 @@ async def kill(self, flow_run_id: UUID, grace_seconds: float = 30) -> None:
+             )
+             return
+ 
++        if force:
++            try:
++                _hard_kill(pid)
++            except ProcessLookupError:
++                pass
++            return
++
+         if sys.platform == "win32":
+             os.kill(pid, signal.CTRL_BREAK_EVENT)
+         else:
+-            os.kill(pid, signal.SIGTERM)
++            try:
++                os.kill(pid, signal.SIGTERM)
++            except ProcessLookupError:
++                # Already reaped, e.g. re-killed from `__aexit__` after a cancelled
++                # executor skipped its cleanup.
++                return
+ 
+             check_interval = max(grace_seconds / 10, 1)
+             with anyio.move_on_after(grace_seconds):
+diff --git a/src/prefect/runner/_starter_engine.py b/src/prefect/runner/_starter_engine.py
+index 12447b887998..a802b0065941 100644
+--- a/src/prefect/runner/_starter_engine.py
++++ b/src/prefect/runner/_starter_engine.py
+@@ -47,6 +47,7 @@ def __init__(
+         stream_output: bool = True,
+         heartbeat_seconds: int | None = None,
+         control_channel: ControlChannel | None = None,
++        isolate_process_group: bool = False,
+     ) -> None:
+         self._tmp_dir = tmp_dir
+         self._storage = storage
+@@ -58,6 +59,7 @@ def __init__(
+         self._stream_output = stream_output
+         self._heartbeat_seconds = heartbeat_seconds
+         self._control_channel = control_channel
++        self._isolate_process_group = isolate_process_group
+ 
+     async def start(
+         self,
+@@ -76,6 +78,9 @@ async def start(
+         kwargs: dict[str, object] = {}
+         if sys.platform == "win32":
+             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
++        elif self._isolate_process_group:
++            # So a group-wide SIGTERM cannot beat the caller's intent to the child.
++            kwargs["start_new_session"] = True
+ 
+         # Register the flow run with the control channel before spawning so
+         # the child can connect back as soon as it starts. Returned port +
+diff --git a/src/prefect/runner/_workspace_starter.py b/src/prefect/runner/_workspace_starter.py
+index 0a527d6277ae..d8a7a26cec35 100644
+--- a/src/prefect/runner/_workspace_starter.py
++++ b/src/prefect/runner/_workspace_starter.py
+@@ -333,6 +333,7 @@ def __init__(
+         heartbeat_seconds: int | None = None,
+         deployment_name: str | None = None,
+         control_channel: ControlChannel | None = None,
++        isolate_process_group: bool = False,
+     ) -> None:
+         self._workspace_root = workspace_root
+         self._command = command
+@@ -340,6 +341,7 @@ def __init__(
+         self._heartbeat_seconds = heartbeat_seconds
+         self._deployment_name = deployment_name
+         self._control_channel = control_channel
++        self._isolate_process_group = isolate_process_group
+         self._workspace: PreparedWorkspace | None = None
+ 
+     @property
+@@ -368,6 +370,7 @@ async def start(
+             heartbeat_seconds=self._heartbeat_seconds,
+             deployment_name=self._deployment_name,
+             control_channel=self._control_channel,
++            isolate_process_group=self._isolate_process_group,
+         )
+         await starter.start(flow_run, task_status=task_status)
+ 
+diff --git a/tests/cli/test_flow_run.py b/tests/cli/test_flow_run.py
+index ef212f3839d2..0e97d04c683a 100644
+--- a/tests/cli/test_flow_run.py
++++ b/tests/cli/test_flow_run.py
+@@ -20,7 +20,9 @@
+ from prefect.client.schemas.actions import LogCreate
+ from prefect.client.schemas.objects import FlowRun
+ from prefect.deployments.runner import RunnerDeployment
++from prefect.runner._control_channel import ControlChannel
+ from prefect.runner._flow_run_executor import FlowRunExecutorContext
++from prefect.runner._process_manager import ProcessManager
+ from prefect.runner._workspace_starter import WorkspaceResolvingEngineCommandStarter
+ from prefect.settings import PREFECT_UI_URL, temporary_settings
+ from prefect.settings.context import get_current_settings
+@@ -1900,7 +1902,7 @@ async def capture_aexit(self_ctx, *exc_info):
+ 
+ 
+ class TestSignalHandling:
+-    @pytest.mark.parametrize("sigterm_handling", ["reschedule", None])
++    @pytest.mark.parametrize("sigterm_handling", ["reschedule", "relinquish", None])
+     async def test_flow_run_execute_sigterm_handling(
+         self,
+         monkeypatch: pytest.MonkeyPatch,
+@@ -1929,6 +1931,8 @@ async def test_flow_run_execute_sigterm_handling(
+             ],
+             env=get_current_settings().to_environment_variables(exclude_unset=True)
+             | os.environ,
++            # Own group so a group-wide signal below cannot reach pytest itself.
++            start_new_session=True,
+         )
+ 
+         assert popen.pid is not None
+@@ -1941,8 +1945,12 @@ async def test_flow_run_execute_sigterm_handling(
+             if flow_run.state.is_running():
+                 break
+ 
+-        # Send the SIGTERM signal
+-        popen.terminate()
++        if sigterm_handling is None:
++            popen.terminate()
++        else:
++            # Group-wide, as `tini -g` sends on an eviction: the engine child must be
++            # isolated from it so the supervisor's intent lands first.
++            os.killpg(os.getpgid(popen.pid), signal.SIGTERM)
+ 
+         # Wait for the process to exit
+         return_code = popen.wait(timeout=10)
+@@ -1955,6 +1963,13 @@ async def test_flow_run_execute_sigterm_handling(
+                 "The flow run should have been rescheduled"
+             )
+             assert return_code == 0, "The process should have exited with a 0 exit code"
++        elif sigterm_handling == "relinquish":
++            assert flow_run.state.is_running(), (
++                "The flow run should have been left running for a retry"
++            )
++            assert return_code != 0, (
++                "The process should have exited with a non-zero exit code"
++            )
+         else:
+             assert flow_run.state.is_running(), (
+                 "The flow run should be stuck in running"
+@@ -1963,12 +1978,60 @@ async def test_flow_run_execute_sigterm_handling(
+                 "The process should have exited with a SIGTERM exit code"
+             )
+ 
+-    async def test_reschedule_handler_installed_even_when_submit_exits_early(
++    async def test_unacknowledged_engine_is_stopped_without_a_graceful_signal(
+         self,
+         monkeypatch: pytest.MonkeyPatch,
+         prefect_client: PrefectClient,
+     ):
+-        """The SIGTERM reschedule handler is installed before submit() runs,
++        """An engine that never acknowledged the intent would crash the run, so it is
++        killed outright and the run is left nonterminal for the retry."""
++        monkeypatch.setenv("PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR", "relinquish")
++
++        deployment_id = await (await hello_flow.to_deployment(__file__)).apply()
++        flow_run = await prefect_client.create_flow_run_from_deployment(
++            deployment_id=deployment_id
++        )
++
++        handlers: list[Callable[[], None]] = []
++        forced: list[bool] = []
++
++        def capture_install(handler: Callable[[], None]) -> bool:
++            handlers.append(handler)
++            return True
++
++        async def fake_kill(_self, _id, grace_seconds=30, *, force=False) -> None:
++            forced.append(force)
++
++        async def fake_submit(*_: Any, **__: Any) -> None:
++            handlers[0]()  # the SIGTERM the pod would receive
++            await anyio.sleep(1)
++
++        with (
++            patch(
++                "prefect.cli.flow_run._install_termination_handler",
++                side_effect=capture_install,
++            ),
++            patch.object(ControlChannel, "signal", AsyncMock(return_value=False)),
++            patch.object(ProcessManager, "kill", fake_kill),
++            patch(
++                "prefect.runner._flow_run_executor.FlowRunExecutor.submit", fake_submit
++            ),
++            pytest.raises(SystemExit),
++        ):
++            await execute(id=flow_run.id)
++
++        assert forced == [True], "engine should be stopped without a grace period"
++        run = await prefect_client.read_flow_run(flow_run.id)
++        assert run.state and not run.state.is_final(), (
++            "the run must stay nonterminal so the infrastructure retry can resume it"
++        )
++
++    async def test_termination_handler_installed_even_when_submit_exits_early(
++        self,
++        monkeypatch: pytest.MonkeyPatch,
++        prefect_client: PrefectClient,
++    ):
++        """The SIGTERM termination handler is installed before submit() runs,
+         so it is active even if submit exits early (e.g. rejected by server)."""
+         monkeypatch.setenv("PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR", "reschedule")
+ 
+@@ -1977,28 +2040,28 @@ async def test_reschedule_handler_installed_even_when_submit_exits_early(
+             deployment_id=deployment_id
+         )
+ 
+-        sigterm_handlers_installed: list[Any] = []
+-        original_signal = signal.signal
++        events: list[str] = []
+ 
+-        def capture_signal(signum: signal.Signals, handler: Any) -> Any:
+-            if signum == signal.SIGTERM:
+-                sigterm_handlers_installed.append(handler)
+-            return original_signal(signum, handler)
++        def capture_install(_handler: Callable[[], None]) -> bool:
++            events.append("installed")
++            return True
+ 
+-        # Mock submit to do nothing — simulates early exit (e.g. rejected by server)
+-        mock_submit = AsyncMock(return_value=None)
++        # submit() does nothing — simulates an early exit (e.g. rejected by server)
++        async def fake_submit(*_: Any, **__: Any) -> None:
++            events.append("submitted")
+ 
+         with (
+-            patch("prefect.cli.flow_run.signal.signal", side_effect=capture_signal),
++            patch(
++                "prefect.cli.flow_run._install_termination_handler",
++                side_effect=capture_install,
++            ),
+             patch(
+                 "prefect.runner._flow_run_executor.FlowRunExecutor.submit",
+-                mock_submit,
++                fake_submit,
+             ),
+         ):
+             await execute(id=flow_run.id)
+ 
+-            # The handler is installed before submit() so it covers the
+-            # startup window as well.
+-            assert len(sigterm_handlers_installed) == 1, (
+-                "SIGTERM reschedule handler should be installed before submit()"
+-            )
++        assert events == ["installed", "submitted"], (
++            "SIGTERM handler should be installed before submit() so it covers startup"
++        )
+diff --git a/tests/runner/test__process_manager.py b/tests/runner/test__process_manager.py
+index bb71e81b69dc..5777037438c5 100644
+--- a/tests/runner/test__process_manager.py
++++ b/tests/runner/test__process_manager.py
+@@ -6,6 +6,7 @@
+ from unittest.mock import AsyncMock, MagicMock, patch
+ from uuid import UUID, uuid4
+ 
++import anyio
+ import pytest
+ 
+ from prefect.runner._process_manager import ProcessHandle, ProcessManager, _pid_is_alive
+@@ -180,6 +181,45 @@ def fake_kill(pid: int, sig: int) -> None:
+                 assert call_count >= 2
+ 
+     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only test")
++    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only signals")
++    async def test_kill_force_sends_only_sigkill_without_grace_period(self):
++        async with ProcessManager() as pm:
++            run_id = uuid4()
++            mock_proc = MagicMock()
++            mock_proc.pid = 12345
++            await pm.add(run_id, ProcessHandle(mock_proc))
++
++            sent: list[tuple[str, int]] = []
++            with (
++                patch("prefect.runner._process_manager.os.getpgid", return_value=12345),
++                patch(
++                    "prefect.runner._process_manager.os.killpg",
++                    side_effect=lambda pid, sig: sent.append(("killpg", sig)),
++                ),
++                patch(
++                    "prefect.runner._process_manager.os.kill",
++                    side_effect=lambda pid, sig: sent.append(("kill", sig)),
++                ),
++                anyio.fail_after(1),  # must not wait out the grace period
++            ):
++                await pm.kill(run_id, grace_seconds=30, force=True)
++
++            assert sent == [("killpg", signal.SIGKILL)]
++
++    async def test_kill_ignores_an_already_reaped_process(self):
++        """`__aexit__` re-kills entries whose cleanup was skipped by cancellation."""
++        async with ProcessManager() as pm:
++            run_id = uuid4()
++            mock_proc = MagicMock()
++            mock_proc.pid = 99999
++            await pm.add(run_id, ProcessHandle(mock_proc))
++
++            with patch(
++                "prefect.runner._process_manager.os.kill",
++                side_effect=ProcessLookupError("no such process"),
++            ):
++                await pm.kill(run_id, grace_seconds=1)
++
+     async def test_kill_propagates_os_error_from_sigterm(self):
+         async with ProcessManager() as pm:
+             run_id = uuid4()
+diff --git a/tests/test_flow_engine.py b/tests/test_flow_engine.py
+index b89fa84c4742..bbfc326f33b3 100644
+--- a/tests/test_flow_engine.py
++++ b/tests/test_flow_engine.py
+@@ -2114,11 +2114,14 @@ def my_flow():
+ 
+ 
+ class TestHandleEngineSignals:
+-    def test_cancel_intent_exits_zero_on_termination_signal(
+-        self, monkeypatch: pytest.MonkeyPatch
++    @pytest.mark.parametrize("intent", ["cancel", "reschedule", "relinquish"])
++    def test_intent_exits_zero_on_termination_signal(
++        self, intent: str, monkeypatch: pytest.MonkeyPatch
+     ):
++        """Any intent means someone else owns the run's state, so the engine exits
++        cleanly instead of letting a non-zero code imply a crash."""
+         clear_intent = MagicMock()
+-        monkeypatch.setattr("prefect.engine.get_intent", lambda: "cancel")
++        monkeypatch.setattr("prefect.engine.get_intent", lambda: intent)
+         monkeypatch.setattr("prefect.engine.clear_intent", clear_intent)
+ 
+         with pytest.raises(SystemExit) as exc:
+@@ -2211,8 +2214,9 @@ async def _coro() -> None:
+ 
+ 
+ class TestCaptureSigterm:
+-    def test_raw_sigterm_reschedule_mode_bubbles_in_sync_initialize_run(
+-        self, monkeypatch: pytest.MonkeyPatch
++    @pytest.mark.parametrize("intent", ["reschedule", "relinquish"])
++    def test_supervisor_owned_intent_bubbles_in_sync_initialize_run(
++        self, intent: str, monkeypatch: pytest.MonkeyPatch
+     ):
+         @contextmanager
+         def _fake_sync_client_context():
+@@ -2225,7 +2229,7 @@ def _fake_hydrated_context(_context: object | None = None):
+         engine = FlowRunEngine(flow=foo, flow_run=MagicMock(state=states.Pending()))
+         engine.cancel_all_tasks = MagicMock()
+         engine.handle_crash = MagicMock()
+-        monkeypatch.setenv("PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR", "reschedule")
++        monkeypatch.setattr("prefect.flow_engine._termination_intent", lambda: intent)
+         monkeypatch.setattr(
+             "prefect.flow_engine.SyncClientContext.get_or_create",
+             _fake_sync_client_context,
+@@ -2245,7 +2249,7 @@ def _fake_hydrated_context(_context: object | None = None):
+ 
+         engine.handle_crash.assert_not_called()
+ 
+-    async def test_raw_sigterm_reschedule_mode_bubbles_in_async_initialize_run(
++    async def test_supervisor_owned_intent_bubbles_in_async_initialize_run(
+         self, monkeypatch: pytest.MonkeyPatch
+     ):
+         @asynccontextmanager
+@@ -2262,7 +2266,9 @@ def _fake_hydrated_context(_context: object | None = None):
+         )
+         engine.cancel_all_tasks = MagicMock()
+         engine.handle_crash = AsyncMock()
+-        monkeypatch.setenv("PREFECT_FLOW_RUN_EXECUTE_SIGTERM_BEHAVIOR", "reschedule")
++        monkeypatch.setattr(
++            "prefect.flow_engine._termination_intent", lambda: "relinquish"
++        )
+         monkeypatch.setattr(
+             "prefect.flow_engine.AsyncClientContext.get_or_create",
+             _fake_async_client_context,
+@@ -2282,6 +2288,71 @@ def _fake_hydrated_context(_context: object | None = None):
+ 
+         engine.handle_crash.assert_not_called()
+ 
++    @pytest.fixture
++    def async_cancellation_engine(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> AsyncFlowRunEngine:
++        """Async engine set up to reach the `except BaseException` dispatch by
++        raising inside `initialize_run`."""
++
++        @asynccontextmanager
++        async def _fake_async_client_context():
++            yield MagicMock(client=AsyncMock())
++
++        @contextmanager
++        def _fake_hydrated_context(_context: object | None = None):
++            yield
++
++        engine = AsyncFlowRunEngine(
++            flow=foo, flow_run=MagicMock(state=states.Pending())
++        )
++        engine.cancel_all_tasks = MagicMock()
++        engine.handle_crash = AsyncMock()
++        engine.handle_cancellation = AsyncMock()
++        monkeypatch.setattr(
++            "prefect.flow_engine.AsyncClientContext.get_or_create",
++            _fake_async_client_context,
++        )
++        monkeypatch.setattr(
++            "prefect.flow_engine.hydrated_context", _fake_hydrated_context
++        )
++        monkeypatch.setattr(engine._telemetry, "async_start_span", AsyncMock())
++        return engine
++
++    async def test_async_cancellation_bubbles_for_supervisor_owned_intent(
++        self,
++        async_cancellation_engine: AsyncFlowRunEngine,
++        monkeypatch: pytest.MonkeyPatch,
++    ):
++        """A supervisor-driven SIGTERM can surface as a cancellation instead of a
++        TerminationSignal; it must bubble rather than crash the run."""
++        engine = async_cancellation_engine
++        monkeypatch.setattr(
++            "prefect.flow_engine._termination_intent", lambda: "relinquish"
++        )
++
++        with pytest.raises(TerminationSignal):
++            async with engine.initialize_run():
++                raise anyio.get_cancelled_exc_class()()
++
++        engine.handle_crash.assert_not_called()
++
++    async def test_async_cancellation_crashes_without_intent(
++        self,
++        async_cancellation_engine: AsyncFlowRunEngine,
++        monkeypatch: pytest.MonkeyPatch,
++    ):
++        """An ordinary cancellation (e.g. a flow timeout) carries no intent, so it
++        must still crash rather than be mistaken for a supervisor termination."""
++        engine = async_cancellation_engine
++        monkeypatch.setattr("prefect.flow_engine._termination_intent", lambda: None)
++
++        with pytest.raises(anyio.get_cancelled_exc_class()):
++            async with engine.initialize_run():
++                raise anyio.get_cancelled_exc_class()()
++
++        engine.handle_crash.assert_awaited_once()
++
+     def test_can_ack_control_intent_requires_prefect_handler(
+         self, monkeypatch: pytest.MonkeyPatch
+     ):
+diff --git a/tests/test_futures.py b/tests/test_futures.py
+index cf0d88306dc5..8053e3357bbf 100644
+--- a/tests/test_futures.py
++++ b/tests/test_futures.py
+@@ -159,15 +159,15 @@ def consume_as_completed():
+             except BaseException as exc:
+                 caught.append(exc)
+ 
+-        worker = threading.Thread(target=consume_as_completed)
++        # Daemonized so a thread blocked on the broken implementation cannot hold up
++        # interpreter exit and take the whole test session down with it.
++        worker = threading.Thread(target=consume_as_completed, daemon=True)
+         worker.start()
+-        worker.join(timeout=2.0)
++        worker.join(timeout=30.0)
+ 
+         if worker.is_alive():
+-            # Self-cleaning: unblock the worker so the suite never leaks a
+-            # non-daemon thread on the broken implementation.
+             hanging_future.set_result(Completed(data=None))
+-            worker.join(timeout=2.0)
++            worker.join(timeout=30.0)
+             assert not worker.is_alive(), "Worker thread did not exit"
+             pytest.fail("as_completed did not time out in worker thread")
+ 

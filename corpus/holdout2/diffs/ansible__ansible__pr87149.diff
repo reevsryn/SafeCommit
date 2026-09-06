@@ -1,0 +1,567 @@
+diff --git a/changelogs/fragments/84451-debug-stack-output.yml b/changelogs/fragments/84451-debug-stack-output.yml
+new file mode 100644
+index 00000000000000..0b33546fb50fdb
+--- /dev/null
++++ b/changelogs/fragments/84451-debug-stack-output.yml
+@@ -0,0 +1,2 @@
++minor_changes:
++- debugging - Add signal (``USR1``) handler to provide insight into executing code stacks (https://github.com/ansible/ansible/issues/84451)
+diff --git a/lib/ansible/executor/process/worker.py b/lib/ansible/executor/process/worker.py
+index ba60c20fe039d3..63d571ca3192d0 100644
+--- a/lib/ansible/executor/process/worker.py
++++ b/lib/ansible/executor/process/worker.py
+@@ -35,6 +35,7 @@
+ from ansible.executor.task_executor import TaskExecutor
+ from ansible.executor.task_queue_manager import FinalQueue, STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
+ from ansible.inventory.host import Host
++from ansible.module_utils._internal import _debug
+ from ansible.parsing.dataloader import DataLoader
+ from ansible.playbook.task import Task
+ from ansible.playbook.play_context import PlayContext
+@@ -78,7 +79,8 @@ def __init__(
+             variable_manager: VariableManager,
+             shared_loader_obj: types.SimpleNamespace,
+             worker_id: int,
+-            cliargs: CLIArgs
++            cliargs: CLIArgs,
++            stacktrace_dir: str | None = None,
+     ) -> None:
+ 
+         super(WorkerProcess, self).__init__()
+@@ -100,6 +102,7 @@ def __init__(
+         self.worker_id = worker_id
+ 
+         self._cliargs = cliargs
++        self._stacktrace_dir = stacktrace_dir
+ 
+     def _term(self, signum, frame) -> None:
+         """In child termination when notified by the parent"""
+@@ -192,6 +195,10 @@ def run(self) -> None:
+         # Set the queue on Display so calls to Display.display are proxied over the queue
+         display.set_queue(self._final_q)
+         self._detach()
++
++        # No need to create the stacktrace directory since TQM does that for us.
++        _debug.register_for_stacktrace(self._stacktrace_dir)
++
+         # propagate signals
+         signal.signal(signal.SIGINT, self._term)
+         signal.signal(signal.SIGTERM, self._term)
+diff --git a/lib/ansible/executor/task_queue_manager.py b/lib/ansible/executor/task_queue_manager.py
+index bc48852dd0dfbe..7c8ed1bf7675c4 100644
+--- a/lib/ansible/executor/task_queue_manager.py
++++ b/lib/ansible/executor/task_queue_manager.py
+@@ -28,6 +28,8 @@
+ import typing as t
+ import multiprocessing.queues
+ 
++from pathlib import Path
++
+ from ansible import constants as C
+ from ansible import context
+ from ansible.errors import AnsibleError, ExitCode, AnsibleCallbackError
+@@ -37,6 +39,7 @@
+ from ansible.executor.stats import AggregateStats
+ from ansible.executor.task_result import CallbackTaskResult
+ from ansible.inventory.manager import InventoryManager
++from ansible.module_utils._internal import _debug
+ from ansible.module_utils.common.text.converters import to_native
+ from ansible.parsing.dataloader import DataLoader
+ from ansible.playbook.play_context import PlayContext
+@@ -209,6 +212,18 @@ def __init__(
+         signal.signal(signal.SIGTERM, self._signal_handler)
+         signal.signal(signal.SIGINT, self._signal_handler)
+ 
++        # Location of our stacktrace dump directory. Pre-create so Workers don't have to.
++        trace_dir = Path(C.ANSIBLE_HOME).expanduser() / 'debug'
++        try:
++            trace_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
++        except Exception as e:
++            display.warning(f"Unable to create debug directory {trace_dir}: {e}")
++            self.stacktrace_dir = None
++        else:
++            display.debug(f"Using stacktrace dump directory {trace_dir}")
++            self.stacktrace_dir = str(trace_dir)
++        _debug.register_for_stacktrace(self.stacktrace_dir)
++
+     def _initialize_processes(self, num: int) -> None:
+         # mutable update to ensure the reference stays the same
+         self._workers[:] = [None] * num
+diff --git a/lib/ansible/module_utils/_internal/_debug.py b/lib/ansible/module_utils/_internal/_debug.py
+new file mode 100644
+index 00000000000000..dc834b8c593cbe
+--- /dev/null
++++ b/lib/ansible/module_utils/_internal/_debug.py
+@@ -0,0 +1,58 @@
++# Copyright: Contributors to the Ansible project
++# Simplified BSD License (see licenses/simplified_bsd.txt or https://opensource.org/licenses/BSD-2-Clause)
++
++from __future__ import annotations
++
++import contextlib
++import faulthandler
++import os
++import pathlib
++import platform
++import signal
++import tempfile
++import traceback
++
++from datetime import datetime
++
++from ansible.module_utils._internal._logging import log_to_system
++
++
++def _write_stacktraces(stacktrace_dir: str | None = None):
++    """
++    Signal handler to write debug stacktrace information to a file located in `stacktrace_dir` or to the
++    system's temp directory (the default).
++    """
++
++    def inner(_signum, _frame):
++        now = datetime.now()
++        pid = os.getpid()
++        trace_dir = stacktrace_dir if stacktrace_dir is not None else tempfile.gettempdir()
++        file = pathlib.Path(trace_dir) / f'ansible-{pid}.debug'
++
++        with contextlib.suppress(Exception):
++            # Drop a breadcrumb to help identify where the stacktrace was saved.
++            log_to_system(f"Writing debug stacktrace to {file}", module_name="stacktrace", syslog_facility="LOG_USER")
++
++            # Use O_NOFOLLOW to prevent following a pre-planted symlink at this predictable
++            # path (e.g. in a world-writable temp dir), which would otherwise let a local
++            # attacker redirect the append to an arbitrary file.
++            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
++            fd = os.open(file, flags, 0o600)
++            with os.fdopen(fd, 'a') as trace_file:
++                trace_file.write(f'=== {now.isoformat()} on {platform.node()} ===\n\n')
++
++                # The `faulthandler` output will also contain the main process stacktrace (as current thread),
++                # but it won't be as detailed as the `traceback` output.
++                trace_file.write(f'*** Process {pid} stacktrace\n\n')
++                traceback.print_stack(f=_frame, file=trace_file)
++
++                # Let `faulthandler` handle the threads since it can handle those more efficiently/correctly.
++                trace_file.write('\n\n*** Thread stacktraces\n\n')
++                faulthandler.dump_traceback(file=trace_file)
++
++    return inner
++
++
++def register_for_stacktrace(stacktrace_dir: str | None = None):
++    """Register a signal handler to write debug stacktrace information to a file."""
++    signal.signal(signal.SIGUSR1, _write_stacktraces(stacktrace_dir))
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 04420f21b1804e..8e850530ddf376 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -158,6 +158,8 @@ def _get_available_hash_algorithms():
+     warn,
+ )
+ 
++from ansible.module_utils._internal import _debug
++
+ # Note: When getting Sequence from collections, it matches with strings. If
+ # this matters, make sure to check for strings before checking for sequencetype
+ SEQUENCETYPE = frozenset, KeysView, Sequence
+@@ -452,6 +454,10 @@ def __init__(self, argument_spec, bypass_checks=False, no_log=False,
+         # finally, make sure we're in a logical working dir
+         self._set_cwd()
+ 
++        # Use system temp dir for module-level stacktraces. Using remote_tmp gets complicated with tasks
++        # as different or unprivileged users.
++        _debug.register_for_stacktrace()
++
+     @property
+     def tmpdir(self):
+         # if _ansible_tmpdir was not set and we have a remote_tmp,
+diff --git a/lib/ansible/plugins/strategy/__init__.py b/lib/ansible/plugins/strategy/__init__.py
+index 5744a3e7818bfe..ff465c748f180c 100644
+--- a/lib/ansible/plugins/strategy/__init__.py
++++ b/lib/ansible/plugins/strategy/__init__.py
+@@ -406,6 +406,7 @@ def _queue_task(self, host, task, task_vars, play_context):
+                         shared_loader_obj=plugin_loader.get_plugin_loader_namespace(),
+                         worker_id=self._cur_worker,
+                         cliargs=context.CLIARGS,
++                        stacktrace_dir=self._tqm.stacktrace_dir
+                     )
+                     self._workers[self._cur_worker] = worker_prc
+                     self._tqm.send_callback('v2_runner_on_start', host, task)
+diff --git a/test/integration/targets/stacktrace_dump/aliases b/test/integration/targets/stacktrace_dump/aliases
+new file mode 100644
+index 00000000000000..498fedd558ee1f
+--- /dev/null
++++ b/test/integration/targets/stacktrace_dump/aliases
+@@ -0,0 +1,2 @@
++shippable/posix/group4
++context/controller
+diff --git a/test/integration/targets/stacktrace_dump/inventory b/test/integration/targets/stacktrace_dump/inventory
+new file mode 100644
+index 00000000000000..21e8e48e193ffc
+--- /dev/null
++++ b/test/integration/targets/stacktrace_dump/inventory
+@@ -0,0 +1,5 @@
++localhost
++
++[all:vars]
++ansible_connection=local
++ansible_python_interpreter={{ansible_playbook_python}}
+diff --git a/test/integration/targets/stacktrace_dump/playbook.yml b/test/integration/targets/stacktrace_dump/playbook.yml
+new file mode 100644
+index 00000000000000..4bcb823f1cfc2e
+--- /dev/null
++++ b/test/integration/targets/stacktrace_dump/playbook.yml
+@@ -0,0 +1,7 @@
++---
++- hosts: localhost
++  gather_facts: false
++  tasks:
++    - name: Long-running task to allow signal testing
++      ansible.builtin.debug:
++        msg: "{{ lookup('pipe', 'sleep 30') }}"
+diff --git a/test/integration/targets/stacktrace_dump/runme.sh b/test/integration/targets/stacktrace_dump/runme.sh
+new file mode 100755
+index 00000000000000..0230d3fdf3ce55
+--- /dev/null
++++ b/test/integration/targets/stacktrace_dump/runme.sh
+@@ -0,0 +1,194 @@
++#!/usr/bin/env bash
++
++set -eux
++
++# Get the debug directory where stacktrace files are written
++DEBUG_DIR="${ANSIBLE_HOME:-$HOME/.ansible}/debug"
++
++test_controller_debug_directory() {
++    echo "=== Test: Stacktrace dump to debug directory ==="
++    echo "Using debug directory: $DEBUG_DIR"
++
++    # Start ansible-playbook in background with a long-running task
++    ansible-playbook -i inventory playbook.yml &
++    local ANSIBLE_PID
++    ANSIBLE_PID=$!
++
++    # Give it time to start executing and spawn workers
++    sleep 2
++
++    # Find all subprocess PIDs
++    local CHILD_PIDS
++    CHILD_PIDS=$(pgrep -P $ANSIBLE_PID 2>/dev/null || true)
++
++    # Send SIGUSR1 signal to main process and all children
++    kill -SIGUSR1 $ANSIBLE_PID
++    # shellcheck disable=SC2086
++    for child_pid in $CHILD_PIDS; do
++        kill -SIGUSR1 $child_pid 2>/dev/null || true
++    done
++
++    # Give it time to write the files
++    sleep 1
++
++    # Find the stacktrace file for main process in debug directory
++    local STACKTRACE_FILE
++    STACKTRACE_FILE=$(find -L "$DEBUG_DIR" -name "ansible-${ANSIBLE_PID}.debug" 2>/dev/null | head -1)
++
++    if [[ -z "$STACKTRACE_FILE" ]]; then
++        echo "FAIL: Stacktrace file not found in $DEBUG_DIR for main process"
++        kill $ANSIBLE_PID 2>/dev/null || true
++        exit 1
++    fi
++
++    echo "Found stacktrace file for main process: $STACKTRACE_FILE"
++
++    # Verify file contains expected content
++    if ! grep -q "Process ${ANSIBLE_PID} stacktrace" "$STACKTRACE_FILE"; then
++        echo "FAIL: Stacktrace file missing process stacktrace header"
++        cat "$STACKTRACE_FILE"
++        kill $ANSIBLE_PID 2>/dev/null || true
++        exit 1
++    fi
++
++    if ! grep -q "Thread stacktraces" "$STACKTRACE_FILE"; then
++        echo "FAIL: Stacktrace file missing thread stacktraces header"
++        cat "$STACKTRACE_FILE"
++        kill $ANSIBLE_PID 2>/dev/null || true
++        exit 1
++    fi
++
++    # Check for child process stacktrace files
++    local CHILD_PIDS_COUNT=0
++    local CHILD_FILES_FOUND=0
++    for child_pid in $CHILD_PIDS; do
++        CHILD_PIDS_COUNT=$((CHILD_PIDS_COUNT + 1))
++        local CHILD_FILE
++        CHILD_FILE=$(find -L "$DEBUG_DIR" -name "ansible-${child_pid}.debug" 2>/dev/null | head -1)
++        if [[ -n "$CHILD_FILE" ]]; then
++            echo "Found stacktrace file for child process $child_pid: $CHILD_FILE"
++            CHILD_FILES_FOUND=$((CHILD_FILES_FOUND + 1))
++            rm -f "$CHILD_FILE"
++        fi
++    done
++
++    if [[ $CHILD_PIDS_COUNT -gt 0 ]] && [[ $CHILD_FILES_FOUND -ne $CHILD_PIDS_COUNT ]]; then
++        echo "FAIL: Expected stacktrace files for all $CHILD_PIDS_COUNT child processes, but found only $CHILD_FILES_FOUND"
++        kill $ANSIBLE_PID 2>/dev/null || true
++        exit 1
++    else
++        echo "Found stacktrace files for $CHILD_FILES_FOUND child process(es)"
++    fi
++
++    # Clean up
++    kill $ANSIBLE_PID 2>/dev/null || true
++    wait $ANSIBLE_PID 2>/dev/null || true
++    rm -f "$STACKTRACE_FILE"
++
++    echo "Test PASSED"
++}
++
++test_multiple_signals_append() {
++    echo "=== Test: Multiple SIGUSR1 signals append to file ==="
++
++    # Start ansible-playbook in background
++    ansible-playbook -i inventory playbook.yml &
++    local ANSIBLE_PID
++    ANSIBLE_PID=$!
++
++    # Give it time to start executing
++    sleep 2
++
++    # Send SIGUSR1 signal twice
++    kill -SIGUSR1 $ANSIBLE_PID
++    sleep 1
++    kill -SIGUSR1 $ANSIBLE_PID
++    sleep 1
++
++    # Find the stacktrace file
++    local STACKTRACE_FILE
++    STACKTRACE_FILE=$(find -L "$DEBUG_DIR" -name "ansible-${ANSIBLE_PID}.debug" 2>/dev/null | head -1)
++
++    if [[ -z "$STACKTRACE_FILE" ]]; then
++        echo "FAIL: Stacktrace file not found"
++        kill $ANSIBLE_PID 2>/dev/null || true
++        exit 1
++    fi
++
++    # Count the number of stacktrace entries (should be 2)
++    local COUNT
++    COUNT=$(grep -c "Process ${ANSIBLE_PID} stacktrace" "$STACKTRACE_FILE")
++
++    if [[ "$COUNT" -ne 2 ]]; then
++        echo "FAIL: Expected 2 stacktrace entries, found $COUNT"
++        cat "$STACKTRACE_FILE"
++        kill $ANSIBLE_PID 2>/dev/null || true
++        exit 1
++    fi
++
++    echo "Found $COUNT stacktrace entries as expected"
++
++    # Clean up
++    kill $ANSIBLE_PID 2>/dev/null || true
++    wait $ANSIBLE_PID 2>/dev/null || true
++    rm -f "$STACKTRACE_FILE"
++
++    echo "Test PASSED"
++}
++
++test_symlink_not_followed() {
++    echo "=== Test: Symlink at stacktrace path is not followed ==="
++
++    # Start ansible-playbook in background
++    ansible-playbook -i inventory playbook.yml &
++    local ANSIBLE_PID
++    ANSIBLE_PID=$!
++
++    # Give it time to start executing and pre-create the debug directory
++    sleep 2
++
++    # Pre-plant a symlink at the predictable stacktrace path pointing at a canary
++    # file. A correct handler must refuse to follow it (O_NOFOLLOW).
++    local CANARY
++    CANARY=$(mktemp)
++    rm -f "$CANARY"
++    local SYMLINK="$DEBUG_DIR/ansible-${ANSIBLE_PID}.debug"
++    rm -f "$SYMLINK"
++    ln -s "$CANARY" "$SYMLINK"
++
++    # Signal the process to trigger the stacktrace write
++    kill -SIGUSR1 $ANSIBLE_PID
++    sleep 1
++
++    # The canary must NOT have been created/written through the symlink
++    if [[ -e "$CANARY" ]]; then
++        echo "FAIL: stacktrace write followed the symlink and wrote to $CANARY"
++        kill $ANSIBLE_PID 2>/dev/null || true
++        rm -f "$CANARY" "$SYMLINK"
++        exit 1
++    fi
++
++    # The planted symlink should remain a symlink (open failed, nothing replaced it)
++    if [[ ! -L "$SYMLINK" ]]; then
++        echo "FAIL: expected the planted symlink to remain untouched at $SYMLINK"
++        kill $ANSIBLE_PID 2>/dev/null || true
++        rm -f "$CANARY" "$SYMLINK"
++        exit 1
++    fi
++
++    echo "Symlink was not followed and canary was not written"
++
++    # Clean up
++    kill $ANSIBLE_PID 2>/dev/null || true
++    wait $ANSIBLE_PID 2>/dev/null || true
++    rm -f "$CANARY" "$SYMLINK"
++
++    echo "Test PASSED"
++}
++
++# Run all tests
++test_controller_debug_directory
++test_multiple_signals_append
++test_symlink_not_followed
++
++echo "=== All tests PASSED ==="
+diff --git a/test/integration/targets/stacktrace_dump_remote/aliases b/test/integration/targets/stacktrace_dump_remote/aliases
+new file mode 100644
+index 00000000000000..0665371d038c39
+--- /dev/null
++++ b/test/integration/targets/stacktrace_dump_remote/aliases
+@@ -0,0 +1,3 @@
++shippable/posix/group2
++context/target
++gather_facts/no
+diff --git a/test/integration/targets/stacktrace_dump_remote/library/custom_module.py b/test/integration/targets/stacktrace_dump_remote/library/custom_module.py
+new file mode 100644
+index 00000000000000..1c0216f7a71fea
+--- /dev/null
++++ b/test/integration/targets/stacktrace_dump_remote/library/custom_module.py
+@@ -0,0 +1,31 @@
++#!/usr/bin/python
++
++from __future__ import annotations
++
++import os
++import signal
++import tempfile
++
++from ..module_utils.basic import AnsibleModule  # pylint: disable=relative-beyond-top-level
++
++
++def main():
++    module = AnsibleModule(
++        argument_spec=dict()
++    )
++
++    # Get PID of the current process (AnsiballZ)
++    process_pid = os.getpid()
++
++    # Send SIGUSR1 to the current process to trigger a stacktrace dump
++    os.kill(process_pid, signal.SIGUSR1)
++
++    # Exit with the stacktrace dir and AnsiballZ PID
++    module.exit_json(
++        trace_dir=tempfile.gettempdir(),
++        process_pid=process_pid
++    )
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/test/integration/targets/stacktrace_dump_remote/tasks/main.yml b/test/integration/targets/stacktrace_dump_remote/tasks/main.yml
+new file mode 100644
+index 00000000000000..93a2bdceed08ed
+--- /dev/null
++++ b/test/integration/targets/stacktrace_dump_remote/tasks/main.yml
+@@ -0,0 +1,35 @@
++- name: Use custom module to send SIGUSR1 to AnsiballZ process
++  custom_module:
++  register: result
++
++- debug:
++    msg: "Sent SIGUSR1 to {{ result.process_pid }}"
++
++- name: Locate stacktrace dump file
++  find:
++    paths: "{{ result.trace_dir }}"
++    patterns: "ansible-{{ result.process_pid }}.debug"
++  register: found_files
++
++- block:
++  - assert:
++      that:
++        - found_files.files | length == 1
++
++  - name: Read file contents
++    command: "cat {{ found_files.files[0].path }}"
++    register: file_contents
++
++  - set_fact:
++      msg1: "Process {{ result.process_pid }} stacktrace"
++
++  - assert:
++      that:
++        - msg1 in file_contents.stdout
++        - "'Thread stacktraces' in file_contents.stdout"
++
++  always:
++    - name: Remove stacktrace dump file
++      file:
++        path: "{{ found_files.files[0].path }}"
++        state: absent
+diff --git a/test/units/executor/module_common/test_recursive_finder.py b/test/units/executor/module_common/test_recursive_finder.py
+index 308a04f00dd182..50c1d221877e7d 100644
+--- a/test/units/executor/module_common/test_recursive_finder.py
++++ b/test/units/executor/module_common/test_recursive_finder.py
+@@ -34,6 +34,7 @@
+                                       'ansible/module_utils/_internal/_dataclass_validation.py',
+                                       'ansible/module_utils/_internal/_datatag/__init__.py',
+                                       'ansible/module_utils/_internal/_datatag/_tags.py',
++                                      'ansible/module_utils/_internal/_debug.py',
+                                       'ansible/module_utils/_internal/_debugging.py',
+                                       'ansible/module_utils/_internal/_deprecator.py',
+                                       'ansible/module_utils/_internal/_errors.py',
+diff --git a/test/units/module_utils/basic/test_tmpdir.py b/test/units/module_utils/basic/test_tmpdir.py
+index 229df456ee703d..f4704522b20c55 100644
+--- a/test/units/module_utils/basic/test_tmpdir.py
++++ b/test/units/module_utils/basic/test_tmpdir.py
+@@ -58,15 +58,13 @@ class TestAnsibleModuleTmpDir:
+ 
+     @pytest.mark.parametrize('args, expected, stat_exists', [(s, e, t) for s, t, e in DATA])
+     def test_tmpdir_property(self, monkeypatch, args, expected, stat_exists):
+-        makedirs = {'called': False}
++        makedirs_calls = []
+ 
+         def mock_mkdtemp(prefix, dir):
+             return os.path.join(dir, prefix)
+ 
+-        def mock_makedirs(path, mode):
+-            makedirs['called'] = True
+-            makedirs['path'] = path
+-            makedirs['mode'] = mode
++        def mock_makedirs(path, mode, exist_ok=False):
++            makedirs_calls.append({'path': path, 'mode': mode})
+             return
+ 
+         monkeypatch.setattr(tempfile, 'mkdtemp', mock_mkdtemp)
+@@ -84,10 +82,10 @@ def mock_makedirs(path, mode):
+         assert am.tmpdir == actual_tmpdir
+ 
+         if not stat_exists:
+-            assert makedirs['called']
+             expected = os.path.expanduser(os.path.expandvars(am._remote_tmp))
+-            assert makedirs['path'] == expected
+-            assert makedirs['mode'] == 0o700
++            tmpdir_calls = [c for c in makedirs_calls if c['path'] == expected]
++            assert len(tmpdir_calls) == 1
++            assert tmpdir_calls[0]['mode'] == 0o700
+ 
+     @pytest.mark.parametrize('stdin', ({"_ansible_tmpdir": None,
+                                         "_ansible_remote_tmp": "$HOME/.test",
+@@ -102,6 +100,9 @@ def test_tmpdir_makedirs_failure(self, am, monkeypatch):
+         monkeypatch.setattr(os.path, 'exists', lambda x: False)
+         monkeypatch.setattr(os, 'makedirs', mock_makedirs)
+ 
++        # Reset cached tmpdir so the property re-evaluates with mocked makedirs
++        am._tmpdir = None
++
+         actual = am.tmpdir
+         assert actual == "/tmp/path"
+         assert mock_makedirs.call_args[0] == (os.path.expanduser(os.path.expandvars("$HOME/.test")),)

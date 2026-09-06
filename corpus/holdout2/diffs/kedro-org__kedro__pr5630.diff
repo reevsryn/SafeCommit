@@ -1,0 +1,415 @@
+diff --git a/RELEASE.md b/RELEASE.md
+index fcb4c67b98..8f60dacac6 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -19,6 +19,7 @@
+ * Improved the `pipeline()` error message when a mapped dataset or parameter does not exist in the pipeline.
+ * Fixed `kedro new` accepting project names whose derived package name shadows a Python standard library module or is a Python keyword (e.g. `email`, `json`, `import`), which silently produced a broken, unimportable project. Such names are now rejected at creation time with a clear message.
+ * Fixed `kedro pipeline create` accepting Python keywords (e.g. `for`, `import`, `return`) as pipeline names. Such names are now rejected at creation time with a clear error message.
++* Fixed custom `logging.Filter` subclasses configured with `class:` in `logging.yml`, so they are instantiated and applied.
+ 
+ ## Documentation changes
+ * Documented hooks limitation when using `ParallelRunner`.
+diff --git a/docs/develop/logging.md b/docs/develop/logging.md
+index 27b6df1c8f..617d7d35a7 100644
+--- a/docs/develop/logging.md
++++ b/docs/develop/logging.md
+@@ -144,6 +144,41 @@ Besides the `rich` handler defined in Kedro's framework, we provide two addition
+ 
+ The following section illustrates some common examples of how to change your project's logging configuration.
+ 
++## How to add a custom logging filter
++
++Add a custom [`logging.Filter`](https://docs.python.org/3/library/logging.html#filter-objects) subclass to your project logging configuration. Define the filter in your project code:
++
++```python
++import logging
++
++
++class KeepOnlyFilter(logging.Filter):
++    def filter(self, record: logging.LogRecord) -> bool:
++        return "KEEP" in record.getMessage()
++```
++
++Then reference the filter with the `class` key in `conf/logging.yml` and attach it to the relevant handler:
++
++```yaml
++filters:
++  keep_only:
++    class: your_project.logging.KeepOnlyFilter
++
++handlers:
++  console:
++    class: logging.StreamHandler
++    filters: [keep_only]
++    stream: ext://sys.stdout
++
++root:
++  handlers: [console]
++  level: INFO
++```
++
++!!! note
++    Standard Python logging configuration also supports the `()` factory key for custom objects. Kedro does not allow `()` in `logging.yml` because it can execute arbitrary code.
++    Use `class` for custom `logging.Filter` subclasses instead.
++
+ ## How to customise the `rich` handler
+ 
+ Kedro's `kedro.logging.RichHandler` is a subclass of [`rich.logging.RichHandler`](https://rich.readthedocs.io/en/stable/reference/logging.html#rich.logging.RichHandler) and supports the same set of arguments. By default, `rich_tracebacks` is set to `True` to use `rich` to render exceptions. You can disable it by setting `rich_tracebacks: False`.
+diff --git a/kedro/framework/project/__init__.py b/kedro/framework/project/__init__.py
+index 2589fc0cab..ffab3fb555 100644
+--- a/kedro/framework/project/__init__.py
++++ b/kedro/framework/project/__init__.py
+@@ -301,14 +301,17 @@ def __init__(self) -> None:
+         self.configure(yaml.safe_load(logging_config))
+         logger.info(msg)
+ 
+-    def _validate_logging_class(self, class_path: str) -> None:
+-        """Validate that a class referenced in logging configuration is a legitimate
+-        logging class (i.e. a subclass of logging.Handler, logging.Formatter, or
+-        logging.Filter).
++    def _resolve_logging_class(self, class_path: str) -> type[Any] | None:
++        """Resolve and validate that a class referenced in logging configuration is
++        a legitimate logging class (i.e. a subclass of logging.Handler,
++        logging.Formatter, or logging.Filter).
+ 
+         Args:
+             class_path: Dotted import path to the class, e.g. ``logging.StreamHandler``.
+ 
++        Returns:
++            Resolved class, or ``None`` for bare names resolved internally by logging.
++
+         Raises:
+             ValueError: If the class cannot be imported or is not a logging base class.
+         """
+@@ -316,7 +319,7 @@ def _validate_logging_class(self, class_path: str) -> None:
+         module_path, _, class_name = class_path.rpartition(".")
+         if not module_path:
+             # Bare name (e.g. "StreamHandler") resolved internally by logging machinery.
+-            return
++            return None
+ 
+         try:
+             module = importlib.import_module(module_path)
+@@ -339,7 +342,19 @@ def _validate_logging_class(self, class_path: str) -> None:
+                 f"Got {type(cls).__name__!r}."
+             )
+ 
+-    def _validate_logging_config(self, config: Any) -> Any:
++        return cls
++
++    def _validate_logging_class(self, class_path: str) -> type[Any] | None:
++        """Validate that a class referenced in logging configuration is a legitimate
++        logging class (i.e. a subclass of logging.Handler, logging.Formatter, or
++        logging.Filter)."""
++        return self._resolve_logging_class(class_path)
++
++    def _validate_logging_config(
++        self,
++        config: Any,
++        resolved_logging_classes: dict[str, type[Any] | None] | None = None,
++    ) -> Any:
+         """Recursively check the logging configuration and raise an error if dangerous
+         '()' factory keys are encountered or if any 'class' value is not a legitimate
+         logging class."""
+@@ -349,23 +364,91 @@ def _validate_logging_config(self, config: Any) -> Any:
+                     "The '()' key is not allowed in logging configuration as it poses a security risk."
+                 )
+             if "class" in config:
+-                self._validate_logging_class(config["class"])
++                class_path = config["class"]
++                resolved_class = self._validate_logging_class(class_path)
++                if resolved_logging_classes is not None:
++                    resolved_logging_classes[class_path] = resolved_class
+             validated = {}
+             for k, v in config.items():
+-                validated[k] = self._validate_logging_config(v)
++                validated[k] = self._validate_logging_config(
++                    v, resolved_logging_classes
++                )
+             return validated
+         elif isinstance(config, list):
+-            return [self._validate_logging_config(item) for item in config]
++            return [
++                self._validate_logging_config(item, resolved_logging_classes)
++                for item in config
++            ]
+         else:
+             return config
+ 
++    def _prepare_logging_config(
++        self,
++        logging_config: dict[str, Any],
++        resolved_logging_classes: dict[str, type[Any] | None] | None = None,
++    ) -> dict[str, Any]:
++        """Prepare a validated logging configuration for ``dictConfig``.
++
++        ``logging.config.dictConfig`` only instantiates custom filters through the
++        ``()`` factory key, which Kedro rejects in user configuration for security
++        reasons. For validated top-level filter definitions, convert ``class`` to an
++        internal callable so custom ``logging.Filter`` subclasses are instantiated
++        without allowing user-provided factories.
++        """
++        prepared_config = logging_config.copy()
++
++        if "filters" not in logging_config:
++            return prepared_config
++
++        filters = logging_config["filters"]
++
++        if not isinstance(filters, dict):
++            return prepared_config
++
++        prepared_filters = filters.copy()
++        prepared_config["filters"] = prepared_filters
++
++        for filter_name, filter_config in prepared_filters.items():
++            if not isinstance(filter_config, dict) or "class" not in filter_config:
++                continue
++
++            class_path = filter_config["class"]
++            filter_class = (
++                resolved_logging_classes[class_path]
++                if resolved_logging_classes is not None
++                and class_path in resolved_logging_classes
++                else self._resolve_logging_class(class_path)
++            )
++
++            if filter_class is None:
++                continue
++
++            if not issubclass(filter_class, logging.Filter):
++                raise ValueError(
++                    f"Invalid logging filter class '{class_path}' for filter "
++                    f"'{filter_name}'. Must be a subclass of logging.Filter."
++                )
++
++            prepared_filter_config = {
++                key: value for key, value in filter_config.items() if key != "class"
++            }
++            prepared_filter_config["()"] = filter_class
++            prepared_filters[filter_name] = prepared_filter_config
++
++        return prepared_config
++
+     def configure(self, logging_config: dict[str, Any]) -> None:
+         """Configure project logging using ``logging_config`` (e.g. from project
+         logging.yml). We store this in the UserDict data so that it can be reconfigured
+         in _bootstrap_subprocess.
+         """
+-        validated_config = self._validate_logging_config(logging_config)
+-        logging.config.dictConfig(validated_config)
++        resolved_logging_classes: dict[str, type[Any] | None] = {}
++        validated_config = self._validate_logging_config(
++            logging_config, resolved_logging_classes
++        )
++        logging.config.dictConfig(
++            self._prepare_logging_config(validated_config, resolved_logging_classes)
++        )
+         self.data = validated_config
+ 
+     def set_project_logging(
+diff --git a/tests/framework/project/test_logging.py b/tests/framework/project/test_logging.py
+index 51ad6a2fd6..3e54ec42b1 100644
+--- a/tests/framework/project/test_logging.py
++++ b/tests/framework/project/test_logging.py
+@@ -16,6 +16,11 @@
+ from kedro.utils import _has_rich_handler
+ 
+ 
++class KeepOnlyFilter(logging.Filter):
++    def filter(self, record: logging.LogRecord) -> bool:
++        return "KEEP" in record.getMessage()
++
++
+ @pytest.fixture
+ def default_logging_config_with_project():
+     logging_config = {
+@@ -461,6 +466,187 @@ def test_validate_logging_class_bare_name_passes():
+     logging_instance._validate_logging_class("StreamHandler")  # should not raise
+ 
+ 
++def test_configure_logging_instantiates_custom_filter_class():
++    from kedro.framework.project import _ProjectLogging
++
++    stream = io.StringIO()
++    filter_class = f"{__name__}.KeepOnlyFilter"
++    logging_config = {
++        "version": 1,
++        "disable_existing_loggers": False,
++        "filters": {"keep_only": {"class": filter_class}},
++        "handlers": {
++            "stream": {
++                "class": "logging.StreamHandler",
++                "filters": ["keep_only"],
++                "stream": stream,
++            }
++        },
++        "root": {"handlers": ["stream"], "level": "INFO"},
++    }
++
++    logging_instance = _ProjectLogging()
++    logging_instance.configure(logging_config)
++
++    [handler] = logging.getLogger().handlers
++    assert isinstance(handler.filters[0], KeepOnlyFilter)
++    assert logging_instance.data["filters"]["keep_only"] == {"class": filter_class}
++
++    drop_record = logging.LogRecord(
++        "test_logger", logging.INFO, __file__, 1, "DROP this message", (), None
++    )
++    keep_record = logging.LogRecord(
++        "test_logger", logging.INFO, __file__, 1, "KEEP this message", (), None
++    )
++    handler.handle(drop_record)
++    handler.handle(keep_record)
++
++    logged_messages = stream.getvalue()
++    assert "DROP this message" not in logged_messages
++    assert logged_messages == "KEEP this message\n"
++
++
++def test_configure_logging_passes_custom_filter_constructor_parameters():
++    from kedro.framework.project import _ProjectLogging
++
++    stream = io.StringIO()
++    filter_class = f"{__name__}.KeepOnlyFilter"
++    logging_config = {
++        "version": 1,
++        "disable_existing_loggers": False,
++        "filters": {"keep_only": {"class": filter_class, "name": "custom_filter_name"}},
++        "handlers": {
++            "stream": {
++                "class": "logging.StreamHandler",
++                "filters": ["keep_only"],
++                "stream": stream,
++            }
++        },
++        "root": {"handlers": ["stream"], "level": "INFO"},
++    }
++
++    logging_instance = _ProjectLogging()
++    logging_instance.configure(logging_config)
++
++    [handler] = logging.getLogger().handlers
++    custom_filter = handler.filters[0]
++    assert isinstance(custom_filter, KeepOnlyFilter)
++    assert custom_filter.name == "custom_filter_name"
++    assert logging_instance.data["filters"]["keep_only"] == {
++        "class": filter_class,
++        "name": "custom_filter_name",
++    }
++
++
++def test_configure_logging_reuses_validated_filter_class():
++    from kedro.framework.project import _ProjectLogging
++
++    filter_class = f"{__name__}.KeepOnlyFilter"
++    logging_config = {
++        "version": 1,
++        "disable_existing_loggers": False,
++        "filters": {"keep_only": {"class": filter_class}},
++        "handlers": {
++            "stream": {
++                "class": "logging.StreamHandler",
++                "filters": ["keep_only"],
++            }
++        },
++        "root": {"handlers": ["stream"], "level": "INFO"},
++    }
++
++    logging_instance = _ProjectLogging()
++    with mock.patch.object(
++        logging_instance,
++        "_resolve_logging_class",
++        wraps=logging_instance._resolve_logging_class,
++    ) as resolve_logging_class:
++        logging_instance.configure(logging_config)
++
++    assert resolve_logging_class.call_count == 2
++    resolve_logging_class.assert_any_call(filter_class)
++    resolve_logging_class.assert_any_call("logging.StreamHandler")
++
++
++def test_prepare_logging_config_without_filters_does_not_add_filters_key():
++    from kedro.framework.project import _ProjectLogging
++
++    logging_config = {
++        "version": 1,
++        "handlers": {"stream": {"class": "logging.StreamHandler"}},
++        "root": {"handlers": ["stream"], "level": "INFO"},
++    }
++
++    logging_instance = _ProjectLogging()
++    prepared_config = logging_instance._prepare_logging_config(logging_config)
++
++    assert "filters" not in prepared_config
++
++
++def test_prepare_logging_config_with_non_dict_filters_is_unchanged():
++    from kedro.framework.project import _ProjectLogging
++
++    logging_config = {
++        "version": 1,
++        "filters": ["not-a-filter-config"],
++    }
++
++    logging_instance = _ProjectLogging()
++    prepared_config = logging_instance._prepare_logging_config(logging_config)
++
++    assert prepared_config == logging_config
++    assert prepared_config is not logging_config
++
++
++@pytest.mark.parametrize("filter_config", [{"name": "kedro"}, "not-a-dict"])
++def test_prepare_logging_config_ignores_filters_without_class(filter_config):
++    from kedro.framework.project import _ProjectLogging
++
++    logging_config = {
++        "version": 1,
++        "filters": {"passthrough": filter_config},
++    }
++
++    logging_instance = _ProjectLogging()
++    prepared_config = logging_instance._prepare_logging_config(logging_config)
++
++    assert prepared_config["filters"]["passthrough"] == filter_config
++
++
++def test_prepare_logging_config_ignores_bare_filter_class_name():
++    from kedro.framework.project import _ProjectLogging
++
++    logging_config = {
++        "version": 1,
++        "filters": {"keep_only": {"class": "Filter"}},
++    }
++
++    logging_instance = _ProjectLogging()
++    prepared_config = logging_instance._prepare_logging_config(logging_config)
++
++    assert prepared_config["filters"]["keep_only"] == {"class": "Filter"}
++
++
++def test_configure_logging_rejects_non_filter_class_in_filters():
++    from kedro.framework.project import _ProjectLogging
++
++    logging_config = {
++        "version": 1,
++        "filters": {"not_a_filter": {"class": "logging.StreamHandler"}},
++        "handlers": {
++            "stream": {
++                "class": "logging.StreamHandler",
++                "filters": ["not_a_filter"],
++            }
++        },
++        "root": {"handlers": ["stream"], "level": "INFO"},
++    }
++
++    logging_instance = _ProjectLogging()
++    with pytest.raises(ValueError, match="Must be a subclass of logging.Filter"):
++        logging_instance.configure(logging_config)
++
++
+ def test_validate_config_blocks_rce_via_class():
+     """The subprocess.Popen RCE vector via the 'class' key must be blocked."""
+     from kedro.framework.project import _ProjectLogging

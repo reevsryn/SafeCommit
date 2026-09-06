@@ -1,0 +1,295 @@
+diff --git a/RELEASE.md b/RELEASE.md
+index b54337d08c..46fadbb465 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -5,6 +5,7 @@
+ * Added node source location metadata (`NodeSnapshot.source`) to inspection snapshots for displaying node code.
+ 
+ ## Bug fixes and other changes
++* Fixed a thread-safety issue in the Kedro HTTP server by adding a `serving_mode` argument to `KedroServiceSession.create()` that preloads all pipelines upfront.
+ * Fixed a `RecursionError` when initialising a session with dynaconf-backed settings by converting `settings.SESSION_STORE_ARGS` to a plain `dict` before deepcopying it.
+ * Excluded `kedro_benchmarks` from the built wheel so benchmark tests are no longer shipped with the package.
+ * Fixed `get_close_matches` returning duplicate suggestions when several inputs matched the same target, and being able to exhaust a one-shot iterable passed as `targets`.
+diff --git a/docs/extend/serving.md b/docs/extend/serving.md
+index d015eb4a34..225899c589 100644
+--- a/docs/extend/serving.md
++++ b/docs/extend/serving.md
+@@ -192,6 +192,8 @@ On failure the response also contains an `error` object with the exception type
+ 
+ The first `/run` request creates a `KedroServiceSession` which the following requests reuse. The endpoint runs in a thread pool, so concurrent `/run` requests share the same session and pipeline runs are not isolated from each other.
+ 
++The server creates this session with `serving_mode=True` (see [Create a `KedroServiceSession`](./session.md#create-a-kedroservicesession)), which preloads all registered pipelines upfront so that concurrent requests can safely look up pipelines without mutating shared state.
++
+ !!! note
+     `env` and `conf_source` are not accepted per-request. Set them at server startup through the `--env` and `--conf-source` options instead.
+ 
+diff --git a/docs/extend/session.md b/docs/extend/session.md
+index ee54f8ebe1..10f7b22b4f 100644
+--- a/docs/extend/session.md
++++ b/docs/extend/session.md
+@@ -90,6 +90,7 @@ You can provide the following optional arguments in `KedroServiceSession.create(
+ - `project_path`: Path to the project root directory
+ - `env`: Environment for the `KedroContext`
+ - `conf_source`: Optional argument to specify the configuration source for the `KedroContext`
++- `serving_mode`: A Boolean value, `False` by default. Set to `True` when the session will handle concurrent `run()` calls; preloads all pipelines eagerly during `create()` to avoid race conditions.
+ 
+ 
+ The main differences in the `create()` method between `KedroSession` and `KedroServiceSession` are:
+diff --git a/kedro/framework/session/service_session.py b/kedro/framework/session/service_session.py
+index 8b14e69c90..8dc724c824 100644
+--- a/kedro/framework/session/service_session.py
++++ b/kedro/framework/session/service_session.py
+@@ -78,6 +78,7 @@ def __init__(
+         self._conf_source = conf_source or str(
+             self._project_path / settings.CONF_SOURCE
+         )
++        self._serving_mode = False
+ 
+     @classmethod
+     def create(
+@@ -86,8 +87,25 @@ def create(
+         project_path: Path | str | None = None,
+         env: str | None = None,
+         conf_source: Path | str | None = None,
++        serving_mode: bool = False,
+     ) -> KedroServiceSession:
+-        """Create a new instance of the session."""
++        """Create a new instance of the session.
++
++        Args:
++            session_id: Optional ID for this session; defaults to a UUID.
++            project_path: Optional path to the Kedro project root.
++            env: Optional Kedro environment name.
++            conf_source: Optional path to the configuration source directory.
++            serving_mode: When ``True``, all pipelines are preloaded eagerly at
++                session creation time. This ensures that the shared
++                ``pipelines`` singleton is fully populated before any concurrent
++                ``run()`` calls begin, making pipeline lookups safe across
++                threads. Leave ``False`` (the default) for CLI use, where
++                selective pipeline loading is preferred for startup performance.
++
++        Returns:
++            A new ``KedroServiceSession`` instance ready for use.
++        """
+         validate_settings()
+         env = env or os.getenv("KEDRO_ENV")
+         session = cls(
+@@ -96,8 +114,36 @@ def create(
+             conf_source=conf_source,
+             env=env,
+         )
++        if serving_mode:
++            session._enable_serving_mode()
+         return session
+ 
++    def _enable_serving_mode(self) -> None:
++        """Preload all pipelines, then switch the session into serving mode.
++
++        The flag is set *after* a successful preload so that a failure during
++        loading leaves the session in normal CLI mode rather than in an
++        inconsistent state where ``run()`` would skip ``set_requested()``
++        against an empty pipeline registry.
++        """
++        self._preload_pipelines()
++        self._serving_mode = True
++
++    def _preload_pipelines(self) -> None:
++        """Eagerly load all registered pipelines into the shared singleton.
++
++        Called once during session creation in serving mode, before any request
++        threads are started. After this returns, ``pipelines._content`` is
++        fully populated and ``pipelines._is_data_loaded`` is ``True``, so
++        subsequent concurrent ``run()`` calls read the dict without mutating
++        shared state.
++        """
++        self._logger.info(
++            "Serving mode: preloading all pipelines for session %s", self.session_id
++        )
++        pipelines.set_requested(None)
++        list(pipelines)
++
+     @property
+     def _logger(self) -> logging.Logger:
+         return logging.getLogger(__name__)
+@@ -159,8 +205,12 @@ def run(  # noqa: PLR0913
+         self._logger.info("Run ID: %s", run_id)
+         save_version = run_id
+ 
+-        # Must be called before load_context(), which triggers the first pipelines dict access.
+-        pipelines.set_requested(pipeline_names or None)
++        # In CLI mode, set_requested() tells the lazy loader which pipelines to
++        # import, keeping startup fast when only one pipeline is needed.
++        # In serving mode all pipelines are already loaded, so skip the write
++        # to avoid mutating shared singleton state across concurrent requests.
++        if not self._serving_mode:
++            pipelines.set_requested(pipeline_names or None)
+         context = self.load_context(runtime_params)
+         pipeline_names = pipeline_names or ["__default__"]
+         combined_pipeline = Pipeline([])
+@@ -168,8 +218,9 @@ def run(  # noqa: PLR0913
+             try:
+                 combined_pipeline += pipelines[name]
+             except KeyError as exc:
+-                # Reset to None so keys() loads all pipelines for suggestions.
+-                pipelines.set_requested(None)
++                if not self._serving_mode:
++                    # Reset to None so keys() loads all pipelines for suggestions.
++                    pipelines.set_requested(None)
+                 matches = get_close_matches(name, pipelines.keys())
+                 if matches:
+                     suggestion = (
+diff --git a/kedro/server/http_server.py b/kedro/server/http_server.py
+index 06fa4627ae..bfee51b90f 100644
+--- a/kedro/server/http_server.py
++++ b/kedro/server/http_server.py
+@@ -169,6 +169,7 @@ def run_pipeline(request: RunRequest) -> RunResponse:
+                     project_path=app.state.project_path,
+                     env=app.state.default_env,
+                     conf_source=app.state.default_conf_source,
++                    serving_mode=True,
+                 )
+ 
+         return _execute_pipeline(session=app.state.session, request=request)
+diff --git a/tests/framework/session/test_service_session.py b/tests/framework/session/test_service_session.py
+index c0826eef1e..ec9713135b 100644
+--- a/tests/framework/session/test_service_session.py
++++ b/tests/framework/session/test_service_session.py
+@@ -1,6 +1,7 @@
+ import logging
+ import re
+ import uuid
++from concurrent.futures import ThreadPoolExecutor, as_completed
+ 
+ import pytest
+ 
+@@ -668,3 +669,93 @@ def test_multiple_runs(self, fake_project, mock_runner, mocker):
+         assert first_run_id != second_run_id
+         assert first_runtime_params == {"param1": "value1"}
+         assert second_runtime_params == {"param2": "value2"}
++
++    def test_create_serving_mode_preloads_all_pipelines(self, fake_project, mocker):
++        """create(serving_mode=True) calls set_requested(None) to clear any filter and
++        then iterates the singleton so _load_data() is triggered before requests start."""
++        mocker.patch("kedro.framework.session.service_session._create_hook_manager")
++        mock_pipelines = mocker.patch(
++            "kedro.framework.session.service_session.pipelines"
++        )
++
++        KedroServiceSession.create(
++            project_path=fake_project, session_id="fake_id", serving_mode=True
++        )
++
++        mock_pipelines.set_requested.assert_called_once_with(None)
++        mock_pipelines.__iter__.assert_called()
++
++    @pytest.mark.usefixtures("mock_settings_context_class")
++    def test_run_in_serving_mode_skips_set_requested(
++        self, fake_project, mock_runner, mocker
++    ):
++        """run() must not call set_requested() when serving mode is active; all pipelines
++        are already loaded and mutating the shared singleton would break concurrent requests."""
++        mocker.patch("kedro.framework.session.service_session._create_hook_manager")
++        mock_pipelines = mocker.patch(
++            "kedro.framework.session.service_session.pipelines"
++        )
++        mock_runner.__name__ = "SequentialRunner"
++
++        with KedroServiceSession.create(
++            project_path=fake_project, session_id="fake_id", serving_mode=True
++        ) as session:
++            session.run(runner=mock_runner, pipeline_names=[_FAKE_PIPELINE_NAME])
++
++        # set_requested must only have been called once — during preload in create(),
++        # never during run().
++        mock_pipelines.set_requested.assert_called_once_with(None)
++
++    def test_serving_mode_flag_stays_false_when_preload_fails(
++        self, fake_project, mocker
++    ):
++        """If pipeline preloading raises, _serving_mode must remain False so that
++        subsequent run() calls still use set_requested() rather than operating
++        against an empty pipeline registry."""
++        mocker.patch("kedro.framework.session.service_session._create_hook_manager")
++        mocker.patch("kedro.framework.session.service_session.pipelines")
++        session = KedroServiceSession.create(project_path=fake_project)
++        mocker.patch.object(
++            session, "_preload_pipelines", side_effect=RuntimeError("broken pipelines")
++        )
++
++        with pytest.raises(RuntimeError, match="broken pipelines"):
++            session._enable_serving_mode()
++
++        assert session._serving_mode is False
++
++    @pytest.mark.usefixtures("mock_settings_context_class")
++    def test_serving_mode_concurrent_runs_do_not_raise(
++        self, fake_project, mock_runner, mocker
++    ):
++        """Stress test: many threads calling run() concurrently on a serving_mode=True
++        session must not raise. Pipelines are preloaded once during create() and never
++        mutated per-request, so concurrent run() calls should only read shared state."""
++        mocker.patch("kedro.framework.session.service_session._create_hook_manager")
++        mocker.patch(
++            "kedro.framework.session.service_session.pipelines",
++            return_value={
++                _FAKE_PIPELINE_NAME: mocker.Mock(),
++                "__default__": mocker.Mock(),
++            },
++        )
++        mock_runner.__name__ = "SequentialRunner"
++
++        session = KedroServiceSession.create(
++            project_path=fake_project, session_id="fake_id", serving_mode=True
++        )
++
++        num_threads = 20
++        with ThreadPoolExecutor(max_workers=num_threads) as executor:
++            futures = [
++                executor.submit(
++                    session.run,
++                    runner=mock_runner,
++                    pipeline_names=[_FAKE_PIPELINE_NAME],
++                )
++                for _ in range(num_threads)
++            ]
++            # future.result() re-raises any exception that occurred in the thread.
++            results = [future.result() for future in as_completed(futures)]
++
++        assert len(results) == num_threads
+diff --git a/tests/server/test_run_endpoint.py b/tests/server/test_run_endpoint.py
+index 48e21b8a68..41c2d1f80e 100644
+--- a/tests/server/test_run_endpoint.py
++++ b/tests/server/test_run_endpoint.py
+@@ -56,7 +56,7 @@ def test_run_endpoint_reuses_service_session(self, mocker, tmp_path):
+         assert first.json()["status"] == "success"
+         assert second.json()["status"] == "success"
+         mock_create_session.assert_called_once_with(
+-            project_path=project_path, env=None, conf_source=None
++            project_path=project_path, env=None, conf_source=None, serving_mode=True
+         )
+         assert mock_execute.call_count == 2
+ 
+@@ -90,6 +90,7 @@ def test_run_endpoint_uses_factory_defaults(self, mocker, tmp_path):
+             project_path=project_path,
+             env="base",
+             conf_source="conf/base",
++            serving_mode=True,
+         )
+ 
+     def test_run_endpoint_uses_env_var_defaults(self, mocker, tmp_path, monkeypatch):
+@@ -120,6 +121,7 @@ def test_run_endpoint_uses_env_var_defaults(self, mocker, tmp_path, monkeypatch)
+             project_path=project_path,
+             env="local",
+             conf_source="conf/local",
++            serving_mode=True,
+         )
+ 
+     def test_run_endpoint_factory_defaults_override_env_vars(
+@@ -156,6 +158,7 @@ def test_run_endpoint_factory_defaults_override_env_vars(
+             project_path=project_path,
+             env="base",
+             conf_source="conf/base",
++            serving_mode=True,
+         )
+ 
+     def test_run_endpoint_returns_error_detail_on_failure(self, mocker, tmp_path):

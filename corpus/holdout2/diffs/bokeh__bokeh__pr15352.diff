@@ -1,0 +1,546 @@
+diff --git a/.github/workflows/bokeh-ci-full.yml b/.github/workflows/bokeh-ci-full.yml
+index 5032ae6c0d4..d3295fd412d 100644
+--- a/.github/workflows/bokeh-ci-full.yml
++++ b/.github/workflows/bokeh-ci-full.yml
+@@ -204,6 +204,46 @@ jobs:
+       - name: Run unit tests
+         uses: ./.github/workflows/composite/run-unit-tests
+ 
++  unit-test-free-threaded:
++    name: unit-test free-threaded (ubuntu-24.04, 3.14t)
++    needs: build
++    runs-on: ubuntu-24.04
++    env:
++      OS: ubuntu-24.04
++      PYTHON: 3.14t
++
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Prepare Environment
++        uses: ./.github/workflows/composite/test-setup
++        with:
++          test-env: '3.14t'
++          source-tree: 'delete'
++
++      - name: Ensure free-threaded Python 3.14
++        run: PYTHON_GIL=0 python -c 'import sys, sysconfig; assert sys.version_info[:2] == (3, 14), sys.version; assert sysconfig.get_config_var("Py_GIL_DISABLED") == 1, sys.version; assert not sys._is_gil_enabled(), sys.version'
++
++      - name: List installed software
++        uses: ./.github/workflows/composite/list-software
++
++      - name: Install Playwright browsers
++        run: playwright install chromium
++
++      - name: Run unit tests
++        uses: ./.github/workflows/composite/run-unit-tests
++        with:
++          coverage-flags: unit,freethreaded
++          python-gil: '0'
++
++      - name: Run server examples
++        run: PYTHON_GIL=0 pytest -q --color=yes --tb=short --no-js tests/test_examples.py::test_server_examples
++
++      - name: Stress free-threaded concurrency
++        run: |
++          # Keep repetitions in one process so concurrency comes from test threads.
++          PYTHON_GIL=0 pytest --color=yes -n 0 --count=10 -m free_threading tests/unit/bokeh
++
+   minimal-deps:
+     needs: build
+     runs-on: ${{ matrix.os }}
+@@ -340,7 +380,7 @@ jobs:
+           if-no-files-found: ignore
+ 
+   notify-nightly-failure:
+-    needs: [build, codebase, typing, examples, unit-test, minimal-deps, core-deps, documentation, deployment-proxy]
++    needs: [build, codebase, typing, examples, unit-test, unit-test-free-threaded, minimal-deps, core-deps, documentation, deployment-proxy]
+     if: failure() && github.event_name == 'schedule'
+     runs-on: ubuntu-latest
+ 
+@@ -382,7 +422,7 @@ jobs:
+           *Automated notification from [Bokeh-CI-Full](${{ github.server_url }}/${{ github.repository }}/actions/workflows/bokeh-ci-full.yml)*"
+ 
+   notify-pr:
+-    needs: [build, codebase, typing, examples, unit-test, minimal-deps, core-deps, documentation, deployment-proxy]
++    needs: [build, codebase, typing, examples, unit-test, unit-test-free-threaded, minimal-deps, core-deps, documentation, deployment-proxy]
+     if: always() && github.event_name == 'workflow_dispatch'
+     runs-on: ubuntu-latest
+ 
+diff --git a/.github/workflows/composite/run-unit-tests/action.yml b/.github/workflows/composite/run-unit-tests/action.yml
+index ea0ce5c3d9d..7e98f9bdb3c 100644
+--- a/.github/workflows/composite/run-unit-tests/action.yml
++++ b/.github/workflows/composite/run-unit-tests/action.yml
+@@ -7,22 +7,37 @@ inputs:
+     description: 'Codecov flags (comma-separated)'
+     required: false
+     default: 'unit'
++  python-gil:
++    description: 'PYTHON_GIL value to export after activating the test environment'
++    required: false
++    default: ''
+ 
+ runs:
+   using: composite
+   steps:
+     - name: Test defaults
+       shell: bash -l {0}
+-      run: pytest tests/test_defaults.py
++      run: |
++        if [[ -n "${{ inputs.python-gil }}" ]]; then
++          export PYTHON_GIL="${{ inputs.python-gil }}"
++        fi
++        pytest tests/test_defaults.py
+ 
+     - name: Test cross
+       shell: bash -l {0}
+-      run: pytest tests/test_cross.py
++      run: |
++        if [[ -n "${{ inputs.python-gil }}" ]]; then
++          export PYTHON_GIL="${{ inputs.python-gil }}"
++        fi
++        pytest tests/test_cross.py
+ 
+     - name: Run tests
+       if: success() || failure()
+       shell: bash -l {0}
+       run: |
++        if [[ -n "${{ inputs.python-gil }}" ]]; then
++          export PYTHON_GIL="${{ inputs.python-gil }}"
++        fi
+         COLOR="--color=yes"
+         COVERAGE="--cov=bokeh --cov-report=xml"
+         POLICY="--last-failed --last-failed-no-failures none"
+diff --git a/conda/environment-test-3.14t.yml b/conda/environment-test-3.14t.yml
+new file mode 100644
+index 00000000000..f18526ad6d9
+--- /dev/null
++++ b/conda/environment-test-3.14t.yml
+@@ -0,0 +1,96 @@
++name: bk-test
++channels:
++  - conda-forge
++dependencies:
++  - python=3.14
++  - python-freethreading
++
++  # runtime
++  - contourpy >=1.2
++  - jinja2 >=2.7
++  - narwhals>=1.13
++  - numpy >=1.20.0
++  - packaging >=16.8
++  - pandas 3*
++  - polars >=1.0
++  - pyarrow>=14.0
++  - pillow >=4.0
++  - python-dateutil >=2.1
++  - pyyaml >=3.10
++  - tornado >=6.2
++  - xyzservices>=2021.09.1
++
++  # tests
++  - beautifulsoup4
++  - channels
++  - click
++  - colorama
++  - colorcet
++  - coverage
++  - firefox >=96
++  - geckodriver
++  - ipython
++  - isort 5.8
++  - json5
++  - nbconvert >=5.4
++  - networkx
++  - nodejs 24.*
++  - pre-commit
++  - psutil
++  - pygments
++  # pygraphviz is optional and currently has no conda-forge cp314t build.
++  - pytest >=7.0
++  - pytest-asyncio
++  - pytest-cov >=1.8.1
++  - pytest-html
++  - pytest-repeat
++  - pytest-xdist
++  - pytest-timeout
++  - pytest-tornado
++  - requests >=1.2.3,!=2.32.* # see https://github.com/bokeh/bokeh/issues/13910
++  - urllib3 <2 # see https://github.com/bokeh/bokeh/issues/13152
++  - scipy
++  - pooch # required in scipy.datasets
++  - selenium 4.2
++  - toml
++
++  # examples
++  - cartopy
++  - flask >=1.0
++  - h5py
++  - icalendar
++  - notebook
++  - pyshp
++  - scikit-learn
++  - squarify
++  - sympy
++
++  # pip dependencies
++  - pip
++  - pip:
++    - mypy >=1.20
++    - pyright
++    # docs
++    - bokeh_sampledata
++    - pydata_sphinx_theme
++    - requests-unixsocket >= 0.3.0
++    - sphinx ==9.*
++    - sphinx-copybutton
++    - sphinx-design
++    - sphinx-favicon
++    - sphinxext-opengraph >= 0.11.0
++    # tests
++    - pandas-stubs >=2.2
++    - playwright
++    - pytest-playwright
++    - ruff ==0.15.*
++    - types-boto3
++    - types-docutils
++    - types-colorama
++    - types-mock
++    - types-pillow
++    - types-pyyaml
++    - types-requests
++    - types-toml
++    - urllib3 <2 # see https://github.com/bokeh/bokeh/issues/13407
++    - vermin
+diff --git a/pyproject.toml b/pyproject.toml
+index e7569ec34ab..6d45d3b2619 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -90,6 +90,7 @@ asyncio_mode = "auto"
+ norecursedirs = "build _build node_modules tests/support"
+ python_files = "*_tests.py *_test.py test_*.py"
+ markers = [
++    "free_threading: a concurrency test relevant to free-threaded Python",
+     "sampledata: a test for bokeh.sampledata",
+     "selenium: a test as requiring selenium",
+ ]
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 87f2115f1b4..bfd748564f3 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -15,6 +15,9 @@
+ # Standard library imports
+ import importlib
+ import importlib.util
++import sys
++import sysconfig
++from collections.abc import Iterator
+ 
+ # External imports
+ import _pytest
+@@ -86,6 +89,25 @@ def pyarrow_table_constructor(obj) -> IntoDataFrame:
+     constructors.append(polars_eager_constructor)
+ 
+ 
++def _assert_gil_disabled() -> None:
++    assert sysconfig.get_config_var("Py_GIL_DISABLED") == 1
++    is_gil_enabled = getattr(sys, "_is_gil_enabled", None)
++    assert is_gil_enabled is not None
++    assert not is_gil_enabled()
++
++
++@pytest.fixture(scope="session", autouse=True)
++def ensure_gil_disabled() -> Iterator[None]:
++    required = sysconfig.get_config_var("Py_GIL_DISABLED") == 1
++    if required:
++        _assert_gil_disabled()
++
++    yield
++
++    if required:
++        _assert_gil_disabled()
++
++
+ @pytest.fixture(params=constructors)
+ def constructor(request: pytest.FixtureRequest):
+     return request.param  # type: ignore[no-any-return]
+diff --git a/tests/unit/bokeh/application/handlers/test_code_runner.py b/tests/unit/bokeh/application/handlers/test_code_runner.py
+index 3a3e97a99a8..a1c1efab9a0 100644
+--- a/tests/unit/bokeh/application/handlers/test_code_runner.py
++++ b/tests/unit/bokeh/application/handlers/test_code_runner.py
+@@ -176,6 +176,7 @@ def test_run_restores_path(self) -> None:
+         cr.run(m, lambda: None)
+         assert sys.path == old_path
+ 
++    @pytest.mark.free_threading
+     def test_run_serializes_process_global_mutations(self) -> None:
+         first_entered = Event()
+         first_release = Event()
+diff --git a/tests/unit/bokeh/io/test_doc.py b/tests/unit/bokeh/io/test_doc.py
+index 20fab6eb757..b752f91944f 100644
+--- a/tests/unit/bokeh/io/test_doc.py
++++ b/tests/unit/bokeh/io/test_doc.py
+@@ -92,6 +92,7 @@ def test_patch_curdoc_weakref_raises() -> None:
+             bid.curdoc()
+         assert str(e.value) == "Patched curdoc has been previously destroyed"
+ 
++@pytest.mark.free_threading
+ def test_patch_curdoc_is_context_local() -> None:
+     docs = [Document(), Document()]
+     barrier = threading.Barrier(2)
+diff --git a/tests/unit/bokeh/models/util/test_structure.py b/tests/unit/bokeh/models/util/test_structure.py
+index fa428be33fc..b4169171224 100644
+--- a/tests/unit/bokeh/models/util/test_structure.py
++++ b/tests/unit/bokeh/models/util/test_structure.py
+@@ -30,6 +30,7 @@
+ #-----------------------------------------------------------------------------
+ 
+ def test_structure(nx):
++    pytest.importorskip("pygraphviz")
+     f = figure(width=400,height=400)
+     f.line(x=[1,2,3],y=[1,2,3])
+     K = generate_structure_plot(f)
+diff --git a/tests/unit/bokeh/server/test_asgi.py b/tests/unit/bokeh/server/test_asgi.py
+index a4368490a5f..ceea8d1ddf2 100644
+--- a/tests/unit/bokeh/server/test_asgi.py
++++ b/tests/unit/bokeh/server/test_asgi.py
+@@ -570,6 +570,7 @@ def authenticate(request) -> None:
+         await app.core.stop()
+ 
+ 
++@pytest.mark.free_threading
+ async def test_slow_document_does_not_block_other_http_requests() -> None:
+     started = threading.Event()
+     release = threading.Event()
+@@ -596,6 +597,7 @@ def slow_document(doc) -> None:
+         await app.core.stop()
+ 
+ 
++@pytest.mark.free_threading
+ async def test_stop_waits_for_pending_initialization_before_unload() -> None:
+     started = threading.Event()
+     release = threading.Event()
+diff --git a/tests/unit/bokeh/server/test_callbacks__server.py b/tests/unit/bokeh/server/test_callbacks__server.py
+index df8ad861c41..684c2699193 100644
+--- a/tests/unit/bokeh/server/test_callbacks__server.py
++++ b/tests/unit/bokeh/server/test_callbacks__server.py
+@@ -209,6 +209,7 @@ def test_removing_periodic_twice(self) -> None:
+         assert 0 == func.count()
+         assert "twice" in repr(exc.value)
+ 
++    @pytest.mark.free_threading
+     def test_adding_next_tick_from_another_thread(self) -> None:
+         # The test has probabilistic nature - there's a slight change it'll give a false negative
+         with LoopAndGroup(quit_after=15) as ctx:
+diff --git a/tests/unit/bokeh/server/test_contexts.py b/tests/unit/bokeh/server/test_contexts.py
+index bcba18c6498..2b22bcb8429 100644
+--- a/tests/unit/bokeh/server/test_contexts.py
++++ b/tests/unit/bokeh/server/test_contexts.py
+@@ -548,6 +548,7 @@ def callback() -> None:
+         with pytest.raises(AttributeError, match="Only 'add_next_tick_callback'"):
+             callback_doc.title
+ 
++    @pytest.mark.free_threading
+     async def test_session_callbacks_are_serialized(self) -> None:
+         app = Application()
+         c = bsc.ApplicationContext(app, io_loop=IOLoop.current())
+@@ -572,6 +573,7 @@ def callback() -> None:
+ 
+         assert maximum_active == 1
+ 
++    @pytest.mark.free_threading
+     async def test_different_session_callbacks_can_run_concurrently(self) -> None:
+         app = Application()
+         c = bsc.ApplicationContext(app, io_loop=IOLoop.current())
+diff --git a/tests/unit/bokeh/server/test_core.py b/tests/unit/bokeh/server/test_core.py
+index ed814138943..4416447e169 100644
+--- a/tests/unit/bokeh/server/test_core.py
++++ b/tests/unit/bokeh/server/test_core.py
+@@ -48,6 +48,7 @@ def callback() -> None:
+     assert calls >= 2
+ 
+ 
++@pytest.mark.free_threading
+ async def test_locked_callback_latest_runs_from_threads_with_document_lock() -> None:
+     callbacks = []
+     models: list[Div] = []
+@@ -105,6 +106,7 @@ def update(value: str) -> None:
+     update("ignored")
+ 
+ 
++@pytest.mark.free_threading
+ async def test_locked_callback_every_awaits_async_callbacks_in_order() -> None:
+     callbacks = []
+     models: list[Div] = []
+diff --git a/tests/unit/bokeh/server/views/test_static_handler.py b/tests/unit/bokeh/server/views/test_static_handler.py
+index cb0b77a61b0..2562b4604b6 100644
+--- a/tests/unit/bokeh/server/views/test_static_handler.py
++++ b/tests/unit/bokeh/server/views/test_static_handler.py
+@@ -194,11 +194,14 @@ def get_content(cls, abspath: str, start: int | None = None,
+                 cls.close_thread = threading.get_ident()
+                 cls.closed.set()
+ 
+-        async def flush(self, include_footers: bool = False) -> None:
+-            if not self.first_flush.is_set():
+-                self.first_flush.set()
+-                await self.release_flush.wait()
+-            await super().flush(include_footers)
++        def flush(self, include_footers: bool = False) -> asyncio.Future[None]:
++            async def flush_with_backpressure() -> None:
++                if not self.first_flush.is_set():
++                    self.first_flush.set()
++                    await self.release_flush.wait()
++                await super(BackpressureStaticFileHandler, self).flush(include_footers)
++
++            return asyncio.ensure_future(flush_with_backpressure())
+ 
+     patterns = [
+         (r"/custom/static/(.*)", BackpressureStaticFileHandler, {"path": str(tmp_path)}),
+@@ -210,10 +213,10 @@ async def flush(self, include_footers: bool = False) -> None:
+ 
+         BackpressureStaticFileHandler.release_flush.set()
+         response = await asyncio.wait_for(response_future, 5)
++        assert await asyncio.to_thread(BackpressureStaticFileHandler.closed.wait, 5)
+ 
+     assert response.code == 200
+     assert response.body == b"abc"
+-    assert BackpressureStaticFileHandler.closed.is_set()
+     assert BackpressureStaticFileHandler.close_thread != loop_thread
+ 
+ async def test_static_content_is_closed_on_read_error(tmp_path: Path, ManagedServerLoop: MSL) -> None:
+diff --git a/tests/unit/bokeh/test_free_threading.py b/tests/unit/bokeh/test_free_threading.py
+new file mode 100644
+index 00000000000..326e65c0b20
+--- /dev/null
++++ b/tests/unit/bokeh/test_free_threading.py
+@@ -0,0 +1,117 @@
++#-----------------------------------------------------------------------------
++# Copyright (c) Anaconda, Inc., and Bokeh Contributors.
++# All rights reserved.
++#
++# The full license is in the file LICENSE.txt, distributed with this software.
++#-----------------------------------------------------------------------------
++
++#-----------------------------------------------------------------------------
++# Boilerplate
++#-----------------------------------------------------------------------------
++from __future__ import annotations # isort:skip
++
++import pytest ; pytest
++
++#-----------------------------------------------------------------------------
++# Imports
++#-----------------------------------------------------------------------------
++
++# Standard library imports
++from concurrent.futures import ThreadPoolExecutor
++from threading import Barrier
++
++# Bokeh imports
++from bokeh.document import Document
++from bokeh.layouts import column
++from bokeh.models import ColumnDataSource, Div, GlyphRenderer
++from bokeh.plotting import figure
++
++#-----------------------------------------------------------------------------
++# Setup
++#-----------------------------------------------------------------------------
++
++pytestmark = pytest.mark.free_threading
++
++#-----------------------------------------------------------------------------
++# General API
++#-----------------------------------------------------------------------------
++
++def test_independent_documents_can_be_built_concurrently(constructor) -> None:
++    workers = 8
++    rounds = 5
++    barrier = Barrier(workers)
++
++    def build_documents(worker: int) -> list[frozenset[str]]:
++        document_model_ids: list[frozenset[str]] = []
++
++        for iteration in range(rounds):
++            barrier.wait(timeout=10)
++            value = worker * rounds + iteration
++            data = constructor({"x": [value, value + 1], "y": [value + 2, value + 3]})
++            source = ColumnDataSource(data, name=f"source-{value}")
++            plot = figure(name=f"plot-{value}", title=f"initial-{value}")
++            renderer = plot.scatter(x="x", y="y", source=source, name=f"renderer-{value}")
++            status = Div(text=f"worker-{worker}", name=f"status-{value}")
++
++            doc = Document(title=f"document-{value}")
++            doc.add_root(column(plot, status, name=f"layout-{value}"))
++            changes = []
++            doc.on_change(changes.append)
++
++            # Keep construction and mutation/serialization concurrent in every round.
++            barrier.wait(timeout=10)
++
++            new_data = {name: [value] for name in source.data}
++            new_data.update(x=[value + 4], y=[value + 5])
++            source.stream(new_data)
++            source.patch({"y": [(0, value + 6)]})
++            source.selected.indices = [1]
++            plot.title.text = f"updated-{value}"
++
++            assert len(changes) >= 4
++            assert doc.get_model_by_name(source.name) is source
++            assert doc.get_model_by_name(renderer.name) is renderer
++            assert all(model.document is doc for model in doc.models)
++            doc.validate()
++
++            model_ids = frozenset(model.id for model in doc.models)
++            copy = Document.from_json(doc.to_json())
++            copied_source = copy.get_model_by_name(source.name)
++            copied_renderer = copy.get_model_by_name(renderer.name)
++            copied_status = copy.get_model_by_name(status.name)
++
++            assert isinstance(copied_source, ColumnDataSource)
++            assert isinstance(copied_renderer, GlyphRenderer)
++            assert isinstance(copied_status, Div)
++            assert copied_renderer.data_source is copied_source
++            assert copied_status.text == f"worker-{worker}"
++            assert list(copied_source.data["x"]) == [value, value + 1, value + 4]
++            assert list(copied_source.data["y"]) == [value + 6, value + 3, value + 5]
++            assert copied_source.selected.indices == [1]
++            assert copy.title == doc.title
++            assert frozenset(model.id for model in copy.models) == model_ids
++            assert all(model.document is copy for model in copy.models)
++            copy.validate()
++
++            document_model_ids.append(model_ids)
++
++        return document_model_ids
++
++    # Independent documents are supported across threads; shared document mutation is not.
++    with ThreadPoolExecutor(max_workers=workers) as executor:
++        model_id_sets = [model_ids for ids in executor.map(build_documents, range(workers)) for model_ids in ids]
++
++    assert len(model_id_sets) == workers * rounds
++    assert len(set().union(*model_id_sets)) == sum(map(len, model_id_sets))
++
++#-----------------------------------------------------------------------------
++# Dev API
++#-----------------------------------------------------------------------------
++
++#-----------------------------------------------------------------------------
++# Private API
++#-----------------------------------------------------------------------------
++
++#-----------------------------------------------------------------------------
++# Code
++#-----------------------------------------------------------------------------
+diff --git a/tests/unit/bokeh/util/test_compiler.py b/tests/unit/bokeh/util/test_compiler.py
+index 69e0479ae20..9b412b235fb 100644
+--- a/tests/unit/bokeh/util/test_compiler.py
++++ b/tests/unit/bokeh/util/test_compiler.py
+@@ -138,6 +138,7 @@ def test_jsons() -> None:
+             with open(os.path.join(buc.bokehjs_dir, "js", file), encoding="utf-8") as f:
+                 assert all('\\' not in mod for mod in json.load(f))
+ 
++@pytest.mark.free_threading
+ def test_bundle_models_coalesces_concurrent_compilation(monkeypatch: pytest.MonkeyPatch) -> None:
+     started = Event()
+     release = Event()

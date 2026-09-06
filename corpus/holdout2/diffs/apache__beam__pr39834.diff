@@ -1,0 +1,933 @@
+diff --git a/.github/trigger_files/beam_PostCommit_Python_Xlang_Gcp_Direct.json b/.github/trigger_files/beam_PostCommit_Python_Xlang_Gcp_Direct.json
+index e3d6056a5de9..b26833333238 100644
+--- a/.github/trigger_files/beam_PostCommit_Python_Xlang_Gcp_Direct.json
++++ b/.github/trigger_files/beam_PostCommit_Python_Xlang_Gcp_Direct.json
+@@ -1,4 +1,4 @@
+ {
+   "comment": "Modify this file in a trivial way to cause this test suite to run",
+-  "modification": 1
++  "modification": 2
+ }
+diff --git a/.github/trigger_files/beam_PostCommit_Yaml_Xlang_Direct.json b/.github/trigger_files/beam_PostCommit_Yaml_Xlang_Direct.json
+index a975cd1cd104..541dc4ea8e87 100644
+--- a/.github/trigger_files/beam_PostCommit_Yaml_Xlang_Direct.json
++++ b/.github/trigger_files/beam_PostCommit_Yaml_Xlang_Direct.json
+@@ -1,4 +1,4 @@
+ {
+   "comment": "Modify this file in a trivial way to cause this test suite to run",
+-  "revision": 1
++  "revision": 2
+ }
+diff --git a/sdks/java/extensions/schemaio-expansion-service/build.gradle b/sdks/java/extensions/schemaio-expansion-service/build.gradle
+index e33d6b96b636..5d0ff7e26b07 100644
+--- a/sdks/java/extensions/schemaio-expansion-service/build.gradle
++++ b/sdks/java/extensions/schemaio-expansion-service/build.gradle
+@@ -66,6 +66,12 @@ dependencies {
+     permitUnusedDeclared 'com.google.cloud.sql:postgres-socket-factory:1.25.0'
+     implementation 'com.google.cloud.sql:mysql-socket-factory-connector-j-8:1.25.0'
+     permitUnusedDeclared 'com.google.cloud.sql:mysql-socket-factory-connector-j-8:1.25.0'
++    implementation enforcedPlatform(library.java.google_cloud_platform_libraries_bom)
++    permitUnusedDeclared enforcedPlatform(library.java.google_cloud_platform_libraries_bom)
++    implementation library.java.google_cloud_secret_manager
++    permitUnusedDeclared library.java.google_cloud_secret_manager
++    implementation library.java.proto_google_cloud_secret_manager_v1
++    permitUnusedDeclared library.java.proto_google_cloud_secret_manager_v1
+     testImplementation library.java.junit
+     testImplementation library.java.mockito_core
+     runtimeOnly ("org.xerial:sqlite-jdbc:3.49.1.0")
+diff --git a/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcIO.java b/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcIO.java
+index b53dbfd4fa5d..811032170e6b 100644
+--- a/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcIO.java
++++ b/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcIO.java
+@@ -85,6 +85,7 @@
+ import org.apache.beam.sdk.util.BackOff;
+ import org.apache.beam.sdk.util.BackOffUtils;
+ import org.apache.beam.sdk.util.FluentBackoff;
++import org.apache.beam.sdk.util.Secret;
+ import org.apache.beam.sdk.util.Sleeper;
+ import org.apache.beam.sdk.values.KV;
+ import org.apache.beam.sdk.values.PBegin;
+@@ -320,6 +321,27 @@
+  * since that risks duplicating records in the database, or failing due to primary key conflicts.
+  * Consider using <a href="https://en.wikipedia.org/wiki/Merge_(SQL)">MERGE ("upsert")
+  * statements</a> supported by your database instead.
++ *
++ * <h3>Using Secret Manager</h3>
++ *
++ * <p>Secret Manager is supported in both read and write operations to avoid storing sensitive
++ * credentials such as database passwords in plain text. You can configure Secret Manager on {@link
++ * DataSourceConfiguration} by specifying the secret manager provider using {@link
++ * DataSourceConfiguration#withSecretManager(String)} (e.g. {@code "GoogleCloudSecretManager"}) and
++ * providing the secret specification string in JSON format to {@link
++ * DataSourceConfiguration#withPassword(String)}.
++ *
++ * <p>For example for Google Cloud Secret Manager:
++ *
++ * <pre>{@code
++ * pipeline.apply(JdbcIO.<...>read()
++ *   .withDataSourceConfiguration(JdbcIO.DataSourceConfiguration.create(...)
++ *       ...
++ *       .withPassword("{\"name\": \"my-db-secret\", \"project\": \"my-project\"}")
++ *       .withSecretManager("GoogleCloudSecretManager"))
++ *   ...
++ * );
++ * }</pre>
+  */
+ @SuppressWarnings({
+   "rawtypes" // TODO(https://github.com/apache/beam/issues/20447)
+@@ -503,6 +525,9 @@ public abstract static class DataSourceConfiguration implements Serializable {
+     @Pure
+     abstract @Nullable ValueProvider<String> getDriverJars();
+ 
++    @Pure
++    abstract @Nullable ValueProvider<@Nullable String> getSecretManager();
++
+     @Pure
+     abstract @Nullable DataSource getDataSource();
+ 
+@@ -532,6 +557,8 @@ abstract Builder setConnectionInitSqls(
+ 
+       abstract Builder setDriverJars(ValueProvider<String> driverJars);
+ 
++      abstract Builder setSecretManager(ValueProvider<@Nullable String> secretManager);
++
+       abstract Builder setDataSource(@Nullable DataSource dataSource);
+ 
+       abstract DataSourceConfiguration build();
+@@ -571,10 +598,19 @@ public DataSourceConfiguration withUsername(ValueProvider<@Nullable String> user
+       return builder().setUsername(username).build();
+     }
+ 
++    /**
++     * Sets the database password.
++     *
++     * <p>You can specify a plain password string. Alternatively, if a secret manager is configured
++     * via {@link #withSecretManager(String)}, you can set this to a secret specification in JSON
++     * format (e.g. {@code "{\"name\": \"my-db-secret\", \"project\": \"my-project\"}"} for Google
++     * Cloud Secret Manager) that the secret manager uses to retrieve the password.
++     */
+     public DataSourceConfiguration withPassword(@Nullable String password) {
+       return withPassword(ValueProvider.StaticValueProvider.of(password));
+     }
+ 
++    /** Same as {@link #withPassword(String)} but accepting a ValueProvider. */
+     public DataSourceConfiguration withPassword(ValueProvider<@Nullable String> password) {
+       return builder().setPassword(password).build();
+     }
+@@ -668,6 +704,28 @@ public DataSourceConfiguration withDriverJars(ValueProvider<String> driverJars)
+       return builder().setDriverJars(driverJars).build();
+     }
+ 
++    /**
++     * Sets the secret manager provider.
++     *
++     * <p>Currently supported options are:
++     *
++     * <ul>
++     *   <li>{@code "GoogleCloudSecretManager"}
++     *   <li>{@code "GoogleCloudHsmGeneratedSecretManager"}
++     * </ul>
++     *
++     * <p>If not set, no secret manager is used and the password is treated as a plain password.
++     */
++    public DataSourceConfiguration withSecretManager(@Nullable String secretManager) {
++      return withSecretManager(ValueProvider.StaticValueProvider.of(secretManager));
++    }
++
++    /** Same as {@link #withSecretManager(String)} but accepting a ValueProvider. */
++    public DataSourceConfiguration withSecretManager(
++        ValueProvider<@Nullable String> secretManager) {
++      return builder().setSecretManager(secretManager).build();
++    }
++
+     void populateDisplayData(DisplayData.Builder builder) {
+       if (getDataSource() != null) {
+         builder.addIfNotNull(DisplayData.item("dataSource", getDataSource().getClass().getName()));
+@@ -677,6 +735,7 @@ void populateDisplayData(DisplayData.Builder builder) {
+         builder.addIfNotNull(DisplayData.item("username", getUsername()));
+         builder.addIfNotNull(DisplayData.item("driverJars", getDriverJars()));
+         builder.addIfNotNull(DisplayData.item("queryTimeout", getQueryTimeout()));
++        builder.addIfNotNull(DisplayData.item("secretManager", getSecretManager()));
+       }
+     }
+ 
+@@ -689,6 +748,7 @@ public DataSource buildDatasource() {
+         if (getUrl() != null) {
+           basicDataSource.setUrl(getUrl().get());
+         }
++        ValueProvider<@Nullable String> secretManagerProvider = getSecretManager();
+         if (getUsername() != null) {
+           @SuppressWarnings(
+               "nullness") // this is actually nullable, but apache commons dbcp2 not annotated
+@@ -701,6 +761,16 @@ public DataSource buildDatasource() {
+               "nullness") // this is actually nullable, but apache commons dbcp2 not annotated
+           @NonNull
+           String password = getPassword().get();
++          if (password != null) {
++            String secretManager = null;
++            if (secretManagerProvider != null) {
++              secretManager = secretManagerProvider.get();
++            }
++            String fetched = Secret.fromJson(password, secretManager).getString(false);
++            if (fetched != null) {
++              password = fetched;
++            }
++          }
+           basicDataSource.setPassword(password);
+         }
+         if (getConnectionProperties() != null) {
+diff --git a/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcReadSchemaTransformProvider.java b/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcReadSchemaTransformProvider.java
+index 6069924711c4..9b29d76673d0 100644
+--- a/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcReadSchemaTransformProvider.java
++++ b/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcReadSchemaTransformProvider.java
+@@ -111,7 +111,24 @@ public String description() {
+         + "      config:\n"
+         + "        connectionProperties: \"characterEncoding=UTF-8;\"\n"
+         + "        ...\n"
+-        + "All properties should be semi-colon-delimited (e.g. \"key1=value1;key2=value2;\")\n";
++        + "All properties should be semi-colon-delimited (e.g. \"key1=value1;key2=value2;\")\n"
++        + "\n"
++        + "#### Using Secret Manager\n"
++        + "\n"
++        + "Secret Manager is supported to avoid storing sensitive credentials such as database passwords "
++        + "in plain text. You can configure `secret_manager` (e.g. `GoogleCloudSecretManager`) and provide the "
++        + "secret specification string in JSON format to `password`.\n"
++        + "\n"
++        + "For example, for Google Cloud Secret Manager: ::\n"
++        + "\n"
++        + "    - type: ReadFromJdbc\n"
++        + "      config:\n"
++        + "        jdbc_type: mysql\n"
++        + "        url: \"jdbc:mysql://my-host:3306/database\"\n"
++        + "        username: \"my-username\"\n"
++        + "        password: \"{\\\"name\\\": \\\"my-db-secret\\\", \\\"project\\\": \\\"my-project\\\"}\"\n"
++        + "        secret_manager: \"GoogleCloudSecretManager\"\n"
++        + "        query: \"SELECT * FROM table\"\n";
+   }
+ 
+   protected String inheritedDescription(
+@@ -200,6 +217,11 @@ protected JdbcIO.DataSourceConfiguration dataSourceConfiguration() {
+         dsConfig = dsConfig.withConnectionProperties(connectionProperties);
+       }
+ 
++      String secretManager = config.getSecretManager();
++      if (secretManager != null) {
++        dsConfig = dsConfig.withSecretManager(secretManager);
++      }
++
+       List<@org.checkerframework.checker.nullness.qual.Nullable String> initialSql =
+           config.getConnectionInitSql();
+       if (initialSql != null && initialSql.size() > 0) {
+@@ -355,7 +377,8 @@ public abstract static class JdbcReadSchemaTransformConfiguration implements Ser
+     @Nullable
+     public abstract Boolean getOutputParallelization();
+ 
+-    @SchemaFieldDescription("Password for the JDBC source.")
++    @SchemaFieldDescription(
++        "Password for the JDBC source. Can be specified as a plain password, or as a secret specification in JSON format if used with a secret manager.")
+     @Nullable
+     public abstract String getPassword();
+ 
+@@ -363,6 +386,11 @@ public abstract static class JdbcReadSchemaTransformConfiguration implements Ser
+     @Nullable
+     public abstract String getReadQuery();
+ 
++    @SchemaFieldDescription(
++        "Secret Manager to use for fetching secret values. Available options: 'GoogleCloudSecretManager', 'GoogleCloudHsmGeneratedSecretManager'. If not set, no secret manager is used and the password is treated as a plain password.")
++    @Nullable
++    public abstract String getSecretManager();
++
+     @SchemaFieldDescription("Username for the JDBC source.")
+     @Nullable
+     public abstract String getUsername();
+@@ -451,6 +479,8 @@ public abstract static class Builder {
+ 
+       public abstract Builder setDriverJars(String value);
+ 
++      public abstract Builder setSecretManager(String value);
++
+       public abstract JdbcReadSchemaTransformConfiguration build();
+     }
+   }
+diff --git a/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcSchemaIOProvider.java b/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcSchemaIOProvider.java
+index b9c8f2fad15d..c63531072c75 100644
+--- a/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcSchemaIOProvider.java
++++ b/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcSchemaIOProvider.java
+@@ -60,6 +60,7 @@ public Schema configurationSchema() {
+         .addStringField("jdbcUrl")
+         .addStringField("username")
+         .addStringField("password")
++        .addNullableField("secretManager", FieldType.STRING)
+         .addNullableField("connectionProperties", FieldType.STRING)
+         .addNullableField("connectionInitSqls", FieldType.iterable(FieldType.STRING))
+         .addNullableField("readQuery", FieldType.STRING)
+@@ -221,6 +222,11 @@ protected JdbcIO.DataSourceConfiguration getDataSourceConfiguration() {
+               .withUsername(config.getString("username"))
+               .withPassword(config.getString("password"));
+ 
++      @Nullable String secretManager = config.getString("secretManager");
++      if (secretManager != null) {
++        dataSourceConfiguration = dataSourceConfiguration.withSecretManager(secretManager);
++      }
++
+       @Nullable String connectionProperties = config.getString("connectionProperties");
+       if (connectionProperties != null) {
+         dataSourceConfiguration =
+diff --git a/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcWriteSchemaTransformProvider.java b/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcWriteSchemaTransformProvider.java
+index 47742da3548e..3379fad639e9 100644
+--- a/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcWriteSchemaTransformProvider.java
++++ b/sdks/java/io/jdbc/src/main/java/org/apache/beam/sdk/io/jdbc/JdbcWriteSchemaTransformProvider.java
+@@ -115,7 +115,24 @@ public String description() {
+         + "      config:\n"
+         + "        connectionProperties: \"characterEncoding=UTF-8;\"\n"
+         + "        ...\n"
+-        + "All properties should be semi-colon-delimited (e.g. \"key1=value1;key2=value2;\")\n";
++        + "All properties should be semi-colon-delimited (e.g. \"key1=value1;key2=value2;\")\n"
++        + "\n"
++        + "#### Using Secret Manager\n"
++        + "\n"
++        + "Secret Manager is supported to avoid storing sensitive credentials such as database passwords "
++        + "in plain text. You can configure `secret_manager` (e.g. `GoogleCloudSecretManager`) and provide the "
++        + "secret specification string in JSON format to `password`.\n"
++        + "\n"
++        + "For example, for Google Cloud Secret Manager: ::\n"
++        + "\n"
++        + "    - type: WriteToJdbc\n"
++        + "      config:\n"
++        + "        jdbc_type: mysql\n"
++        + "        url: \"jdbc:mysql://my-host:3306/database\"\n"
++        + "        username: \"my-username\"\n"
++        + "        password: \"{\\\"name\\\": \\\"my-db-secret\\\", \\\"project\\\": \\\"my-project\\\"}\"\n"
++        + "        secret_manager: \"GoogleCloudSecretManager\"\n"
++        + "        query: \"INSERT INTO table VALUES(?, ?)\"\n";
+   }
+ 
+   protected String inheritedDescription(
+@@ -204,6 +221,11 @@ protected JdbcIO.DataSourceConfiguration dataSourceConfiguration() {
+         dsConfig = dsConfig.withConnectionProperties(connectionProperties);
+       }
+ 
++      String secretManager = config.getSecretManager();
++      if (secretManager != null) {
++        dsConfig = dsConfig.withSecretManager(secretManager);
++      }
++
+       List<@org.checkerframework.checker.nullness.qual.Nullable String> initialSql =
+           config.getConnectionInitSql();
+       if (initialSql != null && initialSql.size() > 0) {
+@@ -340,10 +362,16 @@ public abstract static class JdbcWriteSchemaTransformConfiguration implements Se
+     @Nullable
+     public abstract String getLocation();
+ 
+-    @SchemaFieldDescription("Password for the JDBC source.")
++    @SchemaFieldDescription(
++        "Password for the JDBC source. Can be specified as a plain password, or as a secret specification in JSON format if used with a secret manager.")
+     @Nullable
+     public abstract String getPassword();
+ 
++    @SchemaFieldDescription(
++        "Secret Manager to use for fetching secret values. Available options: 'GoogleCloudSecretManager', 'GoogleCloudHsmGeneratedSecretManager'. If not set, no secret manager is used and the password is treated as a plain password.")
++    @Nullable
++    public abstract String getSecretManager();
++
+     @SchemaFieldDescription("Username for the JDBC source.")
+     @Nullable
+     public abstract String getUsername();
+@@ -427,6 +455,8 @@ public abstract Builder setConnectionInitSql(
+ 
+       public abstract Builder setBatchSize(Long value);
+ 
++      public abstract Builder setSecretManager(String value);
++
+       public abstract JdbcWriteSchemaTransformConfiguration build();
+     }
+   }
+diff --git a/sdks/java/io/jdbc/src/test/java/org/apache/beam/sdk/io/jdbc/JdbcIOTest.java b/sdks/java/io/jdbc/src/test/java/org/apache/beam/sdk/io/jdbc/JdbcIOTest.java
+index 9099583fb3d6..0f94963474e2 100644
+--- a/sdks/java/io/jdbc/src/test/java/org/apache/beam/sdk/io/jdbc/JdbcIOTest.java
++++ b/sdks/java/io/jdbc/src/test/java/org/apache/beam/sdk/io/jdbc/JdbcIOTest.java
+@@ -32,6 +32,7 @@
+ import static org.mockito.ArgumentMatchers.any;
+ import static org.mockito.ArgumentMatchers.anyString;
+ import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.mockStatic;
+ import static org.mockito.Mockito.times;
+ import static org.mockito.Mockito.verify;
+ import static org.mockito.Mockito.when;
+@@ -86,6 +87,7 @@
+ import org.apache.beam.sdk.transforms.ParDo;
+ import org.apache.beam.sdk.transforms.SerializableFunction;
+ import org.apache.beam.sdk.transforms.Wait;
++import org.apache.beam.sdk.util.Secret;
+ import org.apache.beam.sdk.util.SerializableUtils;
+ import org.apache.beam.sdk.values.KV;
+ import org.apache.beam.sdk.values.PCollection;
+@@ -93,6 +95,7 @@
+ import org.apache.beam.sdk.values.TypeDescriptor;
+ import org.apache.beam.sdk.values.TypeDescriptors;
+ import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
++import org.apache.commons.dbcp2.BasicDataSource;
+ import org.apache.commons.dbcp2.PoolingDataSource;
+ import org.apache.commons.lang3.StringUtils;
+ import org.hamcrest.Description;
+@@ -108,6 +111,7 @@
+ import org.junit.rules.ExpectedException;
+ import org.junit.runner.RunWith;
+ import org.junit.runners.JUnit4;
++import org.mockito.MockedStatic;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -195,6 +199,47 @@ public void testDataSourceConfigurationNullUsernameAndPassword() throws Exceptio
+     }
+   }
+ 
++  @Test
++  public void testDataSourceConfigurationPlainPasswordAndNullSecretManager() throws Exception {
++    String username = "sa";
++    String password = "my_plain_password";
++    JdbcIO.DataSourceConfiguration config =
++        DATA_SOURCE_CONFIGURATION
++            .withUsername(username)
++            .withPassword(password)
++            .withSecretManager((String) null);
++    DataSource dataSource = config.buildDatasource();
++    assertTrue(dataSource instanceof BasicDataSource);
++    assertEquals(password, ((BasicDataSource) dataSource).getPassword());
++    try (Connection conn = dataSource.getConnection()) {
++      assertTrue(conn.isValid(0));
++    }
++  }
++
++  @Test
++  public void testDataSourceConfigurationWithMockedSecretManager() {
++    String secretSpec = "{'name': 'my-db-secret'}";
++    String resolvedPassword = "my_fetched_secret_password";
++    String secretManager = "GoogleCloudSecretManager";
++
++    Secret mockSecret = mock(Secret.class);
++    when(mockSecret.getString(false)).thenReturn(resolvedPassword);
++
++    try (MockedStatic<Secret> mockedSecret = mockStatic(Secret.class)) {
++      mockedSecret.when(() -> Secret.fromJson(secretSpec, secretManager)).thenReturn(mockSecret);
++
++      JdbcIO.DataSourceConfiguration config =
++          DATA_SOURCE_CONFIGURATION
++              .withUsername("sa")
++              .withPassword(secretSpec)
++              .withSecretManager(secretManager);
++
++      DataSource dataSource = config.buildDatasource();
++      assertTrue(dataSource instanceof BasicDataSource);
++      assertEquals(resolvedPassword, ((BasicDataSource) dataSource).getPassword());
++    }
++  }
++
+   @Test
+   public void testSetConnectoinInitSqlFailWithDerbyDB() {
+     String username = "sa";
+diff --git a/sdks/python/apache_beam/io/external/xlang_jdbcio_it_test.py b/sdks/python/apache_beam/io/external/xlang_jdbcio_it_test.py
+index 848fc043a4db..96b9dea65f20 100644
+--- a/sdks/python/apache_beam/io/external/xlang_jdbcio_it_test.py
++++ b/sdks/python/apache_beam/io/external/xlang_jdbcio_it_test.py
+@@ -18,8 +18,10 @@
+ # pytype: skip-file
+ 
+ import datetime
++import json
+ import logging
+ import os
++import sys
+ import time
+ import typing
+ import unittest
+@@ -46,6 +48,13 @@
+   sqlalchemy = None
+ # pylint: enable=wrong-import-order, wrong-import-position, ungrouped-imports
+ 
++# pylint: disable=wrong-import-order, wrong-import-position, ungrouped-imports
++try:
++  from google.cloud import secretmanager
++except ImportError:
++  secretmanager = None  # type: ignore[assignment]
++# pylint: enable=wrong-import-order, wrong-import-position, ungrouped-imports
++
+ # pylint: disable=wrong-import-order, wrong-import-position, ungrouped-imports
+ try:
+   from testcontainers.mysql import MySqlContainer
+@@ -138,6 +147,42 @@ def setUpClass(cls):
+     cls.engines = {}
+     cls.jdbc_configs = {}
+ 
++    cls.secret_manager_available = False
++    if secretmanager is not None:
++      try:
++        cls.project_id = os.environ.get(
++            'GOOGLE_CLOUD_PROJECT', 'apache-beam-testing')
++        cls.secret_client = secretmanager.SecretManagerServiceClient()
++        py_version = f'_py{sys.version_info.major}{sys.version_info.minor}'
++        secret_postfix = (
++            datetime.datetime.now().strftime('%m%d_%H%M%S') + py_version)
++        cls.secret_id = 'xlang_jdbc_test_secret_' + secret_postfix
++        cls.project_path = f'projects/{cls.project_id}'
++        cls.secret_path = f'{cls.project_path}/secrets/{cls.secret_id}'
++        try:
++          cls.secret_client.get_secret(request={'name': cls.secret_path})
++        except Exception:
++          cls.secret_client.create_secret(
++              request={
++                  'parent': cls.project_path,
++                  'secret_id': cls.secret_id,
++                  'secret': {
++                      'replication': {
++                          'automatic': {}
++                      }
++                  }
++              })
++        cls.secret_client.add_secret_version(
++            request={
++                'parent': cls.secret_path, 'payload': {
++                    'data': b'test'
++                }
++            })
++        cls.secret_manager_available = True
++      except Exception as e:
++        logging.warning("Could not set up GCP Secret Manager: %s", e)
++        cls.secret_manager_available = False
++
+     for db_type, db_data in cls.DB_CONTAINER_CLASSPATH_STRING.items():
+       container = cls.start_container(db_data.container_fn)
+       cls.containers[db_type] = container
+@@ -162,6 +207,13 @@ def setUpClass(cls):
+ 
+   @classmethod
+   def tearDownClass(cls):
++    if getattr(cls, 'secret_manager_available',
++               False) and secretmanager is not None:
++      try:
++        cls.secret_client.delete_secret(request={'name': cls.secret_path})
++      except Exception:  # pylint: disable=broad-except
++        logging.warning("Could not delete GCP secret: %s", cls.secret_path)
++
+     for db_type, container in cls.containers.items():
+       if container:
+         # Sometimes stopping the container raises ReadTimeout. We can ignore it
+@@ -454,6 +506,67 @@ def test_xlang_jdbc_custom_statements(self, database):
+ 
+       assert_that(result, equal_to(expected_filtered_rows))
+ 
++  @parameterized.expand(['postgres', 'mysql'])
++  def test_xlang_jdbc_with_secret_manager(self, database):
++    if not getattr(self, 'secret_manager_available', False):
++      self.skipTest(
++          "GCP Secret Manager is not available or credentials not configured.")
++
++    if self.containers[database] is None:
++      self.skipTest(f"{database} container could not be initialized")
++
++    table_name = f"jdbc_secret_manager_test_{database}"
++
++    with self.engines[database].begin() as connection:
++      connection.execute(
++          sqlalchemy.text(
++              f"CREATE TABLE IF NOT EXISTS {table_name}" +
++              "(id INTEGER, name VARCHAR(50), value DOUBLE PRECISION)"))
++
++    test_rows = [
++        SimpleRow(1, "Item1", 10.5),
++        SimpleRow(2, "Item2", 20.75),
++        SimpleRow(3, "Item3", 30.25),
++        SimpleRow(4, "Item4", 40.0),
++        SimpleRow(-5, "Item5", 50.5),
++    ]
++
++    config = self.jdbc_configs[database]
++    secret_password_spec = json.dumps({
++        'name': self.secret_id, 'project': self.project_id
++    })
++
++    with TestPipeline() as p:
++      p.not_use_test_runner_api = True
++      _ = (
++          p
++          | beam.Create(test_rows).with_output_types(SimpleRow)
++          | 'Write to jdbc with secret manager' >> WriteToJdbc(
++              table_name=table_name,
++              driver_class_name=config['driver_class_name'],
++              jdbc_url=config['jdbc_url'],
++              username=config['username'],
++              password=secret_password_spec,
++              secret_manager='googlecloudsecretmanager',
++              classpath=config['classpath'],
++          ))
++
++    with TestPipeline() as p:
++      p.not_use_test_runner_api = True
++      result = (
++          p
++          | 'Read from jdbc with secret manager' >> ReadFromJdbc(
++              table_name=table_name,
++              driver_class_name=config['driver_class_name'],
++              jdbc_url=config['jdbc_url'],
++              username=config['username'],
++              password=secret_password_spec,
++              secret_manager='googlecloudsecretmanager',
++              classpath=config['classpath'],
++              schema=SimpleRow))
++
++      assert_that(result, equal_to(test_rows))
++
+ 
+ if __name__ == '__main__':
+   logging.getLogger().setLevel(logging.INFO)
+diff --git a/sdks/python/apache_beam/io/jdbc.py b/sdks/python/apache_beam/io/jdbc.py
+index 20792fe858e2..d3b8761c7829 100644
+--- a/sdks/python/apache_beam/io/jdbc.py
++++ b/sdks/python/apache_beam/io/jdbc.py
+@@ -122,7 +122,8 @@ def default_io_expansion_service(classpath=None):
+ Config = typing.NamedTuple(
+     'Config',
+     [('driver_class_name', str), ('jdbc_url', str), ('username', str),
+-     ('password', str), ('connection_properties', typing.Optional[str]),
++     ('password', str), ('secret_manager', typing.Optional[str]),
++     ('connection_properties', typing.Optional[str]),
+      ('connection_init_sqls', typing.Optional[list[str]]),
+      ('read_query', typing.Optional[str]),
+      ('write_statement', typing.Optional[str]),
+@@ -169,6 +170,16 @@ class WriteToJdbc(ExternalTransform):
+   The generated write_statement can be overridden by passing in a
+   write_statment.
+ 
++  Secret Manager is supported to avoid storing sensitive credentials such as
++  database passwords in plain text. You can configure ``secret_manager`` (e.g.
++  ``'GoogleCloudSecretManager'``) and provide the secret specification string
++  in JSON format to ``password``, e.g.::
++
++    WriteToJdbc(
++        ...
++        password='{"name": "my-db-secret", "project": "my-project"}',
++        secret_manager='GoogleCloudSecretManager',
++    )
+ 
+   Experimental; no backwards compatibility guarantees.
+   """
+@@ -191,6 +202,7 @@ def __init__(
+       expansion_service=None,
+       classpath=None,
+       write_batch_size=None,
++      secret_manager=None,
+   ):
+     """
+     Initializes a write operation to Jdbc.
+@@ -198,7 +210,9 @@ def __init__(
+     :param driver_class_name: name of the jdbc driver class
+     :param jdbc_url: full jdbc url to the database.
+     :param username: database username
+-    :param password: database password
++    :param password: database password. Can be specified as a plain password,
++                     or as a secret specification in JSON format if used with
++                     a secret manager.
+     :param statement: sql statement to be executed
+     :param connection_properties: properties of the jdbc connection
+                                   passed as string with format
+@@ -225,6 +239,11 @@ def __init__(
+     :param write_batch_size: sets the maximum size in number of SQL statement
+                              for the batch.
+                              default is {@link JdbcIO.DEFAULT_BATCH_SIZE}
++    :param secret_manager: The secret manager to use for retrieving secrets.
++                           Available options: 'GoogleCloudSecretManager',
++                           'GoogleCloudHsmGeneratedSecretManager'. If not set,
++                           no secret manager is used and the password is
++                           treated as a plain password.
+     """
+     classpath = classpath or DEFAULT_JDBC_CLASSPATH
+     super().__init__(
+@@ -239,6 +258,7 @@ def __init__(
+                             jdbc_url=jdbc_url,
+                             username=username,
+                             password=password,
++                            secret_manager=secret_manager,
+                             connection_properties=connection_properties,
+                             connection_init_sqls=connection_init_sqls,
+                             write_statement=statement,
+@@ -296,6 +316,17 @@ class ReadFromJdbc(ExternalTransform):
+ 
+   The generated read_query can be overridden by passing in a read_query.
+ 
++  Secret Manager is supported to avoid storing sensitive credentials such as
++  database passwords in plain text. You can configure ``secret_manager`` (e.g.
++  ``'GoogleCloudSecretManager'``) and provide the secret specification string
++  in JSON format to ``password``, e.g.::
++
++    ReadFromJdbc(
++        ...
++        password='{"name": "my-db-secret", "project": "my-project"}',
++        secret_manager='GoogleCloudSecretManager',
++    )
++
+   Experimental; no backwards compatibility guarantees.
+   """
+ 
+@@ -320,14 +351,17 @@ def __init__(
+       driver_jars=None,
+       expansion_service=None,
+       classpath=None,
+-      schema=None):
++      schema=None,
++      secret_manager=None):
+     """
+     Initializes a read operation from Jdbc.
+ 
+     :param driver_class_name: name of the jdbc driver class
+     :param jdbc_url: full jdbc url to the database.
+     :param username: database username
+-    :param password: database password
++    :param password: database password. Can be specified as a plain password,
++                     or as a secret specification in JSON format if used with
++                     a secret manager.
+     :param query: sql query to be executed
+     :param disable_autocommit: disable autocommit on read
+     :param output_parallelization: is output parallelization on
+@@ -360,6 +394,11 @@ def __init__(
+                    this should be a NamedTuple type that defines the structure
+                    of the output PCollection elements. This bypasses automatic
+                    schema inference during pipeline construction.
++    :param secret_manager: The secret manager to use for retrieving secrets.
++                           Available options: 'GoogleCloudSecretManager',
++                           'GoogleCloudHsmGeneratedSecretManager'. If not set,
++                           no secret manager is used and the password is
++                           treated as a plain password.
+     """
+     # override new portable Date type with the current Jdbc type
+     # TODO(https://github.com/apache/beam/issues/28359):
+@@ -388,6 +427,7 @@ def __init__(
+                             jdbc_url=jdbc_url,
+                             username=username,
+                             password=password,
++                            secret_manager=secret_manager,
+                             connection_properties=connection_properties,
+                             connection_init_sqls=connection_init_sqls,
+                             write_statement=None,
+diff --git a/sdks/python/apache_beam/yaml/extended_tests/databases/jdbc_secret_manager.yaml b/sdks/python/apache_beam/yaml/extended_tests/databases/jdbc_secret_manager.yaml
+new file mode 100644
+index 000000000000..e457dcdff8b1
+--- /dev/null
++++ b/sdks/python/apache_beam/yaml/extended_tests/databases/jdbc_secret_manager.yaml
+@@ -0,0 +1,59 @@
++#
++# Licensed to the Apache Software Foundation (ASF) under one or more
++# contributor license agreements.  See the NOTICE file distributed with
++# this work for additional information regarding copyright ownership.
++# The ASF licenses this file to You under the Apache License, Version 2.0
++# (the "License"); you may not use this file except in compliance with
++# the License.  You may obtain a copy of the License at
++#
++#    http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++fixtures:
++  - name: TEMP_DB
++    type: "apache_beam.yaml.integration_tests.temp_postgres_database_with_secret_manager"
++
++pipelines:
++  # Jdbc write pipeline with secret manager
++  - pipeline:
++      type: chain
++      transforms:
++        - type: Create
++          config:
++            elements:
++              - {value: 123, rank: 0}
++              - {value: 456, rank: 1}
++              - {value: 789, rank: 2}
++        - type: WriteToJdbc
++          config:
++            url: "{TEMP_DB[URL]}"
++            username: "{TEMP_DB[USERNAME]}"
++            password: "{TEMP_DB[PASSWORD_SPEC]}"
++            secret_manager: "{TEMP_DB[SECRET_MANAGER]}"
++            driver_class_name: "org.postgresql.Driver"
++            query: "INSERT INTO tmp_table (value, rank) VALUES(?,?)"
++
++  # Jdbc read pipeline with secret manager
++  - pipeline:
++      type: chain
++      transforms:
++        - type: ReadFromJdbc
++          config:
++            url: "{TEMP_DB[URL]}"
++            username: "{TEMP_DB[USERNAME]}"
++            password: "{TEMP_DB[PASSWORD_SPEC]}"
++            secret_manager: "{TEMP_DB[SECRET_MANAGER]}"
++            driver_class_name: "org.postgresql.Driver"
++            query: "SELECT * FROM tmp_table"
++        - type: AssertEqual
++          config:
++            elements:
++              - {value: 123, rank: 0}
++              - {value: 456, rank: 1}
++              - {value: 789, rank: 2}
+diff --git a/sdks/python/apache_beam/yaml/integration_tests.py b/sdks/python/apache_beam/yaml/integration_tests.py
+index c6d73df76e31..72024f60ef74 100644
+--- a/sdks/python/apache_beam/yaml/integration_tests.py
++++ b/sdks/python/apache_beam/yaml/integration_tests.py
+@@ -21,6 +21,7 @@
+ import copy
+ import glob
+ import itertools
++import json
+ import logging
+ import os
+ import random
+@@ -79,6 +80,11 @@ def get_impl(self):
+ from google.cloud import pubsub_v1
+ from google.cloud.bigtable import client
+ from google.cloud.bigtable_admin_v2.types import instance
++
++try:
++  from google.cloud import secretmanager
++except ImportError:
++  secretmanager = None
+ from testcontainers.core.container import DockerContainer
+ from testcontainers.core.waiting_utils import wait_for_logs
+ from testcontainers.google import PubSubContainer
+@@ -508,6 +514,113 @@ def temp_postgres_database():
+       raise err
+ 
+ 
++@contextlib.contextmanager
++def temp_postgres_database_with_secret_manager(
++    project=None, prefix='yaml_jdbc_sm_it_'):
++  """Context manager to provide a temporary PostgreSQL database authenticated
++  via GCP Secret Manager for testing.
++
++  This function utilizes the 'testcontainers' library to spin up a
++  PostgreSQL instance within a Docker container, creates a predefined 'tmp_table',
++  registers the database container password in GCP Secret Manager, and yields
++  a dictionary containing the JDBC connection URL, username, secret specification,
++  and secret manager identifier.
++
++  The Docker container, database instance, and GCP secret are automatically
++  managed and torn down when the context manager exits.
++
++  Args:
++      project (str): Google Cloud Project ID. If not provided, reads from
++        the GOOGLE_CLOUD_PROJECT environment variable or defaults to
++        'apache-beam-testing'.
++      prefix (str): Prefix to use for the temporary GCP secret name.
++
++  Yields:
++      dict: A dictionary containing connection and secret details:
++            {
++                'URL': 'jdbc:postgresql://<host>:<port>/<dbname>',
++                'USERNAME': '<username>',
++                'PASSWORD_SPEC': '{"name": "<secret_id>", "project": "<project_id>"}',
++                'SECRET_MANAGER': 'googlecloudsecretmanager',
++            }
++  """
++  if secretmanager is None:
++    raise RuntimeError("google-cloud-secret-manager is not installed.")
++
++  project_id = project or os.environ.get(
++      'GOOGLE_CLOUD_PROJECT', 'apache-beam-testing')
++  secret_client = secretmanager.SecretManagerServiceClient()
++
++  default_port = 5432
++  with PostgresContainer(port=default_port) as postgres_container:
++    secret_postfix = (
++        datetime.now(timezone.utc).strftime('%m%d_%H%M%S') + '_' +
++        uuid.uuid4().hex[:6])
++    secret_id = f'{prefix}{secret_postfix}'
++    project_path = f'projects/{project_id}'
++    secret_path = f'{project_path}/secrets/{secret_id}'
++
++    _LOGGER.info("Creating GCP secret %s in project %s", secret_id, project_id)
++    try:
++      secret_client.get_secret(request={'name': secret_path})
++    except Exception:
++      secret_client.create_secret(
++          request={
++              'parent': project_path,
++              'secret_id': secret_id,
++              'secret': {
++                  'replication': {
++                      'automatic': {}
++                  }
++              }
++          })
++
++    secret_client.add_secret_version(
++        request={
++            'parent': secret_path,
++            'payload': {
++                'data': postgres_container.password.encode('utf-8')
++            }
++        })
++
++    try:
++      # Make connection to temp database and create tmp table
++      engine = sqlalchemy.create_engine(postgres_container.get_connection_url())
++      with engine.begin() as connection:
++        connection.execute(
++            sqlalchemy.text(
++                "CREATE TABLE tmp_table (value INTEGER, rank INTEGER);"))
++
++      # Construct the JDBC url for connections
++      jdbc_url = (
++          f"jdbc:postgresql://{postgres_container.get_container_host_ip()}:"
++          f"{postgres_container.get_exposed_port(default_port)}/"
++          f"{postgres_container.dbname}")
++
++      secret_password_spec = json.dumps({
++          'name': secret_id,
++          'project': project_id,
++      })
++
++      yield {
++          'URL': jdbc_url,
++          'USERNAME': postgres_container.username,
++          'PASSWORD_SPEC': secret_password_spec,
++          'SECRET_MANAGER': 'googlecloudsecretmanager',
++      }
++    except (psycopg2.Error, Exception) as err:
++      logging.error(
++          "Error interacting with temporary Postgres DB with secret manager: %s",
++          err)
++      raise err
++    finally:
++      try:
++        _LOGGER.info("Deleting GCP secret: %s", secret_path)
++        secret_client.delete_secret(request={'name': secret_path})
++      except Exception as err:
++        _LOGGER.warning("Could not delete GCP secret %s: %s", secret_path, err)
++
++
+ @contextlib.contextmanager
+ def temp_sqlserver_database():
+   """Context manager to provide a temporary SQL Server database for testing.
+diff --git a/sdks/python/apache_beam/yaml/standard_io.yaml b/sdks/python/apache_beam/yaml/standard_io.yaml
+index 58080cff4051..4f634a5291eb 100644
+--- a/sdks/python/apache_beam/yaml/standard_io.yaml
++++ b/sdks/python/apache_beam/yaml/standard_io.yaml
+@@ -235,6 +235,7 @@
+         table: 'location'
+         partition_column : 'partition_column'
+         num_partitions: 'num_partitions'
++        secret_manager: 'secret_manager'
+         type: 'jdbc_type'
+         username: 'username'
+       'WriteToJdbc':
+@@ -247,6 +248,7 @@
+         password: 'password'
+         table: 'location'
+         batch_size: 'batch_size'
++        secret_manager: 'secret_manager'
+         type: 'jdbc_type'
+         username: 'username'
+         query: 'write_statement'

@@ -1,0 +1,140 @@
+diff --git a/docs/docs/integrations/libraries/spark/index.md b/docs/docs/integrations/libraries/spark/index.md
+index 5f3f2a542c155..d57184c8b3b48 100644
+--- a/docs/docs/integrations/libraries/spark/index.md
++++ b/docs/docs/integrations/libraries/spark/index.md
+@@ -48,11 +48,14 @@ Dagster also provides native support for the new **Spark Declarative Pipelines (
+ The `SparkDeclarativePipelineComponent` leverages the `spark-pipelines` CLI to automatically discover your datasets and dependencies using `spark-pipelines dry-run`.
+ 
+ **Key benefits include:**
+-* **Auto-Discovery:** No need to manually define `AssetSpec`s. The component infers Materialized Views and Streaming Tables automatically at load time.
+-* **Incremental & Full Refresh:** Natively supports both `--refresh` and `--full-refresh` execution modes.
+-* **Real-time Observability:** Streams execution logs and events directly back to the Dagster UI during execution.
+-* **UI Clutter Reduction:** Pipeline-scoped intermediate datasets (Temporary Views) are automatically filtered out from the Dagster lineage unless explicitly overridden.
++
++- **Auto-Discovery:** No need to manually define `AssetSpec`s. The component infers Materialized Views and Streaming Tables automatically at load time.
++- **Incremental & Full Refresh:** Natively supports both `--refresh` and `--full-refresh` execution modes.
++- **Real-time Observability:** Streams execution logs and events directly back to the Dagster UI during execution.
++- **UI Clutter Reduction:** Pipeline-scoped intermediate datasets (Temporary Views) are automatically filtered out from the Dagster lineage unless explicitly overridden.
+ 
+ You can quickly initialize a new SDP component in your Dagster project using the `dg` CLI:
++
+ ```bash
+-dg scaffold component dagster_spark.SparkDeclarativePipelineComponent my_sdp_pipeline --pipeline-spec-path ./path/to/spark-pipeline.yml
+\ No newline at end of file
++dg scaffold component dagster_spark.SparkDeclarativePipelineComponent my_sdp_pipeline --pipeline-spec-path ./path/to/spark-pipeline.yml
++```
+diff --git a/docs/sphinx/sections/integrations/libraries/spark/dagster-spark.rst b/docs/sphinx/sections/integrations/libraries/spark/dagster-spark.rst
+index 351503a0ebb64..76766944090c2 100644
+--- a/docs/sphinx/sections/integrations/libraries/spark/dagster-spark.rst
++++ b/docs/sphinx/sections/integrations/libraries/spark/dagster-spark.rst
+@@ -11,6 +11,19 @@ dagster-spark library
+ 
+ .. autofunction:: construct_spark_shell_command
+ 
++Spark Declarative Pipelines
++===========================
++
++.. autoclass:: SparkDeclarativePipelineComponent
++
++.. currentmodule:: dagster_spark.components.spark_declarative_pipeline
++
++.. autoclass:: SparkPipelinesResource
++
++.. autoclass:: SparkDeclarativePipelineScaffolder
++
++.. currentmodule:: dagster_spark
++
+ Legacy
+ =======
+ 
+diff --git a/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/component.py b/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/component.py
+index 694213b631d5d..0a97f783d8734 100644
+--- a/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/component.py
++++ b/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/component.py
+@@ -11,6 +11,7 @@
+ 
+ import dagster as dg
+ from dagster import AssetKey, AssetSpec, Definitions, deserialize_value, serialize_value
++from dagster._annotations import preview
+ from dagster.components.component.state_backed_component import StateBackedComponent
+ from dagster.components.core.context import ComponentLoadContext
+ from dagster.components.resolved.core_models import OpSpec
+@@ -50,6 +51,7 @@ def _resolve_spark_pipelines_resource(_context: Any, value: Any) -> SparkPipelin
+     )
+ 
+ 
++@preview
+ @scaffold_with(SparkDeclarativePipelineScaffolder)
+ @dataclass
+ class SparkDeclarativePipelineComponent(StateBackedComponent, dg.Resolvable):
+diff --git a/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/resource.py b/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/resource.py
+index e4e9e15be9eb4..b82850235dbd8 100644
+--- a/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/resource.py
++++ b/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/resource.py
+@@ -11,6 +11,7 @@
+ from typing import Any, Literal
+ 
+ from dagster import AssetKey, ConfigurableResource
++from dagster._annotations import preview
+ from pydantic import Field
+ 
+ from dagster_spark.components.spark_declarative_pipeline.discovery import (
+@@ -23,6 +24,7 @@
+ ExecutionMode = Literal["incremental", "full_refresh"]
+ 
+ 
++@preview
+ class SparkPipelinesResource(ConfigurableResource):
+     """Dagster resource for Spark Declarative Pipelines: discovery and run.
+ 
+diff --git a/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/scaffolder.py b/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/scaffolder.py
+index 416121b864f0d..ee2fe87e31340 100644
+--- a/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/scaffolder.py
++++ b/python_modules/libraries/dagster-spark/dagster_spark/components/spark_declarative_pipeline/scaffolder.py
+@@ -1,10 +1,12 @@
+ """Scaffolder for Spark Declarative Pipeline component."""
+ 
++from dagster._annotations import preview
+ from dagster.components.component.component_scaffolder import Scaffolder
+ from dagster.components.component_scaffolding import scaffold_component
+ from dagster.components.scaffold.scaffold import ScaffoldRequest
+ 
+ 
++@preview
+ class SparkDeclarativePipelineScaffolder(Scaffolder):
+     """Scaffolds a Spark Declarative Pipeline component defs.yaml and pipeline spec path."""
+ 
+diff --git a/python_modules/libraries/dagster-spark/dagster_spark_tests/components/spark_declarative_pipeline/test_component.py b/python_modules/libraries/dagster-spark/dagster_spark_tests/components/spark_declarative_pipeline/test_component.py
+index 4c1fa1b48bc74..c31ab8f131e5c 100644
+--- a/python_modules/libraries/dagster-spark/dagster_spark_tests/components/spark_declarative_pipeline/test_component.py
++++ b/python_modules/libraries/dagster-spark/dagster_spark_tests/components/spark_declarative_pipeline/test_component.py
+@@ -8,6 +8,7 @@
+ from unittest.mock import MagicMock
+ 
+ import dagster as dg
++import pytest
+ from dagster import AssetKey
+ from dagster._utils.test.definitions import scoped_definitions_load_context
+ from dagster.components.testing.utils import create_defs_folder_sandbox
+@@ -17,6 +18,8 @@
+     SparkPipelineState,
+ )
+ 
++pytestmark = pytest.mark.filterwarnings("ignore::dagster.PreviewWarning")
++
+ 
+ @contextmanager
+ def setup_spark_component(
+diff --git a/python_modules/libraries/dagster-spark/dagster_spark_tests/components/spark_declarative_pipeline/test_resource.py b/python_modules/libraries/dagster-spark/dagster_spark_tests/components/spark_declarative_pipeline/test_resource.py
+index 89a3a3692f832..5e7a3c2577683 100644
+--- a/python_modules/libraries/dagster-spark/dagster_spark_tests/components/spark_declarative_pipeline/test_resource.py
++++ b/python_modules/libraries/dagster-spark/dagster_spark_tests/components/spark_declarative_pipeline/test_resource.py
+@@ -9,6 +9,8 @@
+ )
+ from dagster_spark.components.spark_declarative_pipeline.resource import SparkPipelinesResource
+ 
++pytestmark = pytest.mark.filterwarnings("ignore::dagster.PreviewWarning")
++
+ 
+ def test_run_and_observe_completes_successfully_with_asset_keys() -> None:
+     """run_and_observe runs the subprocess and returns None; the asset yields MaterializeResults."""

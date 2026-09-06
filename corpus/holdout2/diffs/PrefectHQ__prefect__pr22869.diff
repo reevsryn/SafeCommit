@@ -1,0 +1,699 @@
+diff --git a/.github/workflows/python-tests.yaml b/.github/workflows/python-tests.yaml
+index 09d85e3da1a2..b9b94645f4ef 100644
+--- a/.github/workflows/python-tests.yaml
++++ b/.github/workflows/python-tests.yaml
+@@ -55,7 +55,7 @@ jobs:
+     runs-on: ubuntu-latest
+     name: ${{ matrix.test-type.name }} - python:${{ matrix.python-version }}, ${{ matrix.database }}
+ 
+-    services:
++    services: &python-test-services
+       redis:
+         image: redis:latest
+         ports:
+@@ -171,6 +171,10 @@ jobs:
+           - "3.13"
+           - "3.14"
+         exclude:
++          # The canonical Python 3.12/Postgres lane uses duration-balanced
++          # groups in run-canonical-tests instead of these static test types.
++          - database: "postgres:14"
++            python-version: "3.12"
+           - database: "sqlite"
+             test-type:
+               id: client-modules
+@@ -245,13 +249,15 @@ jobs:
+       - name: Display current test matrix
+         run: echo '${{ toJSON(matrix) }}'
+ 
+-      - uses: actions/checkout@v7
++      - &python-test-checkout
++        uses: actions/checkout@v7
+         with:
+           persist-credentials: false
+           fetch-depth: 0
+           filter: blob:none
+ 
+-      - name: Set up uv and Python ${{ matrix.python-version }}
++      - &python-test-setup-uv
++        name: Set up uv and Python ${{ matrix.python-version }}
+         uses: astral-sh/setup-uv@v10.0.1
+         with:
+           enable-cache: true
+@@ -261,7 +267,8 @@ jobs:
+       - name: Install packages
+         run: uv sync --locked
+ 
+-      - name: Set database connection URL
++      - &python-test-database-url
++        name: Set database connection URL
+         if: ${{ startsWith(matrix.database, 'postgres') }}
+         run: echo "PREFECT_SERVER_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@localhost/prefect" >> $GITHUB_ENV
+ 
+@@ -277,7 +284,8 @@ jobs:
+           --exclude-service docker \
+           --durations 26 \
+ 
+-      - name: Check database container
++      - &python-test-check-database
++        name: Check database container
+         # Only applicable for Postgres, but we want this to run even when tests fail
+         if: always()
+         run: |
+@@ -285,6 +293,192 @@ jobs:
+           && docker container logs ${{ job.services.postgres.id }} \
+           || echo "Ignoring bad exit code"
+ 
++  prepare-canonical-test-durations:
++    if: ${{ github.event_name != 'repository_dispatch' }}
++    runs-on: ubuntu-latest
++    name: Prepare canonical test durations
++
++    steps:
++      - name: Restore previous test durations
++        uses: actions/cache/restore@v6
++        with:
++          path: test-durations.json
++          key: pytest-split-v1-python-3.12-postgres-14-${{ github.run_id }}-${{ github.run_attempt }}
++          restore-keys: |
++            pytest-split-v1-python-3.12-postgres-14-
++
++      - name: Validate test durations
++        run: |
++          if [[ -f test-durations.json ]] \
++            && jq -e '
++              type == "object"
++              and all(
++                to_entries[];
++                (.value | type == "number")
++                and (.value >= 0)
++              )
++            ' test-durations.json > /dev/null
++          then
++            echo "Using cached test durations"
++          else
++            echo "::notice::No valid cached durations; splitting tests by count"
++            jq -n '{}' > test-durations.json
++          fi
++          jq 'length' test-durations.json
++
++      - name: Upload test duration baseline
++        uses: actions/upload-artifact@v7
++        with:
++          name: canonical-test-duration-baseline
++          path: test-durations.json
++          retention-days: 7
++          overwrite: true
++
++  run-canonical-tests:
++    if: ${{ github.event_name != 'repository_dispatch' }}
++    needs: prepare-canonical-test-durations
++    runs-on: ubuntu-latest
++    name: >-
++      Canonical Tests: group ${{ matrix.group }}/18 - python:3.12, postgres:14
++    timeout-minutes: 15
++
++    services: *python-test-services
++
++    strategy:
++      fail-fast: false
++      matrix:
++        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
++        database: ["postgres:14"]
++        python-version: ["3.12"]
++
++    steps:
++      - *python-test-checkout
++
++      - *python-test-setup-uv
++
++      - name: Install packages
++        run: uv sync --locked
++
++      - name: Download test duration baseline
++        uses: actions/download-artifact@v8
++        with:
++          name: canonical-test-duration-baseline
++
++      - *python-test-database-url
++
++      - name: Run tests
++        id: canonical_tests
++        run: |
++          # Start every group from the same baseline. Cleaning leaves only this
++          # group's observations for the single-writer merge job below.
++          duration_path="test-durations-${{ matrix.group }}.json"
++          # A normal pytest session replaces this sentinel when it stores clean
++          # group timings. If pytest is interrupted before session finish, the
++          # untouched input cannot be mistaken for a valid group result.
++          jq '."__pytest_split_incomplete__" = -1' \
++            test-durations.json > "$duration_path"
++          set +e
++          uv run pytest tests --ignore=tests/typesafety \
++          -m "not windows" \
++          --numprocesses logical \
++          --maxprocesses 6 \
++          --dist worksteal \
++          --disable-docker-image-builds \
++          --exclude-service kubernetes \
++          --exclude-service docker \
++          --durations 26 \
++          --splits 18 \
++          --group "${{ matrix.group }}" \
++          --splitting-algorithm least_duration \
++          --durations-path "$duration_path" \
++          --store-durations \
++          --clean-durations
++          pytest_exit_code=$?
++          set -e
++          echo "exit_code=${pytest_exit_code}" >> "$GITHUB_OUTPUT"
++          exit "$pytest_exit_code"
++
++      - name: Validate group test durations
++        id: validate_canonical_durations
++        if: >-
++          ${{ !cancelled()
++          && (steps.canonical_tests.outputs.exit_code == '0'
++          || steps.canonical_tests.outputs.exit_code == '1') }}
++        run: |
++          duration_path="test-durations-${{ matrix.group }}.json"
++          jq -e '
++            type == "object"
++            and length > 0
++            and (has("__pytest_split_incomplete__") | not)
++            and all(
++              to_entries[];
++              (.key | length > 0)
++              and (.value | type == "number")
++              and (.value >= 0)
++            )
++          ' "$duration_path" > /dev/null
++
++      - name: Upload group test durations
++        if: ${{ !cancelled() && steps.validate_canonical_durations.outcome == 'success' }}
++        uses: actions/upload-artifact@v7
++        with:
++          name: canonical-test-durations-${{ matrix.group }}
++          path: test-durations-${{ matrix.group }}.json
++          retention-days: 7
++          overwrite: true
++
++      - *python-test-check-database
++
++  save-canonical-test-durations:
++    if: ${{ !cancelled() && github.event_name != 'repository_dispatch' }}
++    needs: run-canonical-tests
++    runs-on: ubuntu-latest
++    name: Save canonical test durations
++
++    steps:
++      - name: Download group test durations
++        uses: actions/download-artifact@v8
++        with:
++          pattern: canonical-test-durations-*
++          path: test-duration-groups
++          merge-multiple: true
++
++      - name: Merge group test durations
++        run: |
++          duration_files=(test-duration-groups/test-durations-*.json)
++          if [[ ${#duration_files[@]} -ne 18 ]]; then
++            echo "::error::Expected 18 duration files, found ${#duration_files[@]}"
++            exit 1
++          fi
++
++          jq -S -s '
++            reduce .[] as $group ({};
++              reduce ($group | to_entries[]) as $entry (.;
++                if has($entry.key) then
++                  error("duplicate test duration: \($entry.key)")
++                else
++                  .[$entry.key] = $entry.value
++                end
++              )
++            )
++          ' "${duration_files[@]}" > test-durations.json
++
++          jq 'length' test-durations.json
++
++      - name: Cache merged test durations
++        uses: actions/cache/save@v6
++        with:
++          path: test-durations.json
++          key: pytest-split-v1-python-3.12-postgres-14-${{ github.run_id }}-${{ github.run_attempt }}
++
++      - name: Upload merged test durations
++        uses: actions/upload-artifact@v7
++        with:
++          name: canonical-test-durations
++          path: test-durations.json
++          retention-days: 30
++          overwrite: true
++
+   profile-tests-with-logfire:
+     if: ${{ github.event_name == 'repository_dispatch' }}
+     runs-on: ubuntu-latest
+diff --git a/pyproject.toml b/pyproject.toml
+index 3442056263d6..a0858421870c 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -161,6 +161,7 @@ dev = [
+     "pytest-cov>=6.0",
+     "pytest-env>=1.1.5",
+     "pytest-flakefinder>=1.1.0",
++    "pytest-split>=0.11,<1.0",
+     "typsht>=0.0.1a4",
+     "pytest-timeout>=2.3.1",
+     "pytest-xdist>=3.6.1",
+diff --git a/src/prefect/logging/handlers.py b/src/prefect/logging/handlers.py
+index 15669bd81b8a..842cf6127bc4 100644
+--- a/src/prefect/logging/handlers.py
++++ b/src/prefect/logging/handlers.py
+@@ -9,7 +9,7 @@
+ import uuid
+ import warnings
+ from contextlib import asynccontextmanager
+-from typing import TYPE_CHECKING, Any, Callable, Dict, TextIO, Type
++from typing import TYPE_CHECKING, Any, Callable, Dict, TextIO, Type, cast
+ 
+ from rich.console import Console
+ from rich.highlighter import Highlighter, NullHighlighter
+@@ -334,8 +334,29 @@ class _SafeStreamHandler(StreamHandler):
+     it to handleError(), which prints a noisy traceback to sys.stderr. We
+     suppress that for ValueError so background threads logging after stream
+     teardown stay silent.
++
++    Context-managed locking also prevents asynchronous cancellation from
++    leaving the handler locked on Python 3.12 and earlier.
+     """
+ 
++    def handle(self, record: logging.LogRecord) -> bool:
++        filtered = self.filter(record)
++        if isinstance(filtered, logging.LogRecord):
++            record = filtered
++        if filtered:
++            lock = self.lock
++            assert lock is not None
++            with lock:
++                self.emit(record)
++        return cast(bool, filtered)
++
++    def flush(self) -> None:
++        lock = self.lock
++        assert lock is not None
++        with lock:
++            if self.stream and hasattr(self.stream, "flush"):
++                self.stream.flush()
++
+     def handleError(self, record: logging.LogRecord) -> None:
+         _, exc, _ = sys.exc_info()
+         if isinstance(exc, ValueError) and "closed file" in str(exc):
+diff --git a/tests/client/test_base_client.py b/tests/client/test_base_client.py
+index e5953d9a068f..a311a766a0b0 100644
+--- a/tests/client/test_base_client.py
++++ b/tests/client/test_base_client.py
+@@ -1,3 +1,4 @@
++import logging
+ from contextlib import asynccontextmanager
+ from datetime import datetime, timedelta, timezone
+ from typing import Any, AsyncGenerator, Dict, List, Tuple
+@@ -104,6 +105,7 @@ class TestPrefectHttpxAsyncClient:
+     async def test_prefect_httpx_client_retries_on_designated_error_codes(
+         self, monkeypatch, error_code, caplog
+     ):
++        caplog.set_level(logging.DEBUG, logger="prefect.client")
+         base_client_send = AsyncMock()
+         monkeypatch.setattr(AsyncClient, "send", base_client_send)
+         client = PrefectHttpxAsyncClient()
+@@ -144,6 +146,7 @@ async def test_prefect_httpx_client_retries_on_designated_error_codes(
+     async def test_prefect_httpx_client_retries_on_extra_error_codes(
+         self, monkeypatch, error_code, extra_codes, caplog
+     ):
++        caplog.set_level(logging.DEBUG, logger="prefect.client")
+         base_client_send = AsyncMock()
+         monkeypatch.setattr(AsyncClient, "send", base_client_send)
+         client = PrefectHttpxAsyncClient()
+@@ -217,6 +220,7 @@ async def test_prefect_httpx_client_retries_on_designated_exceptions(
+         exception_type,
+         caplog,
+     ):
++        caplog.set_level(logging.DEBUG, logger="prefect.client")
+         base_client_send = AsyncMock()
+         monkeypatch.setattr(AsyncClient, "send", base_client_send)
+         client = PrefectHttpxAsyncClient()
+@@ -528,6 +532,7 @@ async def test_prefect_httpx_client_retries_connect_error_after_successful_conne
+         self, monkeypatch, caplog
+     ):
+         """ConnectError SHOULD be retried after a successful connection has been made."""
++        caplog.set_level(logging.DEBUG, logger="prefect.client")
+         base_client_send = AsyncMock()
+         monkeypatch.setattr(AsyncClient, "send", base_client_send)
+ 
+diff --git a/tests/client/test_prefect_client.py b/tests/client/test_prefect_client.py
+index 4f14989be818..5498c38a7c41 100644
+--- a/tests/client/test_prefect_client.py
++++ b/tests/client/test_prefect_client.py
+@@ -1647,7 +1647,7 @@ async def test_prefect_api_ssl_cert_file_setting_explicitly_set(
+ async def test_prefect_api_ssl_cert_file_default_setting(
+     monkeypatch: pytest.MonkeyPatch,
+ ):
+-    os.environ["SSL_CERT_FILE"] = "my_cert.pem"
++    monkeypatch.setenv("SSL_CERT_FILE", "my_cert.pem")
+ 
+     # Mock the SSL context creation
+     mock_context = Mock()
+@@ -1678,7 +1678,7 @@ async def test_prefect_api_ssl_cert_file_default_setting(
+ async def test_prefect_api_ssl_cert_file_default_setting_fallback(
+     monkeypatch: pytest.MonkeyPatch,
+ ):
+-    os.environ["SSL_CERT_FILE"] = ""
++    monkeypatch.setenv("SSL_CERT_FILE", "")
+ 
+     # Mock the SSL context creation
+     mock_context = Mock()
+diff --git a/tests/server/database/test_migrations.py b/tests/server/database/test_migrations.py
+index f697971b3629..e49775d77467 100644
+--- a/tests/server/database/test_migrations.py
++++ b/tests/server/database/test_migrations.py
+@@ -2,6 +2,7 @@
+ import importlib.util
+ import json
+ import textwrap
++from collections.abc import AsyncIterator
+ from pathlib import Path
+ from types import ModuleType, SimpleNamespace
+ from unittest.mock import AsyncMock, MagicMock
+@@ -11,6 +12,7 @@
+ import alembic.script
+ import pytest
+ import sqlalchemy as sa
++from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+ 
+ from prefect.server.database import dependencies
+ from prefect.server.database.alembic_commands import (
+@@ -36,6 +38,45 @@
+ pytestmark = [pytest.mark.service("database"), pytest.mark.clear_db]
+ 
+ 
++@contextlib.asynccontextmanager
++async def _isolated_postgres_schema_changes(
++    db: PrefectDBInterface, database_engine: AsyncEngine
++) -> AsyncIterator[None]:
++    if db.dialect.name != "postgresql":
++        yield
++        return
++
++    # Alembic uses a separate engine, so the application pool does not observe its
++    # DDL and can retain asyncpg prepared statements for types that were replaced.
++    await database_engine.dispose()
++    try:
++        yield
++    finally:
++        # The hosted test API runs in another process against the same per-worker
++        # database. Disconnect its pooled sessions too; pool_pre_ping will replace
++        # them before the next request.
++        async with database_engine.begin() as connection:
++            await connection.execute(
++                sa.text(
++                    """
++                    SELECT pg_terminate_backend(pid)
++                    FROM pg_stat_activity
++                    WHERE datname = current_database()
++                      AND pid <> pg_backend_pid()
++                    """
++                )
++            )
++        await database_engine.dispose()
++
++
++@pytest.fixture(autouse=True)
++async def isolate_migration_tests(
++    db: PrefectDBInterface, database_engine: AsyncEngine
++) -> AsyncIterator[None]:
++    async with _isolated_postgres_schema_changes(db, database_engine):
++        yield
++
++
+ @pytest.fixture
+ def migration_environment(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+     """Load the Alembic environment without running migrations at import time."""
+@@ -308,6 +349,67 @@ def test_event_resource_index_migration_supports_postgres_dry_run(
+     )
+ 
+ 
++@pytest.mark.timeout(120)
++async def test_schema_migrations_discard_stale_postgres_prepared_statements(
++    db: PrefectDBInterface, database_engine: AsyncEngine
++):
++    if db.dialect.name != "postgresql":
++        pytest.skip(reason="asyncpg prepared statement caches are PostgreSQL-specific")
++
++    external_engine = create_async_engine(database_engine.url, pool_pre_ping=True)
++    try:
++        async with external_engine.begin() as connection:
++            await connection.execute(
++                sa.insert(db.WorkPool).values(
++                    name="external-before-schema-change",
++                    type="process",
++                    status="NOT_READY",
++                )
++            )
++
++        async with _isolated_postgres_schema_changes(db, database_engine):
++            async with database_engine.begin() as connection:
++                await connection.execute(
++                    sa.insert(db.WorkPool).values(
++                        name="before-schema-change",
++                        type="process",
++                        status="NOT_READY",
++                    )
++                )
++
++            try:
++                await run_sync_in_worker_thread(
++                    alembic_downgrade, revision="15768c2ec702"
++                )
++            finally:
++                await run_sync_in_worker_thread(alembic_upgrade)
++
++        async with database_engine.begin() as connection:
++            await connection.execute(
++                sa.insert(db.WorkPool).values(
++                    name="after-schema-change",
++                    type="process",
++                    status="NOT_READY",
++                )
++            )
++        async with external_engine.begin() as connection:
++            await connection.execute(
++                sa.insert(db.WorkPool).values(
++                    name="external-after-schema-change",
++                    type="process",
++                    status="NOT_READY",
++                )
++            )
++            result = await connection.execute(
++                sa.select(sa.func.count())
++                .select_from(db.WorkPool)
++                .where(db.WorkPool.name == "external-after-schema-change")
++            )
++        assert result.scalar_one() == 1
++    finally:
++        await external_engine.dispose()
++
++
+ def test_flow_run_deployment_id_index_migration_rebuilds_invalid_index(
+     flow_run_deployment_id_index_migration: ModuleType,
+     monkeypatch: pytest.MonkeyPatch,
+diff --git a/tests/server/models/test_block_registration.py b/tests/server/models/test_block_registration.py
+index 3ec8bbbccc0f..1765f8e8e3f7 100644
+--- a/tests/server/models/test_block_registration.py
++++ b/tests/server/models/test_block_registration.py
+@@ -20,21 +20,24 @@
+ 
+ 
+ @pytest.fixture(scope="module")
+-async def expected_number_of_registered_block_types():
++async def expected_registered_block_type_slugs() -> set[str]:
+     collections_blocks_data = await _load_collection_blocks_data()
+ 
+-    block_types_from_collections = [
+-        block_type
++    collection_block_type_slugs = {
++        block_type["slug"]
+         for collection in collections_blocks_data["collections"].values()
+         for block_type in collection["block_types"].values()
+-    ]
++    }
+     block_registry = get_registry_for_type(Block) or {}
+-    return len(block_types_from_collections) + len(block_registry.values())
++    registry_block_type_slugs = {
++        block_class._to_block_type().slug for block_class in block_registry.values()
++    }
++    return collection_block_type_slugs | registry_block_type_slugs
+ 
+ 
+ class TestRunAutoRegistration:
+     async def test_full_registration_with_empty_database(
+-        self, session, expected_number_of_registered_block_types
++        self, session, expected_registered_block_type_slugs
+     ):
+         PROTECTED_BLOCKS = {
+             "secret",
+@@ -50,9 +53,8 @@ async def test_full_registration_with_empty_database(
+         await session.commit()
+ 
+         registered_blocks = await read_block_types(session)
+-        assert len(registered_blocks) == expected_number_of_registered_block_types
+-
+         registered_block_slugs = {b.slug for b in registered_blocks}
++        assert registered_block_slugs == expected_registered_block_type_slugs
+         assert PROTECTED_BLOCKS.issubset(registered_block_slugs), (
+             "When changing protected blocks, edit PROTECTED_BLOCKS defined above"
+         )
+@@ -61,7 +63,7 @@ async def test_full_registration_with_empty_database(
+         ), "When changing protected blocks, edit PROTECTED_BLOCKS defined above"
+ 
+     async def test_registration_works_with_populated_database(
+-        self, session, expected_number_of_registered_block_types
++        self, session, expected_registered_block_type_slugs
+     ):
+         with temporary_settings({PREFECT_API_BLOCKS_REGISTER_ON_START: True}):
+             await run_block_auto_registration(session=session)
+@@ -70,7 +72,8 @@ async def test_registration_works_with_populated_database(
+             registered_blocks = await read_block_types(session)
+ 
+             # this assertion assumes that users cannot protect blocks manually
+-            assert len(registered_blocks) == expected_number_of_registered_block_types
++            registered_block_slugs = {b.slug for b in registered_blocks}
++            assert registered_block_slugs == expected_registered_block_type_slugs
+ 
+ 
+ class TestRegisterBlockType:
+diff --git a/tests/test_logging.py b/tests/test_logging.py
+index 5ff639908313..dcb4d067147f 100644
+--- a/tests/test_logging.py
++++ b/tests/test_logging.py
+@@ -4,6 +4,7 @@
+ import json
+ import logging
+ import sys
++import threading
+ import time
+ import uuid
+ from collections import ChainMap
+@@ -28,6 +29,7 @@
+ import prefect.settings
+ from prefect import flow, task
+ from prefect._internal.concurrency.api import create_call, from_sync
++from prefect._internal.concurrency.cancellation import CancelledError
+ from prefect.client.orchestration import PrefectClient
+ from prefect.client.schemas.filters import LogFilter, LogFilterFlowRunId
+ from prefect.context import FlowRunContext, TaskRunContext
+@@ -1710,6 +1712,66 @@ def test_emit_with_open_stream_works(self):
+ 
+         assert "hello" in stream.getvalue()
+ 
++    def test_async_cancellation_does_not_leave_handler_locked(
++        self, monkeypatch: pytest.MonkeyPatch
++    ):
++        # Python <=3.12 acquires the handler lock before entering try/finally in
++        # both handle() and flush(). Patch those implementations in so this
++        # remains a regression test when the suite runs on a newer Python.
++        def python_312_handle(
++            handler: logging.Handler, record: logging.LogRecord
++        ) -> bool | logging.LogRecord:
++            filtered = handler.filter(record)
++            if isinstance(filtered, logging.LogRecord):
++                record = filtered
++            if filtered:
++                handler.acquire()
++                try:
++                    handler.emit(record)
++                finally:
++                    handler.release()
++            return filtered
++
++        def python_312_flush(handler: logging.StreamHandler) -> None:
++            handler.acquire()
++            try:
++                if handler.stream and hasattr(handler.stream, "flush"):
++                    handler.stream.flush()
++            finally:
++                handler.release()
++
++        monkeypatch.setattr(logging.Handler, "handle", python_312_handle)
++        monkeypatch.setattr(logging.StreamHandler, "flush", python_312_flush)
++
++        handler = _SafeStreamHandler(stream=StringIO())
++        acquire = handler.acquire
++
++        def interrupt_acquire() -> None:
++            acquire()
++            raise CancelledError()
++
++        monkeypatch.setattr(handler, "acquire", interrupt_acquire)
++        record = logging.makeLogRecord({"msg": "test"})
++
++        def handle_record() -> None:
++            try:
++                handler.handle(record)
++            except CancelledError:
++                pass
++
++        thread = threading.Thread(target=handle_record)
++        thread.start()
++        thread.join(timeout=5)
++        assert not thread.is_alive()
++
++        assert handler.lock is not None
++        lock_is_available = handler.lock.acquire(timeout=0.1)
++        if lock_is_available:
++            handler.lock.release()
++        else:
++            handler.createLock()
++        assert lock_is_available
++
+ 
+ class TestPrefectConsoleHandler:
+     @pytest.fixture
+diff --git a/uv.lock b/uv.lock
+index 914f5f549afb..5e1bef9802f0 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -4235,6 +4235,7 @@ dev = [
+     { name = "pytest-env", version = "1.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+     { name = "pytest-env", version = "1.6.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+     { name = "pytest-flakefinder" },
++    { name = "pytest-split" },
+     { name = "pytest-timeout" },
+     { name = "pytest-xdist" },
+     { name = "pyyaml" },
+@@ -4391,6 +4392,7 @@ dev = [
+     { name = "pytest-cov", specifier = ">=6.0" },
+     { name = "pytest-env", specifier = ">=1.1.5" },
+     { name = "pytest-flakefinder", specifier = ">=1.1.0" },
++    { name = "pytest-split", specifier = ">=0.11,<1.0" },
+     { name = "pytest-timeout", specifier = ">=2.3.1" },
+     { name = "pytest-xdist", specifier = ">=3.6.1" },
+     { name = "pyyaml", specifier = ">=6.0.1" },
+@@ -5568,6 +5570,19 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/0c/b9/c3df11997d29e69b3f8edae1e903bf44eaf4774ccf4c5b6ddcebde88931c/pytest_markdown_docs-0.9.2-py3-none-any.whl", hash = "sha256:9c05a5bee48214cb36583d4a5131d3a23b327a8d82c92ae860106053fd7d1f9e", size = 13536, upload-time = "2026-03-23T12:35:03.862Z" },
+ ]
+ 
++[[package]]
++name = "pytest-split"
++version = "0.11.0"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "pytest", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
++    { name = "pytest", version = "9.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
++]
++sdist = { url = "https://files.pythonhosted.org/packages/2f/16/8af4c5f2ceb3640bb1f78dfdf5c184556b10dfe9369feaaad7ff1c13f329/pytest_split-0.11.0.tar.gz", hash = "sha256:8ebdb29cc72cc962e8eb1ec07db1eeb98ab25e215ed8e3216f6b9fc7ce0ec2b5", size = 13421, upload-time = "2026-02-03T09:14:31.469Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/ae/a1/d4423657caaa8be9b31e491592b49cebdcfd434d3e74512ce71f6ec39905/pytest_split-0.11.0-py3-none-any.whl", hash = "sha256:899d7c0f5730da91e2daf283860eb73b503259cb416851a65599368849c7f382", size = 11911, upload-time = "2026-02-03T09:14:33.708Z" },
++]
++
+ [[package]]
+ name = "pytest-timeout"
+ version = "2.4.0"

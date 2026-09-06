@@ -1,0 +1,116 @@
+diff --git a/changelogs/fragments/tempfile-path-traversal.yml b/changelogs/fragments/tempfile-path-traversal.yml
+new file mode 100644
+index 00000000000000..5627e5f09ec7cc
+--- /dev/null
++++ b/changelogs/fragments/tempfile-path-traversal.yml
+@@ -0,0 +1,2 @@
++bugfixes:
++  - tempfile - reject prefix and suffix values that contain path components to prevent path traversal.
+diff --git a/lib/ansible/modules/tempfile.py b/lib/ansible/modules/tempfile.py
+index a7163b02ebf603..796a483dc7affd 100644
+--- a/lib/ansible/modules/tempfile.py
++++ b/lib/ansible/modules/tempfile.py
+@@ -53,6 +53,8 @@
+ - module: ansible.windows.win_tempfile
+ author:
+   - Krzysztof Magosa (@krzysztof-magosa)
++notes:
++  - O(prefix) and O(suffix) must be file name components and must not contain path separators.
+ """
+ 
+ EXAMPLES = """
+@@ -88,7 +90,7 @@
+   sample: "/tmp/ansible.bMlvdk"
+ """
+ 
+-from os import close
++import os
+ from tempfile import mkstemp, mkdtemp
+ 
+ from ansible.module_utils.basic import AnsibleModule
+@@ -105,18 +107,26 @@ def main():
+         ),
+     )
+ 
++    prefix = module.params['prefix']
++    suffix = module.params['suffix']
++
++    if prefix and prefix != os.path.basename(prefix):
++        module.fail_json(msg=f"prefix must be a valid file name component, got {prefix!r}")
++    if suffix and suffix != os.path.basename(suffix):
++        module.fail_json(msg=f"suffix must be a valid file name component, got {suffix!r}")
++
+     try:
+         if module.params['state'] == 'file':
+             handle, path = mkstemp(
+-                prefix=module.params['prefix'],
+-                suffix=module.params['suffix'],
++                prefix=prefix,
++                suffix=suffix,
+                 dir=module.params['path'],
+             )
+-            close(handle)
++            os.close(handle)
+         else:
+             path = mkdtemp(
+-                prefix=module.params['prefix'],
+-                suffix=module.params['suffix'],
++                prefix=prefix,
++                suffix=suffix,
+                 dir=module.params['path'],
+             )
+ 
+diff --git a/test/integration/targets/tempfile/tasks/main.yml b/test/integration/targets/tempfile/tasks/main.yml
+index 2d783e6f9a9e61..7f3db52810faae 100644
+--- a/test/integration/targets/tempfile/tasks/main.yml
++++ b/test/integration/targets/tempfile/tasks/main.yml
+@@ -35,6 +35,36 @@
+   register: temp_dir_non_existent_path
+   ignore_errors: yes
+ 
++- name: Reject path components in prefix for file
++  tempfile:
++    path: "{{ remote_tmp_dir }}"
++    prefix: "../../nested"
++  register: temp_file_invalid_prefix
++  ignore_errors: yes
++
++- name: Reject path components in suffix for file
++  tempfile:
++    path: "{{ remote_tmp_dir }}"
++    suffix: "../world"
++  register: temp_file_invalid_suffix
++  ignore_errors: yes
++
++- name: Reject path components in prefix for directory
++  tempfile:
++    state: directory
++    path: "{{ remote_tmp_dir }}"
++    prefix: "../../nested"
++  register: temp_dir_invalid_prefix
++  ignore_errors: yes
++
++- name: Reject path components in suffix for directory
++  tempfile:
++    state: directory
++    path: "{{ remote_tmp_dir }}"
++    suffix: "../world"
++  register: temp_dir_invalid_suffix
++  ignore_errors: yes
++
+ - name: Check results
+   assert:
+     that:
+@@ -61,3 +91,12 @@
+       - temp_file_non_existent_path is failed
+ 
+       - temp_dir_non_existent_path is failed
++
++      - temp_file_invalid_prefix is failed
++      - '"prefix must be a valid file name component" in temp_file_invalid_prefix.msg'
++      - temp_file_invalid_suffix is failed
++      - '"suffix must be a valid file name component" in temp_file_invalid_suffix.msg'
++      - temp_dir_invalid_prefix is failed
++      - '"prefix must be a valid file name component" in temp_dir_invalid_prefix.msg'
++      - temp_dir_invalid_suffix is failed
++      - '"suffix must be a valid file name component" in temp_dir_invalid_suffix.msg'

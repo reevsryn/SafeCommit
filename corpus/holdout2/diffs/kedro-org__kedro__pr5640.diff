@@ -1,0 +1,265 @@
+diff --git a/RELEASE.md b/RELEASE.md
+index c1b6c297b6..e46e9ffe2b 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -19,6 +19,7 @@
+ * Improved the `pipeline()` error message when a mapped dataset or parameter does not exist in the pipeline.
+ * Fixed `kedro new` accepting project names whose derived package name shadows a Python standard library module or is a Python keyword (e.g. `email`, `json`, `import`), which silently produced a broken, unimportable project. Such names are now rejected at creation time with a clear message.
+ * Fixed `kedro pipeline create` accepting Python keywords (e.g. `for`, `import`, `return`) as pipeline names. Such names are now rejected at creation time with a clear error message.
++* Fixed `%reload_kedro --params` parsing for quoted runtime parameter values that contain spaces.
+ * Fixed custom `logging.Filter` subclasses configured with `class:` in `logging.yml`, so they are instantiated and applied.
+ 
+ ## Documentation changes
+diff --git a/kedro/ipython/__init__.py b/kedro/ipython/__init__.py
+index 81c135812f..57046d54d9 100644
+--- a/kedro/ipython/__init__.py
++++ b/kedro/ipython/__init__.py
+@@ -10,6 +10,7 @@
+ import inspect
+ import logging
+ import os
++import re
+ import sys
+ import typing
+ import warnings
+@@ -55,6 +56,8 @@
+ 
+ RICH_INSTALLED: Final = importlib.util.find_spec("rich") is not None
+ 
++_PARAMS_OPTION = re.compile(r"(?P<option>(?:^|\s)--params)(?P<separator>=|\s+)")
++
+ 
+ def load_ipython_extension(ipython: InteractiveShell) -> None:
+     """
+@@ -78,6 +81,70 @@ def load_ipython_extension(ipython: InteractiveShell) -> None:
+     reload_kedro()
+ 
+ 
++def _normalise_reload_kedro_params(line: str) -> str:
++    """Normalise quoted ``--params`` values before IPython splits them."""
++    match = _PARAMS_OPTION.search(line)
++    if not match:
++        return line
++
++    value_start = match.end()
++    value_end = _find_reload_kedro_params_end(line, value_start)
++    value = line[value_start:value_end]
++    value = _quote_reload_kedro_params(_remove_reload_kedro_param_quotes(value))
++    prefix = line[:value_start]
++    if match.group("separator") == "=":
++        separator_start = match.start("separator")
++        prefix = f"{line[:separator_start]} "
++
++    return f"{prefix}{value}{line[value_end:]}"
++
++
++def _find_reload_kedro_params_end(line: str, value_start: int) -> int:
++    quote: str | None = None
++    for index, char in enumerate(line[value_start:], start=value_start):
++        if quote:
++            if char == quote:
++                quote = None
++        elif char in {"'", '"'}:
++            quote = char
++        elif char.isspace():
++            return index
++    return len(line)
++
++
++def _remove_reload_kedro_param_quotes(value: str) -> str:
++    quote: str | None = None
++    unquoted_value: list[str] = []
++    for char in value:
++        if quote:
++            if char == quote:
++                quote = None
++            else:
++                unquoted_value.append(char)
++        elif char in {"'", '"'}:
++            quote = char
++        else:
++            unquoted_value.append(char)
++    return "".join(unquoted_value)
++
++
++def _quote_reload_kedro_params(value: str) -> str:
++    if '"' in value and "'" not in value:
++        return f"'{value}'"
++
++    escaped_value = value.replace('"', '\\"')
++    return f'"{escaped_value}"'
++
++
++def _split_reload_kedro_params(value: str) -> dict[str, Any]:
++    """Split ``%reload_kedro --params`` values after IPython argument parsing."""
++    if len(value) >= len("''") and value[0] == value[-1] and value[0] in {"'", '"'}:
++        value = value[1:-1]
++    return typing.cast(
++        "dict[str, Any]", _split_params(typing.cast("Any", None), None, value)
++    )
++
++
+ @typing.no_type_check
+ @needs_local_scope
+ @magic_arguments()
+@@ -94,7 +161,7 @@ def load_ipython_extension(ipython: InteractiveShell) -> None:
+ @argument("-e", "--env", type=str, default=None, help=ENV_HELP)
+ @argument(
+     "--params",
+-    type=lambda value: _split_params(None, None, value),
++    type=_split_reload_kedro_params,
+     default=None,
+     help=PARAMS_ARG_HELP,
+ )
+@@ -109,6 +176,7 @@ def magic_reload_kedro(
+     See https://docs.kedro.org/en/stable/integrations-and-plugins/notebooks_and_ipython/kedro_and_notebooks/#reload_kedro-line-magic
+     for more.
+     """
++    line = _normalise_reload_kedro_params(line)
+     args = parse_argstring(magic_reload_kedro, line)
+     reload_kedro(args.path, args.env, args.params, local_ns, args.conf_source)
+ 
+diff --git a/tests/ipython/test_ipython.py b/tests/ipython/test_ipython.py
+index 5f1a7c6c7a..48db7bad44 100644
+--- a/tests/ipython/test_ipython.py
++++ b/tests/ipython/test_ipython.py
+@@ -3,6 +3,7 @@
+ 
+ import pytest
+ from IPython.core.error import UsageError
++from IPython.utils._process_common import arg_split
+ 
+ import kedro.ipython
+ from kedro.framework.project import pipelines
+@@ -13,12 +14,14 @@
+     _format_node_inputs_text,
+     _get_node_bound_arguments,
+     _load_node,
++    _normalise_reload_kedro_params,
+     _prepare_function_body,
+     _prepare_imports,
+     _prepare_node_inputs,
+     _resolve_function_node,
+     _resolve_project_path,
+     _resolve_symbol_dependencies,
++    _split_reload_kedro_params,
+     load_ipython_extension,
+     magic_load_node,
+     reload_kedro,
+@@ -222,6 +225,105 @@ def test_line_magic_with_valid_arguments(self, mocker, args, ipython):
+ 
+         ipython.run_line_magic("reload_kedro", args)
+ 
++    @pytest.mark.parametrize(
++        (
++            "args",
++            "expected_path",
++            "expected_env",
++            "expected_runtime_params",
++            "expected_conf_source",
++        ),
++        [
++            ("--params foo='bar baz'", None, None, {"foo": "bar baz"}, None),
++            ('--params foo="bar baz"', None, None, {"foo": "bar baz"}, None),
++            ("--params 'foo=bar baz'", None, None, {"foo": "bar baz"}, None),
++            ('--params "foo=bar baz"', None, None, {"foo": "bar baz"}, None),
++            (
++                "--params foo='bar baz',key2='hello world'",
++                None,
++                None,
++                {"foo": "bar baz", "key2": "hello world"},
++                None,
++            ),
++            (
++                '--params k1=v1,k2="a b"',
++                None,
++                None,
++                {"k1": "v1", "k2": "a b"},
++                None,
++            ),
++            ("--params=foo='bar baz'", None, None, {"foo": "bar baz"}, None),
++            (
++                ". --env=base --params foo='bar baz' --conf-source=new_conf",
++                ".",
++                "base",
++                {"foo": "bar baz"},
++                "new_conf",
++            ),
++            (
++                '. --env=base --params foo="bar baz" --conf-source=new_conf',
++                ".",
++                "base",
++                {"foo": "bar baz"},
++                "new_conf",
++            ),
++        ],
++    )
++    def test_line_magic_params_with_quoted_spaces(
++        self,
++        mocker,
++        args,
++        expected_path,
++        expected_env,
++        expected_runtime_params,
++        expected_conf_source,
++        ipython,
++    ):
++        mocker.patch("kedro.ipython.find_kedro_project")
++        mock_reload_kedro = mocker.patch("kedro.ipython.reload_kedro")
++
++        ipython.run_line_magic("reload_kedro", args)
++
++        path, env, runtime_params, _, conf_source = mock_reload_kedro.call_args.args
++        assert path == expected_path
++        assert env == expected_env
++        assert runtime_params == expected_runtime_params
++        assert conf_source == expected_conf_source
++
++    @pytest.mark.parametrize(
++        ("args", "expected_runtime_params"),
++        [
++            ("--params foo='bar baz'", {"foo": "bar baz"}),
++            ('--params foo="bar baz"', {"foo": "bar baz"}),
++            ("--params 'foo=bar baz'", {"foo": "bar baz"}),
++            ('--params "foo=bar baz"', {"foo": "bar baz"}),
++            (
++                "--params foo='bar baz',key2='hello world'",
++                {"foo": "bar baz", "key2": "hello world"},
++            ),
++            ('--params first="a b",second="c d"', {"first": "a b", "second": "c d"}),
++            ('--params k1=v1,k2="a b"', {"k1": "v1", "k2": "a b"}),
++            ("""--params foo='he said "hi"'""", {"foo": 'he said "hi"'}),
++            ("--params=foo='bar baz'", {"foo": "bar baz"}),
++            (
++                ". --env=base --params foo='bar baz' --conf-source=new_conf",
++                {"foo": "bar baz"},
++            ),
++            (
++                '. --env=base --params foo="bar baz" --conf-source=new_conf',
++                {"foo": "bar baz"},
++            ),
++        ],
++    )
++    def test_normalise_reload_kedro_params_with_quoted_spaces(
++        self, args, expected_runtime_params
++    ):
++        normalised_args = _normalise_reload_kedro_params(args)
++        split_args = arg_split(normalised_args)
++        params_value = split_args[split_args.index("--params") + 1]
++
++        assert _split_reload_kedro_params(params_value) == expected_runtime_params
++
+     def test_line_magic_with_invalid_arguments(self, mocker, ipython):
+         mocker.patch("kedro.ipython.find_kedro_project")
+         mocker.patch("kedro.ipython.reload_kedro")
+@@ -549,9 +651,7 @@ def test_resolve_function_node_raises_when_function_not_found(self):
+             _resolve_function_node(module_tree, dummy_function)
+ 
+     def test_resolve_symbol_dependencies_handles_cycles(self):
+-        module_tree = ast.parse(
+-            "def a():\n" "    return b()\n" "def b():\n" "    return a()\n"
+-        )
++        module_tree = ast.parse("def a():\n    return b()\ndef b():\n    return a()\n")
+         symbols = _build_module_symbol_table(module_tree)
+ 
+         resolved_nodes = _resolve_symbol_dependencies(symbols, "a")

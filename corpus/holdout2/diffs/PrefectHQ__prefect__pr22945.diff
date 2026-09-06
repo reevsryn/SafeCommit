@@ -1,0 +1,69 @@
+diff --git a/src/prefect/events/filters.py b/src/prefect/events/filters.py
+index 9afa06054d3f..8a1d565f6cf1 100644
+--- a/src/prefect/events/filters.py
++++ b/src/prefect/events/filters.py
+@@ -14,6 +14,14 @@
+ from .schemas.events import Event, Resource, ResourceSpecification
+ 
+ 
++class AutomationFilterId(PrefectBaseModel):
++    """Filter by `Automation.id`."""
++
++    any_: Optional[list[UUID]] = Field(
++        default=None, description="A list of automation ids to include"
++    )
++
++
+ class AutomationFilterCreated(PrefectBaseModel):
+     """Filter by `Automation.created`."""
+ 
+@@ -52,6 +60,9 @@ class AutomationFilterTags(PrefectBaseModel):
+ 
+ 
+ class AutomationFilter(PrefectBaseModel):
++    id: Optional[AutomationFilterId] = Field(
++        default=None, description="Filter criteria for `Automation.id`"
++    )
+     name: Optional[AutomationFilterName] = Field(
+         default=None, description="Filter criteria for `Automation.name`"
+     )
+diff --git a/tests/client/test_prefect_client.py b/tests/client/test_prefect_client.py
+index 5498c38a7c41..e918902e9d56 100644
+--- a/tests/client/test_prefect_client.py
++++ b/tests/client/test_prefect_client.py
+@@ -2721,6 +2721,35 @@ async def test_read_automations_with_filter(
+             assert body["offset"] == 5
+             assert len(result) == 1
+ 
++    async def test_read_automations_with_id_filter(
++        self, cloud_client, automation: AutomationCore
++    ):
++        from prefect.events.filters import AutomationFilter, AutomationFilterId
++
++        with respx.mock(
++            base_url=PREFECT_CLOUD_API_URL.value(), using="httpx"
++        ) as router:
++            created_automation = automation.model_dump(mode="json")
++            automation_id = uuid4()
++            created_automation["id"] = str(automation_id)
++            read_route = router.post("/automations/filter").mock(
++                return_value=httpx.Response(200, json=[created_automation])
++            )
++
++            automation_filter = AutomationFilter(
++                id=AutomationFilterId(any_=[automation_id])
++            )
++            result = await cloud_client.read_automations(automations=automation_filter)
++
++            assert read_route.called
++            body = json.loads(read_route.calls[0].request.content)
++            # the id criteria must survive serialization; PrefectBaseModel ignores
++            # unknown fields, so a missing model field would drop it silently and
++            # return unfiltered automations
++            assert body["automations"]["id"] == {"any_": [str(automation_id)]}
++            assert len(result) == 1
++            assert result[0].id == automation_id
++
+     async def test_read_automations_by_name(
+         self, cloud_client, automation: AutomationCore
+     ):

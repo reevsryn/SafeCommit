@@ -1,0 +1,402 @@
+diff --git a/.github/workflows/bokeh-ci-full.yml b/.github/workflows/bokeh-ci-full.yml
+index c218183ed33..a8118c5678b 100644
+--- a/.github/workflows/bokeh-ci-full.yml
++++ b/.github/workflows/bokeh-ci-full.yml
+@@ -260,7 +260,9 @@ jobs:
+       matrix:
+         # Comprehensive: All platforms
+         os: [ubuntu-24.04, macos-latest, windows-latest]
+-        python-version: ['3.11']
++        # Build only on the most recent version of Python, so that documentation
++        # and included examples can utilize newest available syntax and standard APIs.
++        python-version: ['3.14']
+ 
+     steps:
+       - uses: actions/checkout@v6
+diff --git a/.github/workflows/bokeh-ci.yml b/.github/workflows/bokeh-ci.yml
+index ac4fe3dc9c3..cb19a39d591 100644
+--- a/.github/workflows/bokeh-ci.yml
++++ b/.github/workflows/bokeh-ci.yml
+@@ -235,12 +235,15 @@ jobs:
+ 
+   documentation:
+     needs: build
+-    runs-on: ubuntu-24.04
++    runs-on: ${{ matrix.os }}
+ 
+     strategy:
+       fail-fast: false
+       matrix:
+         # Documentation: Linux only
++        os: [ubuntu-24.04]
++        # Build only on the most recent version of Python, so that documentation
++        # and included examples can utilize newest available syntax and standard APIs.
+         python-version: ['3.14']
+ 
+     steps:
+diff --git a/bokehjs/test/integration/regressions.ts b/bokehjs/test/integration/regressions.ts
+index e39b085637f..0590082249b 100644
+--- a/bokehjs/test/integration/regressions.ts
++++ b/bokehjs/test/integration/regressions.ts
+@@ -4702,7 +4702,10 @@ describe("Bug", () => {
+   })
+ 
+   describe("in issue #14549", () => {
+-    it("doesn't prevent hover action upon bbox change", async () => {
++    // TODO This test can produce to marginally different states, that cause
++    // tests to fail at random. Re-enable this when vDOM migration and layout
++    // redesign are completed.
++    it.skip("doesn't prevent hover action upon bbox change", async () => {
+       const n = 1000
+       const x = linspace(0, 20, n)
+       const y = x
+diff --git a/docs/bokeh/source/docs/releases/3.10.0.rst b/docs/bokeh/source/docs/releases/3.10.0.rst
+index 6fa342ab80c..ea3596cd3ec 100644
+--- a/docs/bokeh/source/docs/releases/3.10.0.rst
++++ b/docs/bokeh/source/docs/releases/3.10.0.rst
+@@ -15,3 +15,4 @@ Bokeh version ``3.10.0`` (May 2026) is a minor milestone of Bokeh project.
+ * Support ``LightDark`` component auto/system option and add tri-state handling to toggle like components (:bokeh-pull:`14915`)
+ * Make it easier to theme ``Tooltip`` component and migrate it to vDOM (:bokeh-pull:`14955`)
+ * Fix broken inverted color mapping when using LogColorMapper (:bokeh-pull:`15035`)
++* Simplified ``CustomJS`` construction with template strings (Python 3.14+) (:bokeh-pull:`14977`)
+diff --git a/examples/interaction/widgets/slider.py b/examples/interaction/widgets/slider.py
+index 45c144cba57..92ad4ff9a25 100644
+--- a/examples/interaction/widgets/slider.py
++++ b/examples/interaction/widgets/slider.py
+@@ -1,9 +1,17 @@
+ from bokeh.io import show
++from bokeh.layouts import row
+ from bokeh.models import CustomJS, Slider
++from bokeh.models.widgets import Div
+ 
+-slider = Slider(start=0, end=10, value=1, step=.1, title="Stuff")
+-slider.js_on_change("value", CustomJS(code="""
+-    console.log('slider: value=' + this.value, this.toString())
+-"""))
++output = Div(text="Slide to reveal the value")
++slider = Slider(start=0, end=10, value=1, step=0.1, title=None)
+ 
+-show(slider)
++callback = CustomJS(
++    args=dict(slider=slider, output=output),
++    code="""
++        output.text = `Slider was updated to <b>${{ slider.value }}</b> value`
++    """,
++)
++slider.js_on_change("value", callback)
++
++show(row([slider, output]))
+diff --git a/examples/interaction/widgets/slider_template_string.py b/examples/interaction/widgets/slider_template_string.py
+new file mode 100644
+index 00000000000..d1f0df759c5
+--- /dev/null
++++ b/examples/interaction/widgets/slider_template_string.py
+@@ -0,0 +1,14 @@
++from bokeh.io import show
++from bokeh.layouts import row
++from bokeh.models import CustomJS, Slider
++from bokeh.models.widgets import Div
++
++output = Div(text="Slide to reveal the value")
++slider = Slider(start=0, end=10, value=1, step=0.1, title=None)
++
++callback = CustomJS.from_template(t"""
++    {output}.text = `Slider was updated to <b>${{ {slider}.value }}</b> value`
++""")
++slider.js_on_change("value", callback)
++
++show(row([slider, output]))
+diff --git a/pyproject.toml b/pyproject.toml
+index 667f0c5af0b..a881065047f 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -195,6 +195,9 @@ lint.ignore = [
+ ]
+ line-length = 165
+ 
++[tool.ruff.per-file-target-version]
++"examples/interaction/widgets/slider_template_string.py" = "py314"
++
+ # For now enable each typed module individually.
+ [[tool.mypy.overrides]]
+ module = [
+diff --git a/src/bokeh/models/callbacks.py b/src/bokeh/models/callbacks.py
+index f78f19dc990..6a125a08fc2 100644
+--- a/src/bokeh/models/callbacks.py
++++ b/src/bokeh/models/callbacks.py
+@@ -22,6 +22,7 @@
+ 
+ # Standard library imports
+ import pathlib
++import sys
+ from typing import TYPE_CHECKING, Any
+ 
+ # Bokeh imports
+@@ -202,6 +203,44 @@ def from_file(cls, path: PathLike, **args: Any) -> CustomJS:
+ 
+         return CustomJS(code=code, args=args, module=module)
+ 
++    if sys.version_info[:2] >= (3, 14):
++        if TYPE_CHECKING:
++            from string.templatelib import Template  # novermin
++
++        @classmethod
++        def from_template(cls, template: Template) -> CustomJS:
++            """
++            Construct a ``CustomJS`` instance from an interpolated string.
++
++            This allows to fill ``CustomJS.args`` by simply referring to Bokeh models
++            and other values from within interpolations.
++
++            .. code-block: python
++
++                from bokeh.models import CustomJS, Slider
++                slider = Slider(start=0, end=10)
++                CustomJS.from_template(t"console.log('Slider value: ' + {slider}.value)")
++
++            .. note::
++
++                This requires Python 3.14 and above to work.
++
++            """
++            from string.templatelib import Interpolation  # novermin
++
++            args: dict[str, Any] = {}
++            code = ""
++
++            for item in template:
++                if isinstance(item, Interpolation):
++                    name = item.expression
++                    args[name] = item.value
++                    code += name
++                else:
++                    code += item
++
++            return CustomJS(args=args, code=code)
++
+ class SetValue(Callback):
+     """ Allows to update a property of an object. """
+ 
+diff --git a/src/bokeh/models/callbacks.pyi b/src/bokeh/models/callbacks.pyi
+index 01538e9da97..15e3ba1152f 100644
+--- a/src/bokeh/models/callbacks.pyi
++++ b/src/bokeh/models/callbacks.pyi
+@@ -6,9 +6,13 @@
+ #-----------------------------------------------------------------------------
+ 
+ # Standard library imports
++import sys
+ from abc import abstractmethod
+ from typing import Any, Unpack
+ 
++if sys.version_info[:2] >= (3, 14):
++    from string.templatelib import Template
++
+ # Bokeh imports
+ from ..core.enums import AutoType as Auto
+ from ..core.has_props import HasProps
+@@ -55,6 +59,10 @@ class CustomJS(CustomCode):
+     @classmethod
+     def from_file(cls, path: PathLike, **args: Any) -> CustomJS: ...
+ 
++    if sys.version_info[:2] >= (3, 14):
++        @classmethod
++        def from_template(cls, template: Template) -> CustomJS: ...
++
+ class _SetValueInit(_CallbackInit, total=False):
+     obj: HasProps
+     attr: str
+diff --git a/src/bokeh/models/formatters.py b/src/bokeh/models/formatters.py
+index aa87b6fca54..d5540849371 100644
+--- a/src/bokeh/models/formatters.py
++++ b/src/bokeh/models/formatters.py
+@@ -924,7 +924,7 @@ def create_separator_line(character):
+         c2_fmt = add_row_item(tertiary, field, lens[3])
+         rows.append(extended_join("|", [scale, p_fmt, c1_fmt, c2_fmt]))
+         rows.append(separator)
+-    n = 0 if sys.version_info >= (3, 12) else 4 # remove when Python 3.11 is dropped
++    n = 0 if sys.version_info[:2] >= (3, 12) else 4 # remove when Python 3.11 is dropped
+     indent = " "*n
+     return f"\n{indent}".join(rows)
+ 
+diff --git a/tests/examples.yaml b/tests/examples.yaml
+index bd6e2f1f4b7..e08daf99a37 100644
+--- a/tests/examples.yaml
++++ b/tests/examples.yaml
+@@ -8,7 +8,7 @@
+ - path: "examples/integration/**"
+ 
+ - path: "examples/interaction/**"
+-  skip: ["doc_js_events.py"]
++  skip: ["doc_js_events.py", "slider_template_string.py:min_python=3.14"]
+ 
+ - path: "examples/models/*"
+   no_js: ["maps_cities.py", "maps.py", "trail.py"]
+diff --git a/tests/support/util/examples.py b/tests/support/util/examples.py
+index cbc98eb126a..738ac05342a 100644
+--- a/tests/support/util/examples.py
++++ b/tests/support/util/examples.py
+@@ -71,7 +71,7 @@ class Flags:
+ 
+ 
+ class Example:
+-    def __init__(self, path: str, flags: int, examples_dir: str, extensions: list[str] = []) -> None:
++    def __init__(self, path: str, flags: int, examples_dir: str, extensions: list[str] = [], min_python: str | None = None) -> None:
+         self.path = normpath(path)
+         self.flags = flags
+         self.examples_dir = examples_dir
+@@ -79,6 +79,7 @@ def __init__(self, path: str, flags: int, examples_dir: str, extensions: list[st
+         self._diff_ref = None
+         self.pixels = 0
+         self._has_ref = None
++        self.min_python = tuple(int(n) for n in min_python.split(".")) if min_python is not None else None
+ 
+     def __str__(self) -> str:
+         flags = [
+@@ -148,17 +149,27 @@ def store_img(self, img_data: str) -> None:
+ 
+ All = Literal["all"]
+ 
+-def add_examples(list_of_examples: list[Example], path: str, examples_dir: str, example_type: int | None = None,
+-        slow: list[str] | All | None = None, skip: list[str] | All | None = None,
+-        xfail: list[str] | All | None = None, no_js: list[str] | All | None = None) -> None:
+-
++def add_examples(
++    list_of_examples: list[Example],
++    path: str,
++    examples_dir: str,
++    *,
++    example_type: int | None = None,
++    slow: list[str] | All | None = None,
++    skip: list[str] | All | None = None,
++    xfail: list[str] | All | None = None,
++    no_js: list[str] | All | None = None,
++) -> None:
+     example_pattern = normpath(join(examples_dir, path))
+     example_path = normpath(example_pattern.strip("*"))
+ 
+     for path in sorted(iglob(example_pattern, recursive=True)):
+         flags = 0
+         extensions: list[str] = []
+-        orig_name = name = str(Path(path).relative_to(example_path))
++        if path != example_path:
++            orig_name = name = str(Path(path).relative_to(example_path))
++        else:
++            orig_name = name = path # this is a bit of a hack
+ 
+         if name.startswith(('_', '.')):
+             continue
+@@ -187,6 +198,18 @@ def add_examples(list_of_examples: list[Example], path: str, examples_dir: str,
+         else:
+             continue
+ 
++        min_python: str | None = None
++
++        if skip is not None:
++            for skip_name in skip:
++                if ":" in skip_name:
++                    skip_name, opts = skip_name.split(":")
++                    if basename(orig_name) == skip_name:
++                        for opt in opts.split(","):
++                            key, val = opt.split("=")
++                            if key == "min_python":
++                                min_python = val
++
+         if slow is not None and orig_name in slow:
+             flags |= Flags.slow
+ 
+@@ -199,7 +222,7 @@ def add_examples(list_of_examples: list[Example], path: str, examples_dir: str,
+         if no_js is not None and (no_js == 'all' or basename(orig_name) in no_js):
+             flags |= Flags.no_js
+ 
+-        list_of_examples.append(Example(join(example_path, name), flags, examples_dir, extensions))
++        list_of_examples.append(Example(join(example_path, name), flags, examples_dir, extensions, min_python))
+ 
+ 
+ def collect_examples(config_path: str) -> list[Example]:
+diff --git a/tests/test_examples.py b/tests/test_examples.py
+index 90c9beae0cc..a2eacfbb28c 100644
+--- a/tests/test_examples.py
++++ b/tests/test_examples.py
+@@ -90,9 +90,16 @@ def pytest_generate_tests(metafunc: _pytest.python.Metafunc) -> None:
+         examples = get_all_examples(config)
+ 
+         def marks(example: Example) -> list[_pytest.mark.MarkDecorator]:
+-            result = []
++            result: list[_pytest.mark.MarkDecorator] = []
+             if example.is_skip:
+                 result.append(pytest.mark.skip(reason=f"skipping {example.relpath}"))
++            if example.min_python is not None:
++                result.append(
++                    pytest.mark.skipif(
++                        sys.version_info[:2] < example.min_python,
++                        reason=f"skipping {example.relpath}; requires Python {example.min_python} or above",
++                    ),
++                )
+             if example.is_xfail and not example.no_js:
+                 result.append(pytest.mark.xfail(reason=f"xfail {example.relpath}", strict=True))
+             return result
+diff --git a/tests/unit/bokeh/core/test_serialization.py b/tests/unit/bokeh/core/test_serialization.py
+index 6dd2f97a2b1..4da132f7123 100644
+--- a/tests/unit/bokeh/core/test_serialization.py
++++ b/tests/unit/bokeh/core/test_serialization.py
+@@ -270,7 +270,7 @@ def test_list_circular_with_checking(self) -> None:
+         with pytest.raises(SerializationError, match="circular reference"):
+             encoder.encode(val)
+ 
+-    @pytest.mark.skipif(sys.platform == "win32" and sys.version_info < (3, 11), reason="stack overflow instead of RecursionError")
++    @pytest.mark.skipif(sys.platform == "win32" and sys.version_info[:2] < (3, 11), reason="stack overflow instead of RecursionError")
+     def test_list_circular_without_checking(self) -> None:
+         val: Sequence[Any] = [1, 2, 3]
+         val.append(val)
+@@ -313,7 +313,7 @@ def test_dict_circular_with_checking(self) -> None:
+         with pytest.raises(SerializationError, match="circular reference"):
+             encoder.encode(val)
+ 
+-    @pytest.mark.skipif(sys.platform == "win32" and sys.version_info < (3, 11), reason="stack overflow instead of RecursionError")
++    @pytest.mark.skipif(sys.platform == "win32" and sys.version_info[:2] < (3, 11), reason="stack overflow instead of RecursionError")
+     def test_dict_circular_without_checking(self) -> None:
+         val: dict[Any, Any] = {nan: [1, 2]}
+         val[inf] = val
+diff --git a/tests/unit/bokeh/models/test_callbacks__models.py b/tests/unit/bokeh/models/test_callbacks__models.py
+index 61af2cf7bb6..45a409e6a0d 100644
+--- a/tests/unit/bokeh/models/test_callbacks__models.py
++++ b/tests/unit/bokeh/models/test_callbacks__models.py
+@@ -17,6 +17,7 @@
+ #-----------------------------------------------------------------------------
+ 
+ # Standard library imports
++import sys
+ from pathlib import Path
+ from unittest.mock import mock_open, patch
+ 
+@@ -71,6 +72,29 @@ def test_CustomJS_from_code_bad_file_type() -> None:
+     with pytest.raises(RuntimeError):
+         CustomJS.from_file(Path("some/module.css"))
+ 
++@pytest.mark.skipif(sys.version_info[:2] < (3, 14), reason="needs support for template literals")
++def test_CustomJS_from_template() -> None:
++    # TODO can't implement this directly, because it will cause SyntaxError earlier Pythons
++    slider = Slider()
++
++    code0 = """CustomJS.from_template(t"export default () => console.log('foo')")"""
++    cb0: CustomJS = eval(compile(code0, "<test>", "eval"))
++    assert cb0.module == "auto"
++    assert cb0.code == "export default () => console.log('foo')"
++    assert cb0.args == dict()
++
++    code1 = """CustomJS.from_template(t"export default () => console.log('foo: ' + {slider}.value)")"""
++    cb1: CustomJS = eval(compile(code1, "<test>", "eval"))
++    assert cb1.module == "auto"
++    assert cb1.code == "export default () => console.log('foo: ' + slider.value)"
++    assert cb1.args == dict(slider=slider)
++
++    code2 = """CustomJS.from_template(t"export default () => console.log(`foo: ${{ {slider}.value }}`)")"""
++    cb2: CustomJS = eval(compile(code2, "<test>", "eval"))
++    assert cb2.module == "auto"
++    assert cb2.code == "export default () => console.log(`foo: ${ slider.value }`)"
++    assert cb2.args == dict(slider=slider)
++
+ #-----------------------------------------------------------------------------
+ # Dev API
+ #-----------------------------------------------------------------------------

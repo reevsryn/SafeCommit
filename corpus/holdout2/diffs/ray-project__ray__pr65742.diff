@@ -1,0 +1,1236 @@
+diff --git a/doc/source/ray-core/handling-dependencies.rst b/doc/source/ray-core/handling-dependencies.rst
+index dcc5b3de3039..d0fd4476bf17 100644
+--- a/doc/source/ray-core/handling-dependencies.rst
++++ b/doc/source/ray-core/handling-dependencies.rst
+@@ -493,7 +493,7 @@ API Reference
+ 
+ The ``runtime_env`` is a Python dictionary or a Python class :class:`ray.runtime_env.RuntimeEnv <ray.runtime_env.RuntimeEnv>` including one or more of the following fields:
+ 
+-- ``working_dir`` (str): Specifies the working directory for the Ray workers. This must either be (1) a local existing directory with total size at most 500 MiB, (2) a local existing archive file (``.zip``, ``.tar.gz``, or ``.tgz``) with total uncompressed size at most 500 MiB (Note: ``excludes`` has no effect), or (3) a URI to a remotely-stored archive (``.zip``, ``.tar.gz``, or ``.tgz``) containing the working directory for your job (no file size limit is enforced by Ray). See :ref:`remote-uris` for details.
++- ``working_dir`` (str): Specifies the working directory for the Ray workers. This must either be (1) a local existing directory with total size at most 500 MiB, (2) a local existing archive file (``.zip``, ``.tar.gz``, ``.tgz``, or ``.tar.xz``) with total uncompressed size at most 500 MiB (Note: ``excludes`` has no effect), or (3) a URI to a remotely-stored archive (``.zip``, ``.tar.gz``, ``.tgz``, or ``.tar.xz``) containing the working directory for your job (no file size limit is enforced by Ray). See :ref:`remote-uris` for details.
+   The specified directory is downloaded to each node on the cluster, and Ray workers start in their node's copy of this directory.
+ 
+   - Examples
+@@ -517,7 +517,7 @@ The ``runtime_env`` is a Python dictionary or a Python class :class:`ray.runtime
+   Note: If the local directory contains symbolic links, Ray follows the links and the files they point to are uploaded to the cluster.
+ 
+ - ``py_modules`` (List[str|module]): Specifies Python modules to be available for import in the Ray workers.  (For more ways to specify packages, see also the ``pip`` and ``conda`` fields below.)
+-  Each entry must be either (1) a path to a local file or directory, (2) a URI to a remote archive (``.zip``, ``.tar.gz``, ``.tgz``) or wheel (``.whl``) file (see :ref:`remote-uris` for details), (3) a Python module object, or (4) a path to a local ``.whl`` file.
++  Each entry must be either (1) a path to a local file or directory, (2) a URI to a remote archive (``.zip``, ``.tar.gz``, ``.tgz``, ``.tar.xz``) or wheel (``.whl``) file (see :ref:`remote-uris` for details), (3) a Python module object, or (4) a path to a local ``.whl`` file.
+ 
+   - Examples of entries in the list:
+ 
+@@ -828,7 +828,7 @@ If you want to specify this directory as a local path, your ``runtime_env`` dict
+   runtime_env = {..., "working_dir": "/some_path/example_dir", ...}
+ 
+ Suppose instead you want to host your files in your ``/some_path/example_dir`` directory remotely and provide a remote URI.
+-You need to first compress the ``example_dir`` directory into a ``.zip`` or ``.tar.gz`` archive.
++You need to first compress the ``example_dir`` directory into a ``.zip``, ``.tar.gz``, ``.tgz``, or ``.tar.xz`` archive.
+ 
+ There should be no other files or directories at the top level of the archive, other than ``example_dir``.
+ You can use one of the following commands in the Terminal:
+@@ -840,6 +840,8 @@ You can use one of the following commands in the Terminal:
+     zip -r archive.zip example_dir
+     # Using tar.gz:
+     tar -czf archive.tar.gz example_dir
++    # Using tar.xz:
++    tar -cJf archive.tar.xz example_dir
+ 
+ Run this command from the *parent directory* of the desired ``working_dir`` to ensure that the resulting archive contains a single top-level directory.
+ In general, the archive's name and the top-level directory's name can be anything.
+@@ -853,6 +855,8 @@ You can check that the archive contains a single top-level directory by running
+   zipinfo -1 archive.zip
+   # For tar.gz:
+   tar -tzf archive.tar.gz
++  # For tar.xz:
++  tar -tJf archive.tar.xz
+   # example_dir/
+   # example_dir/my_file_1.txt
+   # example_dir/subdir/my_file_2.txt
+@@ -865,13 +869,20 @@ Your ``runtime_env`` dictionary should contain:
+ 
+   runtime_env = {..., "working_dir": "s3://example_bucket/example.zip", ...}
+ 
+-You can also use ``.tar.gz`` or ``.tgz`` archives:
++You can also use ``.tar.gz``, ``.tgz``, or ``.tar.xz`` archives:
+ 
+ .. testcode::
+   :skipif: True
+ 
+   runtime_env = {..., "working_dir": "s3://example_bucket/example.tar.gz", ...}
+ 
++For example, an XZ-compressed archive can be specified in the same way:
++
++.. testcode::
++  :skipif: True
++
++  runtime_env = {..., "working_dir": "s3://example_bucket/example.tar.xz", ...}
++
+ .. warning::
+ 
+   Check for hidden files and metadata directories in archived dependencies.
+@@ -880,7 +891,7 @@ You can also use ``.tar.gz`` or ``.tgz`` archives:
+   To avoid this, use ``zip -r`` or ``tar -czf`` directly on the directory you want to compress from its parent's directory. For example, if you have a directory structure such as: ``a/b`` and you want to compress ``b``, issue the command from the directory ``a``.
+   If Ray detects more than a single directory at the top level, it uses the entire archive instead of the top-level directory, which may lead to unexpected behavior.
+ 
+-Remote URIs support ``.zip``, ``.tar.gz``, and ``.tgz`` archive formats. Four types of remote URIs are supported for hosting ``working_dir`` and ``py_modules`` packages:
++Remote URIs support ``.zip``, ``.tar.gz``, ``.tgz``, and ``.tar.xz`` archive formats. Supported schemes are ``http``, ``https``, ``s3``, ``gs``, ``azure``, ``abfss``, and ``file``. The most common remote storage types are described below:
+ 
+ - ``HTTPS``: ``HTTPS`` refers to URLs that start with ``https``.
+   These are particularly useful because remote Git providers (e.g. GitHub, Bitbucket, GitLab, etc.) use ``https`` URLs as download links for repository archives.
+diff --git a/python/ray/_common/runtime_env_package.py b/python/ray/_common/runtime_env_package.py
+new file mode 100644
+index 000000000000..851dce8333f4
+--- /dev/null
++++ b/python/ray/_common/runtime_env_package.py
+@@ -0,0 +1,102 @@
++from typing import Dict, Optional, Tuple
++
++WORKING_DIR = "working_dir"
++PY_MODULES = "py_modules"
++
++ZIP_EXTENSION = ".zip"
++WHEEL_EXTENSION = ".whl"
++JAR_EXTENSION = ".jar"
++TAR_GZ_EXTENSION = ".tar.gz"
++TGZ_EXTENSION = ".tgz"
++TAR_BZ2_EXTENSION = ".tar.bz2"
++TAR_XZ_EXTENSION = ".tar.xz"
++
++# These are the user-facing formats accepted for RuntimeEnv package fields.
++# Keep field-specific validation, local uploads, and Job package uploads derived
++# from this mapping so they cannot silently diverge.
++RUNTIME_ENV_PACKAGE_EXTENSIONS: Dict[str, Tuple[str, ...]] = {
++    WORKING_DIR: (
++        ZIP_EXTENSION,
++        TAR_GZ_EXTENSION,
++        TGZ_EXTENSION,
++        TAR_XZ_EXTENSION,
++    ),
++    PY_MODULES: (
++        ZIP_EXTENSION,
++        WHEEL_EXTENSION,
++        TAR_GZ_EXTENSION,
++        TGZ_EXTENSION,
++        TAR_XZ_EXTENSION,
++    ),
++}
++
++PACKAGE_UPLOAD_EXTENSIONS = tuple(
++    dict.fromkeys(
++        extension
++        for extensions in RUNTIME_ENV_PACKAGE_EXTENSIONS.values()
++        for extension in extensions
++    )
++)
++
++# .tar.bz2 is retained as a low-level download format for compatibility, but it
++# is not part of the public working_dir or py_modules contract above.
++TAR_EXTENSIONS = (
++    TAR_GZ_EXTENSION,
++    TGZ_EXTENSION,
++    TAR_BZ2_EXTENSION,
++    TAR_XZ_EXTENSION,
++)
++COMPOUND_ARCHIVE_EXTENSIONS = (
++    TAR_GZ_EXTENSION,
++    TAR_BZ2_EXTENSION,
++    TAR_XZ_EXTENSION,
++)
++
++
++def get_package_extension(
++    path: str, supported_extensions: Tuple[str, ...]
++) -> Optional[str]:
++    """Return the supported extension for a package path.
++
++    Args:
++        path: Package path or URI to inspect.
++        supported_extensions: Extensions to match in any order, including compound
++            extensions. If extensions overlap, the longest match takes precedence.
++
++    Returns:
++        The longest matching extension, or ``None`` if the path is unsupported.
++    """
++    for extension in sorted(supported_extensions, key=len, reverse=True):
++        if path.endswith(extension):
++            return extension
++    return None
++
++
++def has_package_extension(path: str, supported_extensions: Tuple[str, ...]) -> bool:
++    """Return whether a package path ends in a supported extension."""
++    return get_package_extension(path, supported_extensions) is not None
++
++
++def validate_package_extension(
++    path: str, field: str, display_path: Optional[str] = None
++) -> None:
++    """Validate a RuntimeEnv package path using the field's capabilities.
++
++    Args:
++        path: Package path to validate.
++        field: RuntimeEnv field whose format capabilities apply.
++        display_path: Optional sanitized user-facing path to include in validation
++            errors. URI query parameters must be removed before passing it.
++
++    Raises:
++        ValueError: If the path does not have an extension supported by the field.
++    """
++    supported_extensions = RUNTIME_ENV_PACKAGE_EXTENSIONS[field]
++    if has_package_extension(path, supported_extensions):
++        return
++
++    formats = ", ".join(supported_extensions)
++    error_path = path if display_path is None else display_path
++    raise ValueError(
++        f"Only {formats} files are supported for {field} URIs; got {error_path}."
++    )
+diff --git a/python/ray/_common/runtime_env_uri.py b/python/ray/_common/runtime_env_uri.py
+index d9039922b5e1..617b955e783c 100644
+--- a/python/ray/_common/runtime_env_uri.py
++++ b/python/ray/_common/runtime_env_uri.py
+@@ -5,6 +5,12 @@
+ from typing import Tuple
+ from urllib.parse import urlparse
+ 
++from ray._common.runtime_env_package import (
++    COMPOUND_ARCHIVE_EXTENSIONS,
++    WHEEL_EXTENSION,
++    get_package_extension,
++)
++
+ _REMOTE_PROTOCOLS = ("http", "https", "s3", "gs", "azure", "abfss", "file")
+ 
+ 
+@@ -35,8 +41,7 @@ class Protocol(enum.Enum):
+     @classmethod
+     def remote_protocols(cls):
+         # Returns a list of protocols that support remote storage.
+-        # These protocols should only be used with paths that end in
+-        # ".zip", ".whl", ".tar.gz", or ".tgz".
++        # RuntimeEnv fields apply their own format constraints to these URIs.
+         return [cls[protocol.upper()] for protocol in _REMOTE_PROTOCOLS]
+ 
+ 
+@@ -83,7 +88,7 @@ def parse_uri(pkg_uri: str) -> Tuple[Protocol, str]:
+         )
+ 
+     if protocol in Protocol.remote_protocols():
+-        if uri.path.endswith(".whl"):
++        if uri.path.endswith(WHEEL_EXTENSION):
+             # Don't modify the .whl filename. See
+             # https://peps.python.org/pep-0427/#file-name-convention
+             # for more information.
+@@ -92,16 +97,13 @@ def parse_uri(pkg_uri: str) -> Tuple[Protocol, str]:
+             # Hash the URI to produce a stable, NAME_MAX-safe local filename
+             # regardless of how long or deeply nested the URI is. The extension
+             # is preserved so is_zip_uri / is_jar_uri keep working. Compound
+-            # extensions (.tar.gz, .tar.bz2) are kept intact so archive-type
++            # compound extensions are kept intact so archive-type
+             # detection downstream still works.
+             # netloc + path covers URIs where the filename has no path
+             # component (e.g., s3://package.zip puts "package.zip" in netloc).
+             raw = uri.netloc + uri.path
+-            if raw.endswith(".tar.gz"):
+-                suffix = ".tar.gz"
+-            elif raw.endswith(".tar.bz2"):
+-                suffix = ".tar.bz2"
+-            else:
++            suffix = get_package_extension(raw, COMPOUND_ARCHIVE_EXTENSIONS)
++            if suffix is None:
+                 suffix = pathlib.Path(raw).suffix
+             digest = hashlib.sha1(pkg_uri.encode("utf-8")).hexdigest()
+             package_name = f"{protocol.value}_{digest}{suffix}"
+diff --git a/python/ray/_common/tests/test_runtime_env_uri.py b/python/ray/_common/tests/test_runtime_env_uri.py
+index c3e342eaffb4..a6040b936ba2 100644
+--- a/python/ray/_common/tests/test_runtime_env_uri.py
++++ b/python/ray/_common/tests/test_runtime_env_uri.py
+@@ -201,7 +201,7 @@ def test_parse_uri_remote_paths_are_unique(self):
+             "s3://package{ext}",  # extension in netloc (no path component)
+         ],
+     )
+-    @pytest.mark.parametrize("ext", [".zip", ".tar.gz", ".tar.bz2"])
++    @pytest.mark.parametrize("ext", [".zip", ".tar.gz", ".tar.bz2", ".tar.xz"])
+     def test_parse_uri_remote_preserves_extension(self, uri_template, ext):
+         """Extensions are kept intact after hashing, whether the filename
+         is in the path or the netloc."""
+diff --git a/python/ray/_private/runtime_env/packaging.py b/python/ray/_private/runtime_env/packaging.py
+index 8861aae4ae3c..2a11e8c35b93 100644
+--- a/python/ray/_private/runtime_env/packaging.py
++++ b/python/ray/_private/runtime_env/packaging.py
+@@ -14,6 +14,18 @@
+ 
+ from filelock import FileLock
+ 
++from ray._common.runtime_env_package import (
++    COMPOUND_ARCHIVE_EXTENSIONS,
++    JAR_EXTENSION,
++    TAR_EXTENSIONS,
++    TAR_GZ_EXTENSION,
++    TAR_XZ_EXTENSION,
++    TGZ_EXTENSION,
++    WHEEL_EXTENSION,
++    ZIP_EXTENSION,
++    get_package_extension,
++    has_package_extension,
++)
+ from ray._common.runtime_env_uri import parse_uri as _parse_uri
+ from ray._private.ray_constants import (
+     GRPC_CPP_MAX_MESSAGE_SIZE,
+@@ -259,7 +271,7 @@ def is_zip_uri(uri: str) -> bool:
+     except ValueError:
+         return False
+ 
+-    return Path(path).suffix == ".zip"
++    return Path(path).suffix == ZIP_EXTENSION
+ 
+ 
+ def is_whl_uri(uri: str) -> bool:
+@@ -268,7 +280,7 @@ def is_whl_uri(uri: str) -> bool:
+     except ValueError:
+         return False
+ 
+-    return Path(path).suffix == ".whl"
++    return Path(path).suffix == WHEEL_EXTENSION
+ 
+ 
+ def is_jar_uri(uri: str) -> bool:
+@@ -277,7 +289,7 @@ def is_jar_uri(uri: str) -> bool:
+     except ValueError:
+         return False
+ 
+-    return Path(path).suffix == ".jar"
++    return Path(path).suffix == JAR_EXTENSION
+ 
+ 
+ def is_tar_gz_uri(uri: str) -> bool:
+@@ -286,7 +298,16 @@ def is_tar_gz_uri(uri: str) -> bool:
+     except ValueError:
+         return False
+ 
+-    return path.endswith(".tar.gz") or Path(path).suffix == ".tgz"
++    return path.endswith(TAR_GZ_EXTENSION) or Path(path).suffix == TGZ_EXTENSION
++
++
++def is_tar_uri(uri: str) -> bool:
++    try:
++        _, path = _parse_uri(uri)
++    except ValueError:
++        return False
++
++    return has_package_extension(path, TAR_EXTENSIONS)
+ 
+ 
+ def _get_excludes(path: Path, excludes: List[str]) -> Callable:
+@@ -525,7 +546,7 @@ def package_exists(pkg_uri: str) -> bool:
+ def get_uri_for_package(package: Path) -> str:
+     """Get a content-addressable URI from a package's contents."""
+ 
+-    if package.suffix == ".whl":
++    if package.suffix == WHEEL_EXTENSION:
+         # Wheel file names include the Python package name, version
+         # and tags, so it is already effectively content-addressed.
+         return "{protocol}://{whl_filename}".format(
+@@ -533,12 +554,14 @@ def get_uri_for_package(package: Path) -> str:
+         )
+     else:
+         hash_val = hashlib.sha1(package.read_bytes()).hexdigest()
+-        if package.name.endswith(".tar.gz"):
+-            ext = ".tar.gz"
+-        elif package.suffix == ".tgz":
+-            ext = ".tar.gz"
++        if package.name.endswith(TAR_GZ_EXTENSION):
++            ext = TAR_GZ_EXTENSION
++        elif package.suffix == TGZ_EXTENSION:
++            ext = TAR_GZ_EXTENSION
++        elif package.name.endswith(TAR_XZ_EXTENSION):
++            ext = TAR_XZ_EXTENSION
+         else:
+-            ext = ".zip"
++            ext = ZIP_EXTENSION
+         return "{protocol}://{pkg_name}{ext}".format(
+             protocol=Protocol.GCS.value, pkg_name=RAY_PKG_PREFIX + hash_val, ext=ext
+         )
+@@ -818,10 +841,9 @@ def get_local_dir_from_uri(uri: str, base_directory: str) -> Path:
+     """Return the local directory corresponding to this URI."""
+     pkg_file = Path(_get_local_path(base_directory, uri))
+     pkg_name = pkg_file.name
+-    if pkg_name.endswith(".tar.gz"):
+-        local_dir = pkg_file.parent / pkg_name[: -len(".tar.gz")]
+-    elif pkg_name.endswith(".tar.bz2"):
+-        local_dir = pkg_file.parent / pkg_name[: -len(".tar.bz2")]
++    compound_extension = get_package_extension(pkg_name, COMPOUND_ARCHIVE_EXTENSIONS)
++    if compound_extension is not None:
++        local_dir = pkg_file.parent / pkg_name[: -len(compound_extension)]
+     else:
+         local_dir = pkg_file.with_suffix("")
+     return local_dir
+@@ -837,7 +859,8 @@ async def download_and_unpack_package(
+ ) -> str:
+     """Download the package corresponding to this URI and unpack it.
+ 
+-    Supports .zip, .jar, .tar.gz, and .tgz archives for remote protocols.
++    Supports .zip, .jar, .tar.gz, .tgz, .tar.bz2, and .tar.xz archives for
++    remote protocols.
+     Will be written to a file or directory named {base_directory}/{uri}.
+     Returns the path to this file or directory.
+ 
+@@ -927,7 +950,7 @@ async def download_and_unpack_package(
+                         unlink_zip=True,
+                         logger=logger,
+                     )
+-                elif is_tar_gz_uri(pkg_uri):
++                elif is_tar_uri(pkg_uri):
+                     untar_package(
+                         package_path=pkg_file,
+                         target_dir=local_dir,
+@@ -940,7 +963,7 @@ async def download_and_unpack_package(
+             elif protocol in Protocol.remote_protocols():
+                 protocol.download_remote_uri(source_uri=pkg_uri, dest_file=pkg_file)
+ 
+-                if pkg_file.suffix in [".zip", ".jar"]:
++                if pkg_file.suffix in [ZIP_EXTENSION, JAR_EXTENSION]:
+                     unzip_package(
+                         package_path=pkg_file,
+                         target_dir=local_dir,
+@@ -948,13 +971,9 @@ async def download_and_unpack_package(
+                         unlink_zip=True,
+                         logger=logger,
+                     )
+-                elif pkg_file.suffix == ".whl":
++                elif pkg_file.suffix == WHEEL_EXTENSION:
+                     return str(pkg_file)
+-                elif (
+-                    str(pkg_file).endswith(".tar.gz")
+-                    or pkg_file.suffix == ".tgz"
+-                    or str(pkg_file).endswith(".tar.bz2")
+-                ):
++                elif is_tar_uri(pkg_uri):
+                     untar_package(
+                         package_path=pkg_file,
+                         target_dir=local_dir,
+diff --git a/python/ray/_private/runtime_env/py_modules.py b/python/ray/_private/runtime_env/py_modules.py
+index f15048c3c44c..d1ae7fcff4dd 100644
+--- a/python/ray/_private/runtime_env/py_modules.py
++++ b/python/ray/_private/runtime_env/py_modules.py
+@@ -4,7 +4,8 @@
+ from types import ModuleType
+ from typing import Any, Dict, List, Optional
+ 
+-from ray._common.runtime_env_uri import parse_uri
++from ray._common.runtime_env_package import PY_MODULES, validate_package_extension
++from ray._common.runtime_env_uri import Protocol, parse_uri
+ from ray._common.utils import try_to_create_directory
+ from ray._private.runtime_env.context import RuntimeEnvContext
+ from ray._private.runtime_env.packaging import (
+@@ -21,7 +22,6 @@
+     upload_package_to_gcs,
+ )
+ from ray._private.runtime_env.plugin import RuntimeEnvPlugin
+-from ray._private.runtime_env.protocol import Protocol
+ from ray._private.runtime_env.working_dir import set_pythonpath_in_context
+ from ray._private.utils import get_directory_size_bytes
+ from ray._raylet import GcsClient
+@@ -36,13 +36,8 @@ def _check_is_uri(s: str) -> bool:
+     except ValueError:
+         protocol, path = None, None
+ 
+-    supported_extensions = (".zip", ".whl", ".tar.gz", ".tgz")
+-    if protocol in Protocol.remote_protocols() and not any(
+-        path.endswith(ext) for ext in supported_extensions
+-    ):
+-        raise ValueError(
+-            "Only .zip, .whl, .tar.gz, and .tgz files supported for remote URIs."
+-        )
++    if protocol == Protocol.GCS or protocol in Protocol.remote_protocols():
++        validate_package_extension(path, PY_MODULES, display_path=s.split("?", 1)[0])
+ 
+     return protocol is not None
+ 
+diff --git a/python/ray/_private/runtime_env/validation.py b/python/ray/_private/runtime_env/validation.py
+index f7bbb41f3995..ab6d372678dc 100644
+--- a/python/ray/_private/runtime_env/validation.py
++++ b/python/ray/_private/runtime_env/validation.py
+@@ -6,6 +6,11 @@
+ 
+ import yaml
+ 
++from ray._common.runtime_env_package import (
++    PY_MODULES,
++    WORKING_DIR,
++    validate_package_extension,
++)
+ from ray._private.path_utils import is_path
+ from ray._private.runtime_env.packaging import parse_path
+ 
+@@ -17,10 +22,9 @@ def validate_path(path: str) -> None:
+     parse_path(path)
+ 
+ 
+-def validate_uri(uri: str):
++def validate_uri(uri: str, field: str):
+     try:
+-        from ray._common.runtime_env_uri import parse_uri
+-        from ray._private.runtime_env.protocol import Protocol
++        from ray._common.runtime_env_uri import Protocol, parse_uri
+ 
+         protocol, path = parse_uri(uri)
+     except ValueError:
+@@ -30,13 +34,8 @@ def validate_uri(uri: str):
+             "(i.e., passed to `ray.init`)."
+         )
+ 
+-    supported_extensions = (".zip", ".whl", ".tar.gz", ".tgz")
+-    if protocol in Protocol.remote_protocols() and not any(
+-        path.endswith(ext) for ext in supported_extensions
+-    ):
+-        raise ValueError(
+-            "Only .zip, .whl, .tar.gz, and .tgz files supported for remote URIs."
+-        )
++    if protocol == Protocol.GCS or protocol in Protocol.remote_protocols():
++        validate_package_extension(path, field, display_path=uri.split("?", 1)[0])
+ 
+ 
+ def _handle_local_deps_requirement_file(requirements_file: str):
+@@ -62,7 +61,7 @@ def validate_py_modules_uris(py_modules_uris: List[str]) -> List[str]:
+         if not isinstance(module, str):
+             raise TypeError("`py_module` must be a string, got " f"{type(module)}.")
+ 
+-        validate_uri(module)
++        validate_uri(module, PY_MODULES)
+ 
+ 
+ def parse_and_validate_py_modules(py_modules: List[str]) -> List[str]:
+@@ -83,7 +82,7 @@ def parse_and_validate_py_modules(py_modules: List[str]) -> List[str]:
+         if is_path(module):
+             validate_path(module)
+         else:
+-            validate_uri(module)
++            validate_uri(module, PY_MODULES)
+ 
+     return py_modules
+ 
+@@ -95,7 +94,7 @@ def validate_working_dir_uri(working_dir_uri: str) -> str:
+             "`working_dir` must be a string, got " f"{type(working_dir_uri)}."
+         )
+ 
+-    validate_uri(working_dir_uri)
++    validate_uri(working_dir_uri, WORKING_DIR)
+ 
+ 
+ def parse_and_validate_working_dir(working_dir: str) -> str:
+@@ -111,7 +110,7 @@ def parse_and_validate_working_dir(working_dir: str) -> str:
+     if is_path(working_dir):
+         validate_path(working_dir)
+     else:
+-        validate_uri(working_dir)
++        validate_uri(working_dir, WORKING_DIR)
+ 
+     return working_dir
+ 
+diff --git a/python/ray/_private/runtime_env/working_dir.py b/python/ray/_private/runtime_env/working_dir.py
+index d9181bcd2369..63aaa9a6bdc6 100644
+--- a/python/ray/_private/runtime_env/working_dir.py
++++ b/python/ray/_private/runtime_env/working_dir.py
+@@ -5,7 +5,13 @@
+ from typing import Any, Callable, Dict, List, Optional
+ 
+ import ray._private.ray_constants as ray_constants
+-from ray._common.runtime_env_uri import parse_uri
++from ray._common.runtime_env_package import (
++    RUNTIME_ENV_PACKAGE_EXTENSIONS,
++    WORKING_DIR,
++    has_package_extension,
++    validate_package_extension,
++)
++from ray._common.runtime_env_uri import Protocol, parse_uri
+ from ray._common.utils import try_to_create_directory
+ from ray._private.runtime_env.context import RuntimeEnvContext
+ from ray._private.runtime_env.packaging import (
+@@ -18,7 +24,6 @@
+     upload_package_to_gcs,
+ )
+ from ray._private.runtime_env.plugin import RuntimeEnvPlugin
+-from ray._private.runtime_env.protocol import Protocol
+ from ray._private.utils import get_directory_size_bytes
+ from ray._raylet import GcsClient
+ from ray.exceptions import RuntimeEnvSetupError
+@@ -67,12 +72,11 @@ def upload_working_dir_if_needed(
+         protocol, path = None, None
+ 
+     if protocol is not None:
+-        supported_extensions = (".zip", ".tar.gz", ".tgz")
+-        if protocol in Protocol.remote_protocols() and not any(
+-            path.endswith(ext) for ext in supported_extensions
+-        ):
+-            raise ValueError(
+-                "Only .zip, .tar.gz, and .tgz files supported for remote URIs."
++        if protocol == Protocol.GCS or protocol in Protocol.remote_protocols():
++            validate_package_extension(
++                path,
++                WORKING_DIR,
++                display_path=working_dir.split("?", 1)[0],
+             )
+         return runtime_env
+ 
+@@ -103,15 +107,14 @@ def upload_working_dir_if_needed(
+         )
+     except ValueError:  # working_dir is not a directory
+         package_path = Path(working_dir)
+-        supported_local = (
+-            package_path.suffix == ".zip"
+-            or package_path.suffix == ".tgz"
+-            or package_path.name.endswith(".tar.gz")
++        supported_local = has_package_extension(
++            package_path.name, RUNTIME_ENV_PACKAGE_EXTENSIONS[WORKING_DIR]
+         )
+         if not package_path.exists() or not supported_local:
++            formats = ", ".join(RUNTIME_ENV_PACKAGE_EXTENSIONS[WORKING_DIR])
+             raise ValueError(
+                 f"directory {package_path} must be an existing "
+-                "directory or a supported archive (.zip, .tar.gz, .tgz)"
++                f"directory or a supported archive ({formats})"
+             )
+ 
+         pkg_uri = get_uri_for_package(package_path)
+diff --git a/python/ray/dashboard/modules/job/common.py b/python/ray/dashboard/modules/job/common.py
+index 15420b393593..4d2e70d81a03 100644
+--- a/python/ray/dashboard/modules/job/common.py
++++ b/python/ray/dashboard/modules/job/common.py
+@@ -4,9 +4,12 @@
+ import time
+ from dataclasses import asdict, dataclass, replace
+ from enum import Enum
+-from pathlib import Path
+ from typing import Any, Dict, Optional, Tuple, Union
+ 
++from ray._common.runtime_env_package import (
++    PACKAGE_UPLOAD_EXTENSIONS,
++    has_package_extension,
++)
+ from ray._common.runtime_env_uri import parse_uri
+ from ray._private import ray_constants
+ from ray._private.event.export_event_logger import (
+@@ -422,9 +425,12 @@ async def get_job_info(job_id: str):
+ 
+ 
+ def uri_to_http_components(package_uri: str) -> Tuple[str, str]:
+-    suffix = Path(package_uri).suffix
+-    if suffix not in {".zip", ".whl"}:
+-        raise ValueError(f"package_uri ({package_uri}) does not end in .zip or .whl")
++    if not has_package_extension(package_uri, PACKAGE_UPLOAD_EXTENSIONS):
++        formats = ", ".join(PACKAGE_UPLOAD_EXTENSIONS)
++        raise ValueError(
++            f"package_uri ({package_uri}) does not end in a supported format: "
++            f"{formats}"
++        )
+     # We need to strip the <protocol>:// prefix to make it possible to pass
+     # the package_uri over HTTP.
+     protocol, package_name = parse_uri(package_uri)
+diff --git a/python/ray/dashboard/modules/job/tests/test_common.py b/python/ray/dashboard/modules/job/tests/test_common.py
+index 549c62ee25af..0014c36cc1bc 100644
+--- a/python/ray/dashboard/modules/job/tests/test_common.py
++++ b/python/ray/dashboard/modules/job/tests/test_common.py
+@@ -130,23 +130,28 @@ def test_entrypoint_resources_disallow_strings(self):
+ 
+ 
+ def test_uri_to_http_and_back():
+-    assert uri_to_http_components("gcs://hello.zip") == ("gcs", "hello.zip")
+-    assert uri_to_http_components("gcs://hello.whl") == ("gcs", "hello.whl")
++    for extension in [".zip", ".tar.gz", ".tgz", ".tar.xz", ".whl"]:
++        package_name = f"hello{extension}"
++        assert uri_to_http_components(f"gcs://{package_name}") == (
++            "gcs",
++            package_name,
++        )
+ 
+     with pytest.raises(ValueError, match="'blah' is not a valid Protocol"):
+         uri_to_http_components("blah://halb.zip")
+ 
+-    with pytest.raises(ValueError, match="does not end in .zip or .whl"):
++    with pytest.raises(ValueError, match="does not end in a supported format"):
+         assert uri_to_http_components("gcs://hello.not_zip")
+ 
+-    with pytest.raises(ValueError, match="does not end in .zip or .whl"):
++    with pytest.raises(ValueError, match="does not end in a supported format"):
+         assert uri_to_http_components("gcs://hello")
+ 
+     assert http_uri_components_to_uri("gcs", "hello.zip") == "gcs://hello.zip"
+     assert http_uri_components_to_uri("blah", "halb.zip") == "blah://halb.zip"
+     assert http_uri_components_to_uri("blah", "halb.whl") == "blah://halb.whl"
+ 
+-    for original_uri in ["gcs://hello.zip", "gcs://fasdf.whl"]:
++    for extension in [".zip", ".tar.gz", ".tgz", ".tar.xz", ".whl"]:
++        original_uri = f"gcs://hello{extension}"
+         new_uri = http_uri_components_to_uri(*uri_to_http_components(original_uri))
+         assert new_uri == original_uri
+ 
+diff --git a/python/ray/dashboard/modules/job/tests/test_http_job_server.py b/python/ray/dashboard/modules/job/tests/test_http_job_server.py
+index a356324fe97e..d41b7e5e5a7c 100644
+--- a/python/ray/dashboard/modules/job/tests/test_http_job_server.py
++++ b/python/ray/dashboard/modules/job/tests/test_http_job_server.py
+@@ -201,6 +201,9 @@ def _check_job_stopped(client: JobSubmissionClient, job_id: str) -> bool:
+         "local_py_modules",
+         "working_dir_and_local_py_modules_whl",
+         "local_working_dir_zip",
++        "local_working_dir_tar_gz",
++        "local_working_dir_tgz",
++        "local_working_dir_tar_xz",
+         "pip_txt",
+         "conda_yaml",
+         "local_py_modules",
+@@ -226,6 +229,9 @@ def f():
+     elif request.param in {
+         "local_working_dir",
+         "local_working_dir_zip",
++        "local_working_dir_tar_gz",
++        "local_working_dir_tgz",
++        "local_working_dir_tar_xz",
+         "local_py_modules",
+         "working_dir_and_local_py_modules_whl",
+     }:
+@@ -264,6 +270,31 @@ def f():
+                     "entrypoint": "python test.py",
+                     "expected_logs": "Hello from test_module!\n",
+                 }
++            elif request.param in {
++                "local_working_dir_tar_gz",
++                "local_working_dir_tgz",
++                "local_working_dir_tar_xz",
++            }:
++                archive_format = (
++                    "xztar" if request.param == "local_working_dir_tar_xz" else "gztar"
++                )
++                with tempfile.TemporaryDirectory() as archive_dir:
++                    archive = Path(
++                        shutil.make_archive(
++                            os.path.join(archive_dir, "test"),
++                            archive_format,
++                            tmp_dir,
++                        )
++                    )
++                    if request.param == "local_working_dir_tgz":
++                        tgz_archive = archive.with_name("test.tgz")
++                        archive.rename(tgz_archive)
++                        archive = tgz_archive
++                    yield {
++                        "runtime_env": {"working_dir": str(archive)},
++                        "entrypoint": "python test.py",
++                        "expected_logs": "Hello from test_module!\n",
++                    }
+             elif request.param == "local_py_modules":
+                 yield {
+                     "runtime_env": {"py_modules": [str(Path(tmp_dir) / "test_module")]},
+@@ -430,7 +461,7 @@ def test_http_bad_request(job_sdk_client):
+ 
+ def test_invalid_runtime_env(job_sdk_client):
+     client = job_sdk_client
+-    with pytest.raises(ValueError, match="Only .zip, .tar.gz, and .tgz files"):
++    with pytest.raises(ValueError, match="supported for working_dir URIs"):
+         client.submit_job(
+             entrypoint="echo hello", runtime_env={"working_dir": "s3://not_a_zip"}
+         )
+diff --git a/python/ray/dashboard/modules/job/tests/test_sdk.py b/python/ray/dashboard/modules/job/tests/test_sdk.py
+index fd6d6d209012..9396473b0ca6 100644
+--- a/python/ray/dashboard/modules/job/tests/test_sdk.py
++++ b/python/ray/dashboard/modules/job/tests/test_sdk.py
+@@ -1,4 +1,5 @@
+ import os
++import shutil
+ import sys
+ import tempfile
+ import time
+@@ -163,6 +164,64 @@ def _do_request(self, method, endpoint, **kwargs):
+     assert runtime_env == original_runtime_env
+ 
+ 
++@pytest.mark.parametrize(
++    "extension,archive_format",
++    [
++        (".tar.gz", "gztar"),
++        (".tgz", "gztar"),
++        (".tar.xz", "xztar"),
++    ],
++)
++def test_submit_job_with_local_working_dir_tar_archive(
++    tmp_path, extension, archive_format
++):
++    source_dir = tmp_path / "source"
++    source_dir.mkdir()
++    (source_dir / "test.py").write_text("print('hello')")
++    archive = Path(
++        shutil.make_archive(str(tmp_path / "package"), archive_format, source_dir)
++    )
++    if extension == ".tgz":
++        tgz_archive = archive.with_name("package.tgz")
++        archive.rename(tgz_archive)
++        archive = tgz_archive
++
++    class TestClient(JobSubmissionClient):
++        def __init__(self):
++            self._default_metadata = {}
++            self.requests = []
++
++        def _do_request(self, method, endpoint, **kwargs):
++            self.requests.append((method, endpoint, kwargs))
++            if method == "GET":
++                return MagicMock(status_code=404)
++            if method == "PUT":
++                return MagicMock(status_code=200)
++            return MagicMock(
++                status_code=200,
++                json=lambda: {"job_id": "test_job", "submission_id": "test_job"},
++            )
++
++    client = TestClient()
++    assert (
++        client.submit_job(
++            entrypoint="python test.py",
++            runtime_env={"working_dir": str(archive)},
++        )
++        == "test_job"
++    )
++
++    get_request, put_request, submit_request = client.requests
++    assert get_request[:2] == ("GET", put_request[1])
++    assert put_request[0] == "PUT"
++    assert put_request[2]["data"] == archive.read_bytes()
++    assert submit_request[:2] == ("POST", "/api/jobs/")
++    package_uri = submit_request[2]["json_data"]["runtime_env"]["working_dir"]
++    assert package_uri.startswith("gcs://")
++    expected_extension = ".tar.gz" if extension == ".tgz" else extension
++    assert package_uri.endswith(expected_extension)
++
++
+ @pytest.mark.parametrize("expiration_s", [0, 10])
+ def test_temporary_uri_reference(monkeypatch, expiration_s):
+     """Test that temporary GCS URI references are deleted after expiration_s."""
+diff --git a/python/ray/runtime_env/runtime_env.py b/python/ray/runtime_env/runtime_env.py
+index 7b015833355c..df9fb67d35b8 100644
+--- a/python/ray/runtime_env/runtime_env.py
++++ b/python/ray/runtime_env/runtime_env.py
+@@ -236,13 +236,15 @@ class MyClass:
+         py_modules: List of local paths or remote URIs (either in the GCS or external
+             storage), each of which is an archive that Ray unpacks and
+             inserts into the PYTHONPATH of the workers. Supported formats for
+-            remote URIs: ``.zip``, ``.whl``, ``.tar.gz``, and ``.tgz``.
++            remote URIs: ``.zip``, ``.whl``, ``.tar.gz``, ``.tgz``, and
++            ``.tar.xz``.
+         py_executable: Path or command to the Python executable that Ray uses to
+             launch worker processes. By default, Ray uses the same interpreter
+             that is running the driver.
+         working_dir: Local path or remote URI (either in the GCS or external storage) of an
+             archive that Ray unpacks in the directory of each task/actor.
+-            Supported formats for remote URIs: ``.zip``, ``.tar.gz``, and ``.tgz``.
++            Supported formats for local paths and remote URIs: ``.zip``,
++            ``.tar.gz``, ``.tgz``, and ``.tar.xz``.
+         pip: Either a list of pip packages, a string
+             containing the path to a pip requirements.txt file, or a Python
+             dictionary that has three fields: 1) ``packages`` (required, List[str]): a
+diff --git a/python/ray/tests/test_runtime_env_complicated.py b/python/ray/tests/test_runtime_env_complicated.py
+index 100748ca4958..8c54f3ddcad4 100644
+--- a/python/ray/tests/test_runtime_env_complicated.py
++++ b/python/ray/tests/test_runtime_env_complicated.py
+@@ -1,5 +1,6 @@
+ import os
+ import platform
++import shutil
+ import subprocess
+ import sys
+ import tempfile
+@@ -698,6 +699,31 @@ def f():
+             assert ray.get(f.remote())
+ 
+ 
++@pytest.mark.skipif(_WIN32, reason="Fails on windows")
++@pytest.mark.skipif(
++    os.environ.get("CI") and sys.platform != "linux",
++    reason="This test is only run on linux CI machines.",
++)
++@pytest.mark.parametrize(
++    "call_ray_start",
++    ["ray start --head --ray-client-server-port 24001 --port 0"],
++    indirect=True,
++)
++def test_client_working_dir_tar_xz(call_ray_start, tmp_path):
++    working_dir = tmp_path / "working_dir"
++    working_dir.mkdir()
++    (working_dir / "marker.txt").write_text("tar.xz works")
++    package = shutil.make_archive(str(tmp_path / "working_dir"), "xztar", working_dir)
++
++    with ray.client("localhost:24001").env({"working_dir": package}).connect():
++
++        @ray.remote
++        def read_marker():
++            return Path("marker.txt").read_text()
++
++        assert ray.get(read_marker.remote()) == "tar.xz works"
++
++
+ @pytest.mark.skipif(_WIN32, reason="Hangs on windows")
+ @pytest.mark.skipif(
+     os.environ.get("CI") and sys.platform != "linux",
+diff --git a/python/ray/tests/test_runtime_env_packaging.py b/python/ray/tests/test_runtime_env_packaging.py
+index 79a3252d4c78..a78199b4a197 100644
+--- a/python/ray/tests/test_runtime_env_packaging.py
++++ b/python/ray/tests/test_runtime_env_packaging.py
+@@ -41,6 +41,7 @@
+     get_uri_for_file,
+     get_uri_for_package,
+     is_tar_gz_uri,
++    is_tar_uri,
+     is_whl_uri,
+     is_zip_uri,
+     remove_dir_from_filepaths,
+@@ -1064,30 +1065,45 @@ def fake_open(uri, mode, transport_params=None):
+     assert tp["timeout"] == 60
+ 
+ 
+-def test_upload_working_dir_zip_with_upload_fn(tmp_path):
+-    """Test that upload_working_dir_if_needed uses upload_fn for local zip files."""
+-    # Create a temporary zip file
+-    zip_path = tmp_path / "test_package.zip"
+-    with zipfile.ZipFile(zip_path, "w") as zf:
+-        zf.writestr("hello.py", "print('hello')")
++@pytest.mark.parametrize(
++    "extension,mode",
++    [
++        (".zip", None),
++        (".tar.gz", "w:gz"),
++        (".tgz", "w:gz"),
++        (".tar.xz", "w:xz"),
++    ],
++)
++def test_upload_working_dir_archive_with_upload_fn(tmp_path, extension, mode):
++    """Local working_dir archives use the Job SDK upload callback."""
++    archive_path = tmp_path / f"test_package{extension}"
++    if extension == ".zip":
++        with zipfile.ZipFile(archive_path, "w") as archive:
++            archive.writestr("hello.py", "print('hello')")
++    else:
++        with tarfile.open(archive_path, mode) as archive:
++            content = b"print('hello')"
++            info = tarfile.TarInfo(name="hello.py")
++            info.size = len(content)
++            archive.addfile(info, io.BytesIO(content))
+ 
+     captured_calls = []
+ 
+     def mock_upload_fn(path, excludes=None, is_file=False):
+         captured_calls.append({"path": path, "excludes": excludes, "is_file": is_file})
+ 
+-    runtime_env = {"working_dir": str(zip_path)}
++    runtime_env = {"working_dir": str(archive_path)}
+     result = upload_working_dir_if_needed(
+         runtime_env, include_gitignore=True, upload_fn=mock_upload_fn
+     )
+ 
+     # Verify upload_fn was called with is_file=True
+     assert len(captured_calls) == 1
+-    assert captured_calls[0]["path"] == str(zip_path)
++    assert captured_calls[0]["path"] == str(archive_path)
+     assert captured_calls[0]["is_file"] is True
+ 
+     # Verify the working_dir was replaced with a GCS URI
+-    expected_uri = get_uri_for_package(zip_path)
++    expected_uri = get_uri_for_package(archive_path)
+     assert result["working_dir"] == expected_uri
+ 
+ 
+@@ -1103,7 +1119,7 @@ async def test_download_and_unpack_package_with_gcs_uri_without_gcs_client(
+                 # Add a file to the zip file so we can verify the file was extracted.
+                 zip.writestr("file.txt", "Hello, world!")
+ 
+-            # upload the zip file to GCS pkg_uri
++            # Upload the zip file to its GCS URI.
+             pkg_uri = "gcs://my-zipfile.zip"
+             upload_package_to_gcs(pkg_uri, zipfile_path.read_bytes())
+ 
+@@ -1115,22 +1131,31 @@ async def test_download_and_unpack_package_with_gcs_uri_without_gcs_client(
+                     gcs_client=None,
+                 )
+ 
+-    async def test_download_and_unpack_package_with_gcs_uri(self, ray_start_regular):
++    @pytest.mark.parametrize("extension,mode", [(".zip", None), (".tar.xz", "w:xz")])
++    async def test_download_and_unpack_package_with_gcs_uri(
++        self, ray_start_regular, extension, mode
++    ):
+         # Test downloading and unpacking a GCS package with a GCS client.
+ 
+         gcs_client = ray._private.worker.global_worker.gcs_client
+ 
+         with tempfile.TemporaryDirectory() as temp_dir:
+-            zipfile_path = Path(temp_dir) / "test-zip-file.zip"
+-            with zipfile.ZipFile(zipfile_path, "x") as zip:
+-                # Add a file to the zip file so we can verify the file was extracted.
+-                zip.writestr("file.txt", "Hello, world!")
+-
+-            # upload the zip file to GCS pkg_uri
+-            pkg_uri = "gcs://my-zipfile.zip"
+-            upload_package_to_gcs(pkg_uri, zipfile_path.read_bytes())
+-
+-            # Download the zip file from GCS pkg_uri
++            package_path = Path(temp_dir) / f"test-package{extension}"
++            if extension == ".zip":
++                with zipfile.ZipFile(package_path, "x") as archive:
++                    archive.writestr("file.txt", "Hello, world!")
++            else:
++                with tarfile.open(package_path, mode) as archive:
++                    content = b"Hello, world!"
++                    info = tarfile.TarInfo(name="file.txt")
++                    info.size = len(content)
++                    archive.addfile(info, io.BytesIO(content))
++
++            # Upload the package to its GCS URI.
++            pkg_uri = f"gcs://my-package{extension}"
++            upload_package_to_gcs(pkg_uri, package_path.read_bytes())
++
++            # Download the package from its GCS URI.
+             local_dir = await download_and_unpack_package(
+                 pkg_uri=pkg_uri,
+                 base_directory=temp_dir,
+@@ -1188,10 +1213,13 @@ async def test_download_and_unpack_package_with_file_uri(self):
+             # Check that the file was extracted to the destination directory
+             assert (Path(local_dir) / "file.txt").exists()
+ 
+-    async def test_download_and_unpack_package_with_file_uri_tar_gz(self):
++    @pytest.mark.parametrize(
++        "extension,mode", [(".tar.gz", "w:gz"), (".tar.xz", "w:xz")]
++    )
++    async def test_download_and_unpack_package_with_file_uri_tar(self, extension, mode):
+         with tempfile.TemporaryDirectory() as temp_dir:
+-            tar_path = Path(temp_dir) / "test-tar-file.tar.gz"
+-            with tarfile.open(tar_path, "w:gz") as tar:
++            tar_path = Path(temp_dir) / f"test-tar-file{extension}"
++            with tarfile.open(tar_path, mode) as tar:
+                 file_content = b"Hello from tar!"
+                 info = tarfile.TarInfo(name="top_level/file.txt")
+                 info.size = len(file_content)
+@@ -1414,6 +1442,19 @@ def test_get_uri_for_package_tgz(tmp_path):
+     assert not uri.endswith(".zip")
+ 
+ 
++def test_get_uri_for_package_tar_xz(tmp_path):
++    tar_path = tmp_path / "my-pkg.tar.xz"
++    with tarfile.open(tar_path, "w:xz") as tar:
++        info = tarfile.TarInfo(name="file.txt")
++        info.size = 5
++        tar.addfile(info, io.BytesIO(b"hello"))
++
++    uri = get_uri_for_package(tar_path)
++    assert uri.startswith("gcs://")
++    assert uri.endswith(".tar.xz")
++    assert not uri.endswith(".zip")
++
++
+ def test_get_local_dir_from_uri():
+     uri = "gcs://<working_dir_content_hash>.zip"
+     assert get_local_dir_from_uri(uri, "base_dir") == Path(
+@@ -1428,6 +1469,13 @@ def test_get_local_dir_from_uri_tar_gz():
+     assert not str(local_dir).endswith(".gz")
+ 
+ 
++def test_get_local_dir_from_uri_tar_xz():
++    uri = "s3://bucket/archive.tar.xz"
++    local_dir = get_local_dir_from_uri(uri, "base_dir")
++    assert "tar" not in str(local_dir.name)
++    assert not str(local_dir).endswith(".xz")
++
++
+ def test_is_tar_gz_uri():
+     assert is_tar_gz_uri("s3://bucket/archive.tar.gz")
+     assert is_tar_gz_uri("https://example.com/pkg.tar.gz")
+@@ -1437,6 +1485,12 @@ def test_is_tar_gz_uri():
+     assert not is_tar_gz_uri("invalid_format")
+ 
+ 
++def test_is_tar_uri():
++    for extension in [".tar.gz", ".tgz", ".tar.bz2", ".tar.xz"]:
++        assert is_tar_uri(f"s3://bucket/archive{extension}")
++    assert not is_tar_uri("s3://bucket/archive.zip")
++
++
+ def test_parse_uri_tar_gz():
+     protocol, package_name = parse_uri("s3://bucket/archive.tar.gz")
+     assert package_name.endswith(".tar.gz")
+@@ -1490,10 +1544,11 @@ def test_untar_package_with_top_level_dir(tmp_path):
+     assert not tar_path.exists()
+ 
+ 
+-def test_untar_package_path_traversal(tmp_path):
++@pytest.mark.parametrize("extension,mode", [(".tar.gz", "w:gz"), (".tar.xz", "w:xz")])
++def test_untar_package_path_traversal(tmp_path, extension, mode):
+     """Verify that path traversal attacks are blocked."""
+-    tar_path = tmp_path / "malicious.tar.gz"
+-    with tarfile.open(tar_path, "w:gz") as tar:
++    tar_path = tmp_path / f"malicious{extension}"
++    with tarfile.open(tar_path, mode) as tar:
+         file_content = b"malicious"
+         info = tarfile.TarInfo(name="../../../etc/passwd")
+         info.size = len(file_content)
+diff --git a/python/ray/tests/test_runtime_env_working_dir.py b/python/ray/tests/test_runtime_env_working_dir.py
+index 5483c494a06c..7b0dca65345f 100644
+--- a/python/ray/tests/test_runtime_env_working_dir.py
++++ b/python/ray/tests/test_runtime_env_working_dir.py
+@@ -122,12 +122,18 @@ def test_inherit_cluster_env_pythonpath(monkeypatch):
+         "failure",
+         "working_dir",
+         "working_dir_zip",
++        "working_dir_tar_xz",
+         "py_modules",
++        "py_modules_tar_xz",
+         "working_dir_and_py_modules",
+     ],
+ )
+ def test_lazy_reads(
+-    insert_test_dir_in_pythonpath, start_cluster, tmp_working_dir, option: str
++    insert_test_dir_in_pythonpath,
++    start_cluster,
++    tmp_path,
++    tmp_working_dir,
++    option: str,
+ ):
+     """Tests the case where we lazily read files or import inside a task/actor.
+ 
+@@ -153,6 +159,15 @@ def call_ray_init():
+                     os.path.join(tmp_dir, "test"), "zip", zip_dir
+                 )
+                 ray.init(address, runtime_env={"working_dir": package})
++        elif option in {"working_dir_tar_xz", "py_modules_tar_xz"}:
++            package = shutil.make_archive(
++                str(tmp_path / "test"), "xztar", tmp_working_dir
++            )
++            if option == "working_dir_tar_xz":
++                runtime_env = {"working_dir": package}
++            else:
++                runtime_env = {"py_modules": [Path(package).as_uri()]}
++            ray.init(address, runtime_env=runtime_env)
+         elif option == "py_modules":
+             ray.init(
+                 address,
+@@ -217,7 +232,12 @@ def test_py_modules_whl():
+ 
+         assert ray.get(test_py_modules_whl.remote())
+ 
+-    if option in {"py_modules", "working_dir_zip"}:
++    if option in {
++        "py_modules",
++        "py_modules_tar_xz",
++        "working_dir_zip",
++        "working_dir_tar_xz",
++    }:
+         # These options are not tested beyond this point, so return to save time.
+         return
+ 
+diff --git a/python/ray/tests/unit/test_runtime_env_validation.py b/python/ray/tests/unit/test_runtime_env_validation.py
+index 36941f163ced..4b5bfcc8c483 100644
+--- a/python/ray/tests/unit/test_runtime_env_validation.py
++++ b/python/ray/tests/unit/test_runtime_env_validation.py
+@@ -85,13 +85,27 @@ def test_validate_remote_invalid_extensions(self):
+             "https://some_domain.com/path/file",
+             "s3://bucket/file",
+             "gs://bucket/file",
++            "gcs://file.txt",
++            "gcs://file.whl",
+         ]:
+             with pytest.raises(
+                 ValueError,
+-                match=r"Only \.zip, \.whl, \.tar\.gz, and \.tgz files supported for remote URIs\.",
++                match=(
++                    r"Only \.zip, \.tar\.gz, \.tgz, \.tar\.xz files are "
++                    r"supported for working_dir URIs"
++                ),
+             ):
+                 parse_and_validate_working_dir(uri)
+ 
++    def test_invalid_extension_error_uses_uri_without_query(self):
++        uri = "https://some_domain.com/path/file.txt?X-Amz-Signature=secret"
++
++        with pytest.raises(ValueError) as exc_info:
++            parse_and_validate_working_dir(uri)
++
++        assert "https://some_domain.com/path/file.txt" in str(exc_info.value)
++        assert "X-Amz-Signature" not in str(exc_info.value)
++
+     def test_validate_remote_valid_input(self):
+         for uri in [
+             "https://some_domain.com/path/file.zip",
+@@ -100,10 +114,26 @@ def test_validate_remote_valid_input(self):
+             "https://some_domain.com/path/file.tar.gz",
+             "s3://bucket/file.tar.gz",
+             "gs://bucket/file.tgz",
++            "http://some_domain.com/path/file.tar.xz",
++            "https://some_domain.com/path/file.tar.xz",
++            "s3://bucket/file.tar.xz",
++            "gs://bucket/file.tar.xz",
++            "azure://container/file.tar.xz",
++            "abfss://container@account.dfs.core.windows.net/file.tar.xz",
++            "file:///tmp/file.tar.xz",
++            "gcs://file.tar.xz",
+         ]:
+             working_dir = parse_and_validate_working_dir(uri)
+             assert working_dir == uri
+ 
++    def test_working_dir_whl_fails_runtime_env_validation(self):
++        with pytest.raises(ValueError, match="supported for working_dir URIs"):
++            RuntimeEnv(working_dir="gcs://package.whl")
++
++    def test_unsupported_gcs_format_fails_runtime_env_validation(self):
++        with pytest.raises(ValueError, match="supported for working_dir URIs"):
++            RuntimeEnv(working_dir="gcs://package.txt")
++
+     def test_validate_path_valid_input(self, test_directory):
+         test_dir, _, _, _ = test_directory
+         valid_working_dir_path = str(test_dir)
+@@ -133,10 +163,14 @@ def test_validate_remote_invalid_extension(self):
+             "https://some_domain.com/path/file",
+             "s3://bucket/file",
+             "gs://bucket/file",
++            "gcs://file.txt",
+         ]
+         with pytest.raises(
+             ValueError,
+-            match="Only .zip, .whl, .tar.gz, and .tgz files supported for remote URIs.",
++            match=(
++                r"Only \.zip, \.whl, \.tar\.gz, \.tgz, \.tar\.xz files are "
++                r"supported for py_modules URIs"
++            ),
+         ):
+             parse_and_validate_py_modules(uris)
+ 
+@@ -151,10 +185,23 @@ def test_validate_remote_valid_input(self):
+             "https://some_domain.com/path/file.tar.gz",
+             "s3://bucket/file.tar.gz",
+             "gs://bucket/file.tgz",
++            "http://some_domain.com/path/file.tar.xz",
++            "https://some_domain.com/path/file.tar.xz",
++            "s3://bucket/file.tar.xz",
++            "gs://bucket/file.tar.xz",
++            "azure://container/file.tar.xz",
++            "abfss://container@account.dfs.core.windows.net/file.tar.xz",
++            "file:///tmp/file.tar.xz",
++            "gcs://file.tar.xz",
++            "gcs://file.whl",
+         ]
+         py_modules = parse_and_validate_py_modules(uris)
+         assert py_modules == uris
+ 
++    def test_unsupported_gcs_format_fails_runtime_env_validation(self):
++        with pytest.raises(ValueError, match="supported for py_modules URIs"):
++            RuntimeEnv(py_modules=["gcs://package.txt"])
++
+     def test_validate_path_valid_input(self, test_directory):
+         test_dir, _, _, _ = test_directory
+         paths = [str(test_dir)]
+@@ -795,7 +842,9 @@ def test_validate_no_local_paths_fails_if_local_working_dir():
+ 
+ def test_validate_no_local_paths_fails_if_local_py_module():
+     with tempfile.NamedTemporaryFile(suffix=".whl") as tmp_file:
+-        runtime_env = RuntimeEnv(py_modules=[tmp_file.name, "gcs://some_other_file"])
++        runtime_env = RuntimeEnv(
++            py_modules=[tmp_file.name, "gcs://some_other_file.zip"]
++        )
+         with pytest.raises(ValueError, match="not a valid URI"):
+             _validate_no_local_paths(runtime_env)
+ 

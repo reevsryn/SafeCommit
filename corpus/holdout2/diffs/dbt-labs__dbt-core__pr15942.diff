@@ -1,0 +1,336 @@
+diff --git a/.changes/unreleased/Features-20260812-015115.yaml b/.changes/unreleased/Features-20260812-015115.yaml
+new file mode 100644
+index 00000000000..6aea1419e72
+--- /dev/null
++++ b/.changes/unreleased/Features-20260812-015115.yaml
+@@ -0,0 +1,6 @@
++kind: Features
++body: Warn users if they are using a deprecated dbt version
++time: 2026-08-12T01:51:15.345868+05:30
++custom:
++    Author: ash2shukla
++    Issue: "15964"
+diff --git a/core/dbt/context/providers.py b/core/dbt/context/providers.py
+index f877a6dfd15..61d37b5fa9e 100644
+--- a/core/dbt/context/providers.py
++++ b/core/dbt/context/providers.py
+@@ -271,7 +271,7 @@ def __call__(self, *args: str) -> RelationProxy:
+ 
+ 
+ class BaseMetricResolver(BaseResolver):
+-    def resolve(self, name: str, package: Optional[str] = None) -> MetricReference:
++    def resolve(self, name: str, package: Optional[str] = None) -> MetricReference:  # type: ignore[empty-body]
+         ...
+ 
+     def _repack_args(self, name: str, package: Optional[str]) -> List[str]:
+diff --git a/core/dbt/deprecated_version.py b/core/dbt/deprecated_version.py
+new file mode 100644
+index 00000000000..72614dc38d6
+--- /dev/null
++++ b/core/dbt/deprecated_version.py
+@@ -0,0 +1,47 @@
++from dbt.events.base_types import EventLevel
++from dbt.events.functions import fire_event
++from dbt.events.types import Note
++from dbt.tracking import track_deprecated_version_invocation
++from dbt.ui import warning_tag
++from dbt.version import get_installed_version
++
++# dbt Core 1.10 and older no longer receive patches. See
++# https://github.com/dbt-labs/dbt-core/issues/15694
++LAST_SUPPORTED_MINOR_VERSION = 11
++
++WARN_MSG = (
++    "This version of dbt is deprecated and no longer receives regular patches, including for "
++    "known bugs. Please upgrade to a newer supported version of dbt for new projects: "
++    "https://docs.getdbt.com/docs/dbt-versions?utm_source=dbt-cli"
++)
++INFO_MSG = (
++    "This version of dbt is deprecated and no longer receives regular patches, including for "
++    "known bugs. We recommend upgrading to a newer supported version of dbt: "
++    "https://docs.getdbt.com/docs/dbt-versions"
++)
++
++
++def is_deprecated_version() -> bool:
++    installed = get_installed_version()
++    if installed.major is None or installed.minor is None:
++        return False
++    return (int(installed.major), int(installed.minor)) < (1, LAST_SUPPORTED_MINOR_VERSION)
++
++
++def check_deprecated_version(is_warn: bool = False) -> None:
++    """Notify and record telemetry if the installed dbt version is deprecated.
++
++    Callers that gate a user-facing entry point (first install, `dbt init`, `--version`)
++    should pass is_warn=True per the WARNING rows in
++    https://github.com/dbt-labs/dbt-core/issues/15694; everything else (regular
++    invocations) stays at INFO.
++    """
++    if not is_deprecated_version():
++        return
++
++    if is_warn:
++        fire_event(Note(msg=warning_tag(WARN_MSG)), level=EventLevel.WARN)
++    else:
++        fire_event(Note(msg=INFO_MSG))
++
++    track_deprecated_version_invocation()
+diff --git a/core/dbt/main.py b/core/dbt/main.py
+index 394981f93b8..4f581642fed 100644
+--- a/core/dbt/main.py
++++ b/core/dbt/main.py
+@@ -11,6 +11,7 @@
+ from pathlib import Path
+ 
+ import dbt.version
++from dbt.deprecated_version import check_deprecated_version
+ from dbt.events.functions import fire_event, setup_event_logger, setup_fallback_logger, LOG_VERSION
+ from dbt.events.types import (
+     EventLevel,
+@@ -73,6 +74,7 @@ def __init__(
+     def __call__(self, parser, namespace, values, option_string=None):
+         formatter = argparse.RawTextHelpFormatter(prog=parser.prog)
+         formatter.add_text(dbt.version.get_version_information())
++        check_deprecated_version(is_warn=True)
+         parser.exit(message=formatter.format_help())
+ 
+ 
+@@ -244,6 +246,10 @@ def run_from_args(parsed):
+     fire_event(MainReportVersion(version=str(dbt.version.installed), log_version=LOG_VERSION))
+     fire_event(MainReportArgs(args=args_to_dict(parsed)))
+ 
++    # `init` already fires its own WARNING-level version of this notice
++    if parsed.which != "init":
++        check_deprecated_version()
++
+     if dbt.tracking.active_user is not None:  # mypy appeasement, always true
+         fire_event(MainTrackingUserState(user_state=dbt.tracking.active_user.state()))
+ 
+diff --git a/core/dbt/task/init.py b/core/dbt/task/init.py
+index f3a7dd28e75..501127da00b 100644
+--- a/core/dbt/task/init.py
++++ b/core/dbt/task/init.py
+@@ -17,6 +17,7 @@
+ 
+ from dbt.contracts.util import Identifier as ProjectName
+ 
++from dbt.deprecated_version import check_deprecated_version
+ from dbt.events.functions import fire_event
+ from dbt.events.types import (
+     StarterProjectPath,
+@@ -246,6 +247,8 @@ def get_valid_project_name(self) -> str:
+ 
+     def run(self):
+         """Entry point for the init task."""
++        check_deprecated_version(is_warn=True)
++
+         profiles_dir = flags.PROFILES_DIR
+         self.create_profiles_dir(profiles_dir)
+ 
+diff --git a/core/dbt/tracking.py b/core/dbt/tracking.py
+index 1c852a68649..06dc4f98e8f 100644
+--- a/core/dbt/tracking.py
++++ b/core/dbt/tracking.py
+@@ -41,6 +41,7 @@
+ PACKAGE_INSTALL_SPEC = "iglu:com.dbt/package_install/jsonschema/1-0-0"
+ RPC_REQUEST_SPEC = "iglu:com.dbt/rpc_request/jsonschema/1-0-1"
+ DEPRECATION_WARN_SPEC = "iglu:com.dbt/deprecation_warn/jsonschema/1-0-0"
++DEPRECATED_VERSION_INVOCATION_SPEC = "iglu:com.dbt/deprecated_version_invocation/jsonschema/1-0-0"
+ LOAD_ALL_TIMING_SPEC = "iglu:com.dbt/load_all_timing/jsonschema/1-0-3"
+ RESOURCE_COUNTS = "iglu:com.dbt/resource_counts/jsonschema/1-0-0"
+ EXPERIMENTAL_PARSER = "iglu:com.dbt/experimental_parser/jsonschema/1-0-0"
+@@ -477,3 +478,18 @@ def initialize_from_flags():
+         initialize_tracking(flags.PROFILES_DIR)
+     else:
+         do_not_track()
++
++
++def track_deprecated_version_invocation() -> None:
++    if active_user is None:
++        return
++
++    context = [SelfDescribingJson(DEPRECATED_VERSION_INVOCATION_SPEC, {})]
++
++    track(
++        active_user,
++        category="dbt",
++        action="deprecated_version_invocation",
++        label=get_invocation_id(),
++        context=context,
++    )
+diff --git a/dev-requirements.txt b/dev-requirements.txt
+index 64e299f732c..69f30c4a932 100644
+--- a/dev-requirements.txt
++++ b/dev-requirements.txt
+@@ -7,7 +7,7 @@ flake8
+ flaky
+ freezegun==0.3.12
+ ipdb
+-mypy==0.971
++mypy==1.3.0
+ pip-tools
+ pre-commit
+ protobuf
+diff --git a/pyproject.toml b/pyproject.toml
+index 4d9d26d4ff5..78c119c0f1e 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -3,6 +3,12 @@
+ files = 'core/dbt'
+ mypy_path = "third-party-stubs/"
+ namespace_packages = true
++# mypy flipped this default to true in 0.990; the codebase predates that and
++# relies on the old implicit-Optional behavior (`def f(x: str = None)`).
++# Bumping mypy (needed for compatibility with newer type stubs) would
++# otherwise surface dozens of unrelated pre-existing "Incompatible default"
++# errors across the codebase.
++no_implicit_optional = false
+ 
+ [tool.black]
+ # TODO: remove global exclusion of tests when testing overhaul is complete
+diff --git a/tests/functional/test_deprecated_version.py b/tests/functional/test_deprecated_version.py
+new file mode 100644
+index 00000000000..ccd1e01ab7b
+--- /dev/null
++++ b/tests/functional/test_deprecated_version.py
+@@ -0,0 +1,87 @@
++from io import StringIO
++from unittest import mock
++
++import pytest
++
++import dbt.semver as semver
++from dbt.deprecated_version import INFO_MSG, WARN_MSG
++from dbt.events.base_types import EventLevel
++from dbt.events.functions import capture_stdout_logs, stop_capture_stdout_logs
++from dbt.main import parse_args
++from dbt.tests.util import run_dbt
++
++DEPRECATED_VERSION = "1.9.5"
++
++
++class _StopInit(Exception):
++    """Raised from a patched InitTask method so real profile setup never runs."""
++
++
++def _deprecated_version() -> semver.VersionSpecifier:
++    return semver.VersionSpecifier.from_version_string(DEPRECATED_VERSION)
++
++
++def _capture(fn):
++    """Run fn() with dbt's stdout log capture on, returning the captured text
++    regardless of whether fn() raises."""
++    stringbuf = StringIO()
++    capture_stdout_logs(stringbuf)
++    try:
++        fn()
++    finally:
++        stop_capture_stdout_logs()
++    return stringbuf.getvalue()
++
++
++class TestVersionFlagWarnsNotInfo:
++    def test_version_flag_fires_warn_not_info(self):
++        # --version fires during argparse parsing, before handle_and_check()'s
++        # own logging setup runs -- capture_stdout_logs() doesn't intercept
++        # output from this early a point, so assert on fire_event directly
++        # instead (same approach used for --version on the click-era branches).
++        with mock.patch(
++            "dbt.deprecated_version.get_installed_version", side_effect=_deprecated_version
++        ), mock.patch("dbt.deprecated_version.fire_event") as fire_event_mock:
++            with pytest.raises(SystemExit):
++                parse_args(["--version"])
++
++        fire_event_mock.assert_called_once()
++        (fired_event,), kwargs = fire_event_mock.call_args
++        assert type(fired_event).__name__ == "Note"
++        assert kwargs.get("level") == EventLevel.WARN
++
++
++class TestInitWarnsNotInfo:
++    @pytest.fixture(scope="class")
++    def models(self):
++        return {}
++
++    def test_init_fires_warn_not_info(self, project):
++        def invoke():
++            with pytest.raises(_StopInit):
++                run_dbt(["init", "--skip-profile-setup"], expect_pass=None)
++
++        # check_deprecated_version() is the first line of InitTask.run(); stop
++        # right after it, before any real profile/project scaffolding.
++        with mock.patch(
++            "dbt.deprecated_version.get_installed_version", side_effect=_deprecated_version
++        ), mock.patch("dbt.task.init.InitTask.create_profiles_dir", side_effect=_StopInit):
++            stdout = _capture(invoke)
++
++        assert WARN_MSG in stdout
++        assert INFO_MSG not in stdout
++
++
++class TestOtherCommandsInfoNotWarn:
++    @pytest.fixture(scope="class")
++    def models(self):
++        return {}
++
++    def test_other_command_fires_info_not_warn(self, project):
++        with mock.patch(
++            "dbt.deprecated_version.get_installed_version", side_effect=_deprecated_version
++        ):
++            stdout = _capture(lambda: run_dbt(["debug"], expect_pass=None))
++
++        assert INFO_MSG in stdout
++        assert WARN_MSG not in stdout
+diff --git a/third-party-stubs/mashumaro/mixins/dict.pyi b/third-party-stubs/mashumaro/mixins/dict.pyi
+index f0dc01f85f3..fb904b0e97c 100644
+--- a/third-party-stubs/mashumaro/mixins/dict.pyi
++++ b/third-party-stubs/mashumaro/mixins/dict.pyi
+@@ -11,5 +11,5 @@ class DataClassDictMixin:
+     def __pre_deserialize__(cls: Type[T], d: Dict[Any, Any]) -> Dict[Any, Any]: ...
+     @classmethod
+     def __post_deserialize__(cls: Type[T], obj: T) -> T: ...
+-    def __pre_serialize__(self) -> T: ...
++    def __pre_serialize__(self: T) -> T: ...
+     def __post_serialize__(self, d: Dict[Any, Any]) -> Dict[Any, Any]: ...
+diff --git a/tox.ini b/tox.ini
+index 8f4d63499c4..dbe85a41fb8 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -2,6 +2,17 @@
+ skipsdist = True
+ envlist = unit,integration
+ 
++[testenv]
++# Newer pip/setuptools default to an editable-install mode that doesn't add
++# the source roots to sys.path, breaking the pkgutil.extend_path()-based
++# dbt.adapters namespace merge across `-e ./core` and `-e ./plugins/postgres`
++# (and dbt.tests across `-e ./core` and `-e ./tests/adapter`). `compat` mode
++# uses plain .pth files, which merge correctly. Note: --config-settings only
++# applies to packages passed directly on the pip command line, not ones
++# pulled in via `-r`, so the `-e` entries below are listed inline rather than
++# via editable-requirements.txt.
++install_command = python -m pip install --config-settings editable_mode=compat {opts} {packages}
++
+ [testenv:{unit,py37,py38,py39,py310,py311,py}]
+ description = unit testing
+ download = true
+@@ -14,7 +25,9 @@ commands =
+   {envpython} -m pytest --cov=core {posargs} tests/unit
+ deps =
+   -rdev-requirements.txt
+-  -reditable-requirements.txt
++  -e ./core
++  -e ./plugins/postgres
++  -e ./tests/adapter
+ 
+ [testenv:{integration,py37-integration,py38-integration,py39-integration,py310-integration,py311-integration,py-integration}]
+ description = functional testing
+@@ -36,4 +49,6 @@ commands =
+ 
+ deps =
+   -rdev-requirements.txt
+-  -reditable-requirements.txt
++  -e ./core
++  -e ./plugins/postgres
++  -e ./tests/adapter

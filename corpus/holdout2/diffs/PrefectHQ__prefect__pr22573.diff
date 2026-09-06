@@ -1,0 +1,146 @@
+diff --git a/client/pyproject.toml b/client/pyproject.toml
+index f5860e499f9a..20c972d8f1ec 100644
+--- a/client/pyproject.toml
++++ b/client/pyproject.toml
+@@ -26,7 +26,7 @@ classifiers = [
+ dependencies = [
+     # Client dependencies
+     "amplitude-analytics>=1.2.1,<2.0.0",
+-    "anyio>=4.4.0,<5.0.0,!=4.14.2",
++    "anyio>=4.4.0,<5.0.0",
+     "asgi-lifespan>=1.0,<3.0",
+     "cachetools>=5.3,<8.0",
+     "cloudpickle>=2.0,<4.0",
+diff --git a/pyproject.toml b/pyproject.toml
+index d3321937149e..c65ea473549b 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -42,7 +42,7 @@ dependencies = [
+     # Client dependencies
+     # If you modify this list, make the same modification in client/pyproject.toml
+     "amplitude-analytics>=1.2.1,<2.0.0",
+-    "anyio>=4.4.0,<5.0.0,!=4.14.2",
++    "anyio>=4.4.0,<5.0.0",
+     "asgi-lifespan>=1.0,<3.0",
+     "cachetools>=5.3,<8.0",
+     "cloudpickle>=2.0,<4.0",
+diff --git a/src/prefect/utilities/processutils/__init__.py b/src/prefect/utilities/processutils/__init__.py
+index 60f837e8c65d..3056a4c2fcc6 100644
+--- a/src/prefect/utilities/processutils/__init__.py
++++ b/src/prefect/utilities/processutils/__init__.py
+@@ -423,15 +423,36 @@ async def run_process(
+             task_status.started(value)
+ 
+         if stream_output:
+-            await consume_process_output(
+-                process, stdout_sink=stream_output[0], stderr_sink=stream_output[1]
+-            )
++            try:
++                await consume_process_output(
++                    process, stdout_sink=stream_output[0], stderr_sink=stream_output[1]
++                )
++            except Exception:
++                # Keep draining both pipes after an output sink fails so the process
++                # can finish without blocking on a full stdout or stderr buffer.
++                await _drain_process_output(process)
++                await process.wait()
++                raise
+ 
+         await process.wait()
+ 
+     return process
+ 
+ 
++async def _drain_process_output(process: anyio.abc.Process) -> None:
++    async with anyio.create_task_group() as tg:
++        if process.stdout is not None:
++            tg.start_soon(
++                stream_text,
++                TextReceiveStream(process.stdout, errors="replace"),
++            )
++        if process.stderr is not None:
++            tg.start_soon(
++                stream_text,
++                TextReceiveStream(process.stderr, errors="replace"),
++            )
++
++
+ async def consume_process_output(
+     process: anyio.abc.Process,
+     stdout_sink: Optional[TextSink[str]] = None,
+diff --git a/tests/utilities/test_processutils.py b/tests/utilities/test_processutils.py
+index f1ac7c953645..919ebb12ab25 100644
+--- a/tests/utilities/test_processutils.py
++++ b/tests/utilities/test_processutils.py
+@@ -1,5 +1,6 @@
+ import subprocess
+ import sys
++from pathlib import Path
+ from unittest import mock
+ 
+ import pytest
+@@ -199,6 +200,31 @@ async def test_run_process_handles_non_utf8_output(self, capsys):
+         assert "world" in out
+         assert "\ufffd" in out
+ 
++    async def test_run_process_drains_output_after_stream_error(
++        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++    ):
++        completed = tmp_path / "completed"
++        script = (
++            "import pathlib, sys; "
++            "sys.stdout.write('x' * 1_000_000); sys.stdout.flush(); "
++            "sys.stderr.write('x' * 1_000_000); sys.stderr.flush(); "
++            f"pathlib.Path({str(completed)!r}).write_text('done')"
++        )
++        consume_process_output = mock.AsyncMock(
++            side_effect=RuntimeError("stream failed")
++        )
++        monkeypatch.setattr(
++            prefect.utilities.processutils,
++            "consume_process_output",
++            consume_process_output,
++        )
++
++        with pytest.raises(RuntimeError, match="stream failed"):
++            await run_process([sys.executable, "-c", script], stream_output=True)
++
++        consume_process_output.assert_awaited_once()
++        assert completed.read_text() == "done"
++
+ 
+ class TestOpenProcess:
+     str_cmd = "ls -a"
+diff --git a/uv.lock b/uv.lock
+index 0cbb5875edf8..b3d8691e58d4 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -279,16 +279,16 @@ wheels = [
+ 
+ [[package]]
+ name = "anyio"
+-version = "4.14.1"
++version = "4.14.2"
+ source = { registry = "https://pypi.org/simple" }
+ dependencies = [
+     { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
+     { name = "idna" },
+     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+ ]
+-sdist = { url = "https://files.pythonhosted.org/packages/3b/72/5562aabb8dd7181e8e860622a38bea08d17842b99ecd4c91f84ac95251b0/anyio-4.14.1.tar.gz", hash = "sha256:8d648a3544c1a700e3ff78615cd679e4c5c3f149904287e73687b2596963629e", size = 254831, upload-time = "2026-06-24T20:56:06.017Z" }
++sdist = { url = "https://files.pythonhosted.org/packages/61/cc/a381afa6efea9f496eff839d4a6a1aed3bfafc7b3ab4b0d1b243a12573dd/anyio-4.14.2.tar.gz", hash = "sha256:cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f", size = 260176, upload-time = "2026-07-12T20:29:07.082Z" }
+ wheels = [
+-    { url = "https://files.pythonhosted.org/packages/b0/7b/90df4a0a816d98d6ea26f559d87836d494a2cf1fcf063be67df50a7bcc30/anyio-4.14.1-py3-none-any.whl", hash = "sha256:4e5533c5b8ff0a24f5d7a176cbe6877129cd183893f66b537f8f227d10527d72", size = 124875, upload-time = "2026-06-24T20:56:04.413Z" },
++    { url = "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl", hash = "sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494", size = 125813, upload-time = "2026-07-12T20:29:05.763Z" },
+ ]
+ 
+ [[package]]
+@@ -4272,7 +4272,7 @@ requires-dist = [
+     { name = "aiosqlite", specifier = ">=0.17.0,<1.0.0" },
+     { name = "alembic", specifier = ">=1.7.5,<2.0.0" },
+     { name = "amplitude-analytics", specifier = ">=1.2.1,<2.0.0" },
+-    { name = "anyio", specifier = ">=4.4.0,!=4.14.2,<5.0.0" },
++    { name = "anyio", specifier = ">=4.4.0,<5.0.0" },
+     { name = "apprise", specifier = ">=1.1.0,<2.0.0" },
+     { name = "asgi-lifespan", specifier = ">=1.0,<3.0" },
+     { name = "asyncpg", specifier = ">=0.23,<1.0.0" },

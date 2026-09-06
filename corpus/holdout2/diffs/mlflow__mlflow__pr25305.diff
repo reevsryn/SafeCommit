@@ -1,0 +1,428 @@
+diff --git a/mlflow/environment_variables.py b/mlflow/environment_variables.py
+index 801b2295608dc..9017012c72abe 100644
+--- a/mlflow/environment_variables.py
++++ b/mlflow/environment_variables.py
+@@ -167,6 +167,21 @@ def get(self):
+ #: current generation just launched. Not intended to be set by users.
+ _MLFLOW_SERVER_BOOT_ID = _EnvironmentVariable("_MLFLOW_SERVER_BOOT_ID", str, None)
+ 
++#: **Experimental** — subject to change or removal in a future release.
++#: URL of an outbound proxy for sandbox container egress (e.g. ``http://proxy.internal:3128``).
++#: When set, it is injected as ``HTTP_PROXY``/``HTTPS_PROXY`` into every sandbox container, with
++#: only the fixed self-host bypass list (``host.docker.internal`` + loopback) excluded via
++#: ``NO_PROXY`` so a co-located tracking server stays reachable. A remote tracking host is NOT
++#: auto-exempted — it must be allowlisted in the proxy itself. Point this at a proxy that
++#: allowlists only the destinations the sandbox needs (e.g. the model provider API) to steer
++#: egress through an operator-controlled chokepoint. Note this only shapes egress
++#: from *cooperative* HTTP clients that honor the proxy env; it is not a hard boundary, since the
++#: container still has network access and code that ignores the proxy env or opens raw sockets
++#: can reach other hosts. Pair it with host-level firewalling for a true egress boundary. When
++#: unset, sandbox containers have unrestricted egress.
++#: (default: ``None``)
++MLFLOW_SANDBOX_EGRESS_PROXY = _EnvironmentVariable("MLFLOW_SANDBOX_EGRESS_PROXY", str, None)
++
+ #: When true, newly created workspaces are seeded with two default RBAC roles
+ #: (``admin``, ``user``) that super-admins can assign to other
+ #: users. ``CreateWorkspace`` is gated to super-admins, whose ``is_admin`` flag already
+diff --git a/mlflow/server/sandbox/container.py b/mlflow/server/sandbox/container.py
+index 1f345a06d39d9..bd29729457bf7 100644
+--- a/mlflow/server/sandbox/container.py
++++ b/mlflow/server/sandbox/container.py
+@@ -8,12 +8,15 @@
+ the container lifecycle (build image, run, wait with timeout, always clean up) live
+ here so there is one place to audit and tighten the sandbox security posture.
+ 
+-Network posture: the container runs on the default bridge with an added
+-``host.docker.internal`` route so a command can reach an MLflow tracking server
+-running on the host. Tightening egress to a strict allowlist (and blocking the
+-link-local ``169.254.0.0/16`` range used by cloud metadata services) is a planned
+-follow-up; until then a sandbox should not be granted host credentials it must not
+-leak. The sandbox is off by default and gated behind an experimental flag.
++Network posture: sandbox containers run on a dedicated bridge network (isolating them from
++other containers on the host) with an added ``host.docker.internal`` route so a command can
++reach an MLflow tracking server on the host. An optional egress proxy
++(``MLFLOW_SANDBOX_EGRESS_PROXY``) steers HTTP(S) egress from cooperating clients through an
++operator-controlled chokepoint. Neither is a hard egress boundary: the container has network
++access, so code that opens raw sockets or ignores the proxy env (e.g. Node's fetch, which does
++not read ``HTTP_PROXY`` by default) can still reach other hosts, including the cloud metadata
++endpoint. A true egress boundary requires host-level firewalling. The sandbox is off by default
++and gated behind an experimental flag.
+ """
+ 
+ import logging
+@@ -25,7 +28,11 @@
+ 
+ import requests
+ 
+-from mlflow.environment_variables import _MLFLOW_SERVER_BOOT_ID, MLFLOW_SANDBOX_DOCKER_IMAGE
++from mlflow.environment_variables import (
++    _MLFLOW_SERVER_BOOT_ID,
++    MLFLOW_SANDBOX_DOCKER_IMAGE,
++    MLFLOW_SANDBOX_EGRESS_PROXY,
++)
+ 
+ _logger = logging.getLogger(__name__)
+ 
+@@ -59,6 +66,72 @@ def sandbox_container_labels() -> dict[str, str]:
+     return labels
+ 
+ 
++# Dedicated bridge network for sandbox containers, so they are isolated from other containers
++# on the host's default bridge (they can still reach the host via host.docker.internal).
++SANDBOX_NETWORK_NAME = "mlflow-sandbox"
++# Hosts a sandboxed command reaches directly instead of through the egress proxy: the MLflow
++# tracking host and loopback. The metadata endpoint is deliberately NOT here, so a
++# proxy-respecting client cannot reach it directly.
++_EGRESS_PROXY_BYPASS_HOSTS = ("host.docker.internal", "localhost", "127.0.0.1")
++
++
++def ensure_sandbox_network(client) -> str:
++    """Return the name of the dedicated sandbox bridge network, creating it if missing.
++
++    Handles the concurrent-first-launch race: a duplicate-create conflict is treated as the
++    network already existing rather than an error. Falls back to the default ``bridge`` network
++    (with a warning, since that reduces isolation) if the dedicated one truly cannot be used, so
++    a restricted Docker setup still runs the sandbox rather than failing outright.
++    """
++    import docker.errors
++
++    try:
++        try:
++            client.networks.get(SANDBOX_NETWORK_NAME)
++            return SANDBOX_NETWORK_NAME
++        except docker.errors.NotFound:
++            pass
++        try:
++            client.networks.create(SANDBOX_NETWORK_NAME, driver="bridge", check_duplicate=True)
++        except docker.errors.APIError:
++            # Lost a create race with a concurrent launch; the network exists now.
++            client.networks.get(SANDBOX_NETWORK_NAME)
++        return SANDBOX_NETWORK_NAME
++    except Exception as e:
++        _logger.warning(
++            "Falling back to the default bridge network for the sandbox; isolation from other "
++            "containers is reduced: %s",
++            e,
++        )
++        return "bridge"
++
++
++def sandbox_egress_env() -> dict[str, str]:
++    """Environment that routes a sandbox container's HTTP(S) egress through the configured proxy.
++
++    Empty when no proxy is configured (the container then has unrestricted egress). This only
++    shapes egress for clients that honor the standard proxy env vars; it is not an enforcement
++    boundary — code that opens raw sockets, or a runtime that ignores the proxy env (e.g. Node's
++    fetch), can still reach any host. Only the fixed self-host bypass list (``host.docker.internal``
++    + loopback) is exempted. The caller's tracking host is deliberately NOT auto-exempted: it is
++    request-derived (from ``request.base_url``), so a remote caller could set it to an internal
++    host to carve that destination out of the proxy. A local tracking server is reached via
++    ``host.docker.internal`` (already exempt); a remote one must be allowlisted in the proxy itself.
++    """
++    proxy = MLFLOW_SANDBOX_EGRESS_PROXY.get()
++    if not proxy:
++        return {}
++    no_proxy = ",".join(_EGRESS_PROXY_BYPASS_HOSTS)
++    return {
++        "HTTP_PROXY": proxy,
++        "HTTPS_PROXY": proxy,
++        "http_proxy": proxy,
++        "https_proxy": proxy,
++        "NO_PROXY": no_proxy,
++        "no_proxy": no_proxy,
++    }
++
++
+ class SandboxUnavailableError(Exception):
+     """Raised when the sandbox cannot run because Docker is not usable."""
+ 
+@@ -198,6 +271,7 @@ def run_in_sandbox(
+     # Read-only rootfs plus a writable /tmp: give the command a HOME it can write to
+     # (the mlflow CLI and pip both write under HOME) without loosening the rootfs.
+     env.setdefault("HOME", "/tmp")
++    env.update(sandbox_egress_env())
+ 
+     container_command = command
+     if use_shell:
+@@ -217,7 +291,7 @@ def run_in_sandbox(
+             command=container_command,
+             detach=True,
+             labels=sandbox_container_labels(),
+-            network_mode="bridge",
++            network=ensure_sandbox_network(client),
+             extra_hosts={"host.docker.internal": "host-gateway"},
+             mem_limit=_MEMORY_LIMIT,
+             memswap_limit=_MEMORY_LIMIT,
+@@ -267,12 +341,17 @@ def _is_read_timeout(exc: Exception) -> bool:
+ 
+     docker-py maps the deadline being exceeded to a requests ``ReadTimeout``, or — on the Unix-
+     socket transport — a ``ConnectionError`` wrapping urllib3's ``ReadTimeoutError``; both carry
+-    "read timed out" in their message. This distinguishes those from genuine daemon errors
+-    (e.g. connection refused) so a timeout is not misreported as a sandbox failure.
++    "read timed out" in their message. Match that specific signal, not a bare "timed out": a
++    ``ConnectTimeout`` (connection-establishment failure, also a ``ConnectionError``) says "timed
++    out" too, and that is a genuine daemon-unreachable error that must surface as a sandbox failure
++    rather than be misreported as the command timing out.
+     """
+     if isinstance(exc, requests.exceptions.ReadTimeout):
+         return True
+-    return isinstance(exc, requests.exceptions.ConnectionError) and "timed out" in str(exc).lower()
++    return (
++        isinstance(exc, requests.exceptions.ConnectionError)
++        and "read timed out" in str(exc).lower()
++    )
+ 
+ 
+ def _logs(container) -> str:
+@@ -325,11 +404,16 @@ def reap_orphaned_sandbox_containers() -> int:
+         if (container.labels or {}).get(SANDBOX_BOOT_LABEL) == current_boot:
+             continue  # belongs to this server generation; may be actively serving a turn
+         # A different boot id alone does not prove the container is orphaned: two servers can share
+-        # one Docker daemon, and a rolling restart overlaps generations. So never force-remove a
+-        # *running* container (it may be a live turn owned by a concurrent server) — reap only ones
+-        # that have already stopped. A truly orphaned container that is still running is left for a
+-        # later startup to reap once it exits, rather than risk killing another server's live turn.
+-        if getattr(container, "status", None) == "running":
++        # one Docker daemon, and a rolling restart overlaps generations. So reap only containers in
++        # a terminal state (exited/dead); leave any live or transitional state
++        # (running/created/restarting/paused/removing) alone, since force-removing one could kill a
++        # concurrent server's live or still-starting turn. An orphaned container is reaped on a
++        # later startup once it reaches a terminal state, which is the common case. One wedged in a
++        # non-terminal state (e.g. a `created` container left by a crash between create and start)
++        # is knowingly left rather than risk force-removing a concurrent server's still-starting
++        # container; reclaiming those safely needs ownership/lease metadata, which is future
++        # multi-replica work.
++        if getattr(container, "status", None) not in ("exited", "dead"):
+             continue
+         if _remove_quietly(container):
+             removed += 1
+diff --git a/mlflow/server/sandbox/streaming.py b/mlflow/server/sandbox/streaming.py
+index 45512cc38e390..878dc3168cf4c 100644
+--- a/mlflow/server/sandbox/streaming.py
++++ b/mlflow/server/sandbox/streaming.py
+@@ -40,7 +40,9 @@
+     _WORKSPACE_MOUNT,
+     SandboxUnavailableError,
+     _get_client,
++    ensure_sandbox_network,
+     sandbox_container_labels,
++    sandbox_egress_env,
+ )
+ 
+ _logger = logging.getLogger(__name__)
+@@ -323,6 +325,7 @@ def start_sandbox_process(
+ 
+     env = dict(environment or {})
+     env.setdefault("HOME", _HOME_MOUNT)
++    env.update(sandbox_egress_env())
+ 
+     volumes = {
+         str(io_dir): {"bind": _IO_MOUNT, "mode": "ro"},
+@@ -344,7 +347,7 @@ def start_sandbox_process(
+             command=command,
+             detach=True,
+             labels=sandbox_container_labels(),
+-            network_mode="bridge",
++            network=ensure_sandbox_network(client),
+             extra_hosts={"host.docker.internal": "host-gateway"},
+             mem_limit=_MEMORY_LIMIT,
+             memswap_limit=_MEMORY_LIMIT,
+diff --git a/tests/server/sandbox/test_container.py b/tests/server/sandbox/test_container.py
+index d4246e87f7066..1508c310a6123 100644
+--- a/tests/server/sandbox/test_container.py
++++ b/tests/server/sandbox/test_container.py
+@@ -92,7 +92,7 @@ def test_run_in_sandbox_applies_hardening_flags():
+     assert kwargs["cap_drop"] == ["ALL"]
+     assert kwargs["security_opt"] == ["no-new-privileges:true"]
+     assert kwargs["read_only"] is True
+-    assert kwargs["network_mode"] == "bridge"
++    assert kwargs["network"] == container_mod.SANDBOX_NETWORK_NAME
+     assert kwargs["pids_limit"] == container_mod._PIDS_LIMIT
+     assert kwargs["mem_limit"] == container_mod._MEMORY_LIMIT
+     assert kwargs["user"] == f"{os.getuid()}:{os.getgid()}"
+@@ -170,6 +170,23 @@ def test_run_in_sandbox_non_timeout_wait_error_raises_unavailable():
+     container.remove.assert_called_once()
+ 
+ 
++def test_run_in_sandbox_connect_timeout_is_not_a_read_timeout():
++    # A connection-establishment timeout (daemon unreachable) is a ConnectionError whose message
++    # says "timed out" but NOT "read timed out". It must surface as a sandbox failure rather than
++    # be misreported as the command timing out, so the operator sees the daemon is down.
++    client, container = _mock_client()
++    container.wait.side_effect = requests.exceptions.ConnectionError(
++        "HTTPConnectionPool(host='localhost', port=2375): Max retries exceeded "
++        "(Caused by ConnectTimeoutError(...): Connection to localhost timed out.)"
++    )
++    with mock.patch("docker.from_env", return_value=client):
++        with pytest.raises(SandboxUnavailableError, match="failed while waiting"):
++            run_in_sandbox(["mlflow", "--version"])
++
++    container.kill.assert_called_once()
++    container.remove.assert_called_once()
++
++
+ def test_run_in_sandbox_raises_when_docker_unavailable():
+     with mock.patch("docker.from_env", side_effect=Exception("no daemon")):
+         with pytest.raises(SandboxUnavailableError, match="Docker daemon is not reachable"):
+@@ -258,20 +275,40 @@ def test_reap_removes_previous_generation_only(monkeypatch):
+     assert kwargs["filters"] == {"label": container_mod.SANDBOX_CONTAINER_LABEL}
+ 
+ 
+-def test_reap_skips_running_container_from_other_generation(monkeypatch):
++@pytest.mark.parametrize("status", ["running", "created", "restarting", "paused", "removing"])
++def test_reap_skips_non_terminal_container_from_other_generation(monkeypatch, status):
+     from mlflow.server.sandbox import reap_orphaned_sandbox_containers
+ 
+-    # A different boot id does not prove a container is orphaned (a concurrent server sharing the
+-    # daemon), so a still-running one is left alone rather than force-killed mid-turn.
++    # Only terminal-state (exited/dead) containers are reaped. A container in any live or
++    # transitional state — running, or still starting up (created/restarting) — may belong to a
++    # concurrent server sharing the daemon, so a different boot id does not prove it is orphaned
++    # and force-removing it could kill another server's turn. It is left for a later startup to
++    # reap once it reaches a terminal state.
+     monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "current-boot")
+-    other_running = mock.MagicMock()
+-    other_running.labels = {container_mod.SANDBOX_BOOT_LABEL: "other-boot"}
+-    other_running.status = "running"
++    other = mock.MagicMock()
++    other.labels = {container_mod.SANDBOX_BOOT_LABEL: "other-boot"}
++    other.status = status
+     client = mock.MagicMock()
+-    client.containers.list.return_value = [other_running]
++    client.containers.list.return_value = [other]
+     with mock.patch("docker.from_env", return_value=client):
+         assert reap_orphaned_sandbox_containers() == 0
+-    other_running.remove.assert_not_called()
++    other.remove.assert_not_called()
++
++
++def test_reap_removes_dead_container_from_other_generation(monkeypatch):
++    from mlflow.server.sandbox import reap_orphaned_sandbox_containers
++
++    # "dead" is a terminal state (a container that could not be fully removed), so it is reaped
++    # alongside "exited".
++    monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "current-boot")
++    dead = mock.MagicMock()
++    dead.labels = {container_mod.SANDBOX_BOOT_LABEL: "old-boot"}
++    dead.status = "dead"
++    client = mock.MagicMock()
++    client.containers.list.return_value = [dead]
++    with mock.patch("docker.from_env", return_value=client):
++        assert reap_orphaned_sandbox_containers() == 1
++    dead.remove.assert_called_once_with(force=True)
+ 
+ 
+ def test_reap_skips_when_no_boot_id(monkeypatch):
+@@ -291,8 +328,10 @@ def test_reap_counts_only_successful_removes(monkeypatch):
+     monkeypatch.setenv("_MLFLOW_SERVER_BOOT_ID", "current-boot")
+     ok = mock.MagicMock()
+     ok.labels = {container_mod.SANDBOX_BOOT_LABEL: "old-boot"}
++    ok.status = "exited"
+     fails = mock.MagicMock()
+     fails.labels = {container_mod.SANDBOX_BOOT_LABEL: "old-boot"}
++    fails.status = "exited"
+     fails.remove.side_effect = Exception("cannot remove")
+     client = mock.MagicMock()
+     client.containers.list.return_value = [ok, fails]
+@@ -316,3 +355,81 @@ def test_reap_list_error_returns_zero(monkeypatch):
+     client.containers.list.side_effect = Exception("api error")
+     with mock.patch("docker.from_env", return_value=client):
+         assert reap_orphaned_sandbox_containers() == 0
++
++
++def test_sandbox_egress_env_empty_when_unset(monkeypatch):
++    from mlflow.server.sandbox.container import sandbox_egress_env
++
++    monkeypatch.delenv("MLFLOW_SANDBOX_EGRESS_PROXY", raising=False)
++    assert sandbox_egress_env() == {}
++
++
++def test_sandbox_egress_env_injects_proxy_and_bypass(monkeypatch):
++    from mlflow.server.sandbox.container import sandbox_egress_env
++
++    monkeypatch.setenv("MLFLOW_SANDBOX_EGRESS_PROXY", "http://proxy.internal:3128")
++    env = sandbox_egress_env()
++    assert env["HTTP_PROXY"] == "http://proxy.internal:3128"
++    assert env["HTTPS_PROXY"] == "http://proxy.internal:3128"
++    # Lowercase variants for clients that only read them.
++    assert env["no_proxy"] == env["NO_PROXY"]
++    assert env["https_proxy"] == "http://proxy.internal:3128"
++    # The self-host bypass entries let the container reach a local tracking server...
++    assert "host.docker.internal" in env["NO_PROXY"]
++    assert "localhost" in env["NO_PROXY"]
++    assert "127.0.0.1" in env["NO_PROXY"]
++    # ...but the cloud metadata endpoint must NOT bypass the proxy.
++    assert "169.254.169.254" not in env["NO_PROXY"]
++
++
++def test_sandbox_egress_env_bypass_list_is_fixed_and_not_caller_controlled(monkeypatch):
++    from mlflow.server.sandbox.container import _EGRESS_PROXY_BYPASS_HOSTS, sandbox_egress_env
++
++    monkeypatch.setenv("MLFLOW_SANDBOX_EGRESS_PROXY", "http://proxy.internal:3128")
++    # NO_PROXY is exactly the fixed self-host bypass list. It is not derived from any request or
++    # caller-supplied value, so a remote caller cannot name an internal host (e.g. its own
++    # request-derived tracking URI) to carve that destination out of the proxy.
++    env = sandbox_egress_env()
++    assert env["NO_PROXY"].split(",") == list(_EGRESS_PROXY_BYPASS_HOSTS)
++
++
++def test_run_in_sandbox_injects_egress_proxy(monkeypatch):
++    monkeypatch.setenv("MLFLOW_SANDBOX_EGRESS_PROXY", "http://proxy.internal:3128")
++    client, _ = _mock_client()
++    with mock.patch("docker.from_env", return_value=client):
++        run_in_sandbox(["echo", "hi"])
++    _, kwargs = client.containers.run.call_args
++    assert kwargs["environment"]["HTTPS_PROXY"] == "http://proxy.internal:3128"
++
++
++def test_ensure_sandbox_network_creates_when_missing():
++    import docker.errors
++
++    from mlflow.server.sandbox.container import SANDBOX_NETWORK_NAME, ensure_sandbox_network
++
++    client = mock.MagicMock()
++    client.networks.get.side_effect = docker.errors.NotFound("nope")
++    assert ensure_sandbox_network(client) == SANDBOX_NETWORK_NAME
++    client.networks.create.assert_called_once_with(
++        SANDBOX_NETWORK_NAME, driver="bridge", check_duplicate=True
++    )
++
++
++def test_ensure_sandbox_network_handles_create_race():
++    import docker.errors
++
++    from mlflow.server.sandbox.container import SANDBOX_NETWORK_NAME, ensure_sandbox_network
++
++    client = mock.MagicMock()
++    # First get: not found; create loses the race (409 duplicate); re-get: found.
++    client.networks.get.side_effect = [docker.errors.NotFound("no"), mock.MagicMock()]
++    client.networks.create.side_effect = docker.errors.APIError("network already exists")
++    assert ensure_sandbox_network(client) == SANDBOX_NETWORK_NAME
++
++
++def test_ensure_sandbox_network_falls_back_to_bridge_on_error():
++    from mlflow.server.sandbox.container import ensure_sandbox_network
++
++    client = mock.MagicMock()
++    client.networks.get.side_effect = Exception("permission denied")
++    assert ensure_sandbox_network(client) == "bridge"
+diff --git a/tests/server/sandbox/test_streaming.py b/tests/server/sandbox/test_streaming.py
+index 6f1b6572932cd..ae05706a61d4a 100644
+--- a/tests/server/sandbox/test_streaming.py
++++ b/tests/server/sandbox/test_streaming.py
+@@ -256,3 +256,15 @@ def test_start_sandbox_process_labels_container():
+         start_sandbox_process(["claude", "-p"])
+     _, kwargs = client.containers.run.call_args
+     assert kwargs["labels"] == {SANDBOX_CONTAINER_LABEL: "1"}
++
++
++def test_start_sandbox_process_uses_dedicated_network_and_egress(monkeypatch):
++    from mlflow.server.sandbox.container import SANDBOX_NETWORK_NAME
++
++    monkeypatch.setenv("MLFLOW_SANDBOX_EGRESS_PROXY", "http://proxy.internal:3128")
++    client, _ = _streaming_container([])
++    with mock.patch("docker.from_env", return_value=client):
++        start_sandbox_process(["claude", "-p"])
++    _, kwargs = client.containers.run.call_args
++    assert kwargs["network"] == SANDBOX_NETWORK_NAME
++    assert kwargs["environment"]["HTTPS_PROXY"] == "http://proxy.internal:3128"

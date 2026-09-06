@@ -1,0 +1,119 @@
+diff --git a/metaflow/metaflow_config.py b/metaflow/metaflow_config.py
+index 066e5659216..bf39015de4e 100644
+--- a/metaflow/metaflow_config.py
++++ b/metaflow/metaflow_config.py
+@@ -593,6 +593,7 @@
+ OTEL_ENDPOINT = from_conf("OTEL_ENDPOINT")
+ ZIPKIN_ENDPOINT = from_conf("ZIPKIN_ENDPOINT")
+ CONSOLE_TRACE_ENABLED = from_conf("CONSOLE_TRACE_ENABLED", False)
++OTEL_SERVICE_NAME = from_conf("OTEL_SERVICE_NAME", "metaflow")
+ # internal env used for preventing the tracing module from loading during Conda bootstrapping.
+ DISABLE_TRACING = bool(os.environ.get("DISABLE_TRACING", False))
+ 
+diff --git a/metaflow/plugins/aws/batch/batch.py b/metaflow/plugins/aws/batch/batch.py
+index 865ec9c1ea6..0cd623658ef 100644
+--- a/metaflow/plugins/aws/batch/batch.py
++++ b/metaflow/plugins/aws/batch/batch.py
+@@ -12,6 +12,7 @@
+ from metaflow.exception import MetaflowException
+ from metaflow.metaflow_config import (
+     OTEL_ENDPOINT,
++    OTEL_SERVICE_NAME,
+     SERVICE_INTERNAL_URL,
+     DATATOOLS_S3ROOT,
+     DATASTORE_SYSROOT_S3,
+@@ -333,6 +334,7 @@ def create_job(
+             .environment_variable("METAFLOW_DEFAULT_METADATA", DEFAULT_METADATA)
+             .environment_variable("METAFLOW_CARD_S3ROOT", CARD_S3ROOT)
+             .environment_variable("METAFLOW_OTEL_ENDPOINT", OTEL_ENDPOINT)
++            .environment_variable("METAFLOW_OTEL_SERVICE_NAME", OTEL_SERVICE_NAME)
+             .environment_variable("METAFLOW_RUNTIME_ENVIRONMENT", "aws-batch")
+         )
+ 
+diff --git a/metaflow/plugins/kubernetes/kubernetes.py b/metaflow/plugins/kubernetes/kubernetes.py
+index 6caacf85a9b..02136b75f1b 100644
+--- a/metaflow/plugins/kubernetes/kubernetes.py
++++ b/metaflow/plugins/kubernetes/kubernetes.py
+@@ -34,6 +34,7 @@
+     KUBERNETES_FETCH_EC2_METADATA,
+     KUBERNETES_SANDBOX_INIT_SCRIPT,
+     OTEL_ENDPOINT,
++    OTEL_SERVICE_NAME,
+     S3_ENDPOINT_URL,
+     S3_SERVER_SIDE_ENCRYPTION,
+     SERVICE_HEADERS,
+@@ -303,6 +304,7 @@ def create_jobset(
+                 ARGO_WORKFLOWS_ENV_VARS_TO_SKIP,
+             )
+             .environment_variable("METAFLOW_OTEL_ENDPOINT", OTEL_ENDPOINT)
++            .environment_variable("METAFLOW_OTEL_SERVICE_NAME", OTEL_SERVICE_NAME)
+             # Skip setting METAFLOW_DATASTORE_SYSROOT_LOCAL because metadata sync
+             # between the local user instance and the remote Kubernetes pod
+             # assumes metadata is stored in DATASTORE_LOCAL_DIR on the Kubernetes
+@@ -616,6 +618,7 @@ def create_job_object(
+                 ARGO_WORKFLOWS_ENV_VARS_TO_SKIP,
+             )
+             .environment_variable("METAFLOW_OTEL_ENDPOINT", OTEL_ENDPOINT)
++            .environment_variable("METAFLOW_OTEL_SERVICE_NAME", OTEL_SERVICE_NAME)
+             # Skip setting METAFLOW_DATASTORE_SYSROOT_LOCAL because metadata sync
+             # between the local user instance and the remote Kubernetes pod
+             # assumes metadata is stored in DATASTORE_LOCAL_DIR on the Kubernetes
+diff --git a/metaflow/tracing/tracing_modules.py b/metaflow/tracing/tracing_modules.py
+index ad7765405cd..e6d508c1dee 100644
+--- a/metaflow/tracing/tracing_modules.py
++++ b/metaflow/tracing/tracing_modules.py
+@@ -11,6 +11,7 @@
+ import contextlib
+ from typing import Dict, List, Optional
+ from opentelemetry import trace as trace_api, context
++from metaflow.metaflow_config import OTEL_SERVICE_NAME
+ from .span_exporter import get_span_exporter
+ 
+ tracer_provider: Optional[TracerProvider] = None
+@@ -32,7 +33,7 @@ def init_tracing():
+     tracer_provider = TracerProvider(
+         resource=Resource.create(
+             {
+-                SERVICE_NAME: "metaflow",
++                SERVICE_NAME: OTEL_SERVICE_NAME,
+             }
+         )
+     )
+diff --git a/test/unit/test_otel_service_name.py b/test/unit/test_otel_service_name.py
+new file mode 100644
+index 00000000000..0505987201d
+--- /dev/null
++++ b/test/unit/test_otel_service_name.py
+@@ -0,0 +1,32 @@
++import importlib
++
++import pytest
++
++SERVICE_NAME_ENV_VARS = ("OTEL_SERVICE_NAME", "METAFLOW_OTEL_SERVICE_NAME")
++
++
++def _resolve_service_name():
++    import metaflow.metaflow_config as metaflow_config
++
++    importlib.reload(metaflow_config)
++    return metaflow_config.OTEL_SERVICE_NAME
++
++
++@pytest.fixture(autouse=True)
++def clear_service_name_env(monkeypatch):
++    for var in SERVICE_NAME_ENV_VARS:
++        monkeypatch.delenv(var, raising=False)
++
++
++@pytest.mark.parametrize(
++    "env, expected",
++    [
++        ({}, "metaflow"),
++        ({"OTEL_SERVICE_NAME": "from-otel"}, "metaflow"),
++        ({"METAFLOW_OTEL_SERVICE_NAME": "pinned"}, "pinned"),
++    ],
++)
++def test_otel_service_name_resolution(monkeypatch, env, expected):
++    for key, value in env.items():
++        monkeypatch.setenv(key, value)
++    assert _resolve_service_name() == expected
