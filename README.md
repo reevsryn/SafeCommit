@@ -126,16 +126,6 @@ known-good cases — not 'few', zero."* It does. The only surviving candidate,
 `pip_unexpected_module_xyz`, sits inside a `textwrap.dedent` string literal and
 never becomes a candidate under a real parser.
 
-**0 findings is not the same as 0 confidence.** Every one of the 402 known-good
-candidates was suppressed for a *positive* reason, with no Silent verdicts at
-all — so the zero is genuine resolution rather than uncertainty hiding:
-
-```
-206 suppress  first-party      143 suppress  stdlib
- 31 suppress  registry-hit      22 suppress  relative
-  0 SILENT                       0 FIRE
-```
-
 Reproduce either number: `--offline` against a warm cache gives byte-identical
 results to a live run.
 
