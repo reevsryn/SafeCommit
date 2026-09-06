@@ -95,3 +95,56 @@ Full diagnosis: `PHASE1-NOTES.md` R6.
 Per the one-shot rule, any fix motivated by these failures burns this corpus.
 The next published noise figure must come from a newly mined holdout, from
 repositories not used here and not used in the development set.
+
+
+---
+
+# Holdout #2
+
+Mined 2026-09-06, after the R6 fix (repo-context first-party resolution).
+Recorded **before scoring**, as before.
+
+## Why a second holdout was required
+
+Holdout #1 is spent: its failures motivated `internal/repoindex`, so its
+post-fix score (7 → 0) is tuned and establishes only that the fix addresses
+what it was built for.
+
+## What changed in how it is scored
+
+Holdout #1 was scored in the **degraded** mode (`--no-repo-context`), because
+the corpus carried no checkout. Holdout #2 is scored **with captured repo
+context** (`bench context`), which is the mode production actually runs in —
+the CLI runs inside a repo, and the Action runs after `actions/checkout`. This
+is a fairer test of the shipped product, and a stricter one, because the fix now
+has to work rather than being structurally unable to.
+
+## Repositories
+
+Chosen for **nested and monorepo layouts specifically**, because all seven of
+holdout #1's failures came from a single such repository (Airflow) and a fix
+validated against one project is not validated at all: dagster, beam, ray,
+prefect, bokeh, mlflow, dbt-core, kedro, metaflow, ansible. No overlap with the
+development set or holdout #1.
+
+## Prediction, recorded before scoring
+
+1. **Fewer than holdout #1's 7, but not zero. I expect 0–6 false positives.**
+   The dominant cause is fixed; the remaining surface is thinner but real.
+2. **Most likely cause: truncated trees.** GitHub truncates very large tree
+   responses, and ray/ansible/beam are enormous. A truncated capture yields
+   partial context, so first-party names in the missing portion resolve exactly
+   as they did before the fix. `bench context` warns on truncation and the
+   context file records `_truncated`; if failures cluster in a repo flagged
+   that way, this is the cause.
+3. **Second: namespace packages** (PEP 420) that sit at neither the repo root
+   nor under a `src/` directory and carry no `__init__.py`. All three top-level
+   rules miss those by construction.
+4. **Third: R4 alias gaps.** Still unobserved after 203 resolutions in
+   holdout #1, but this set is ML/data-tooling heavy and will exercise a
+   different dependency surface.
+
+If the count lands at zero I will say so, and also say plainly that a single
+clean holdout is weaker evidence than it looks — the honest read would be
+"no measured false positives on 2 sets totalling ~260 real PRs", not "zero
+false-positive rate".
