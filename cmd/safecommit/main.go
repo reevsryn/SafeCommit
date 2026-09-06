@@ -28,6 +28,7 @@ import (
 	"github.com/reevsryn/safecommit/internal/finding"
 	"github.com/reevsryn/safecommit/internal/manifest"
 	"github.com/reevsryn/safecommit/internal/pathrules"
+	"github.com/reevsryn/safecommit/internal/prcomment"
 	"github.com/reevsryn/safecommit/internal/pyparse"
 	"github.com/reevsryn/safecommit/internal/registry"
 	"github.com/reevsryn/safecommit/internal/repoindex"
@@ -49,11 +50,16 @@ flags:
                       checkout (benchmark corpora have no checkout)
   --cache-dir PATH    registry lookup cache (default ".safecommit-cache/pypi")
   --offline           never contact the registry; uncached names stay silent
+  --format FORMAT     json (default; the eval-harness contract) or markdown
+                      (a pull-request comment body; prints nothing when there
+                      are no findings)
+  --link-base URL     base URL for file links in markdown output, e.g.
+                      https://github.com/OWNER/REPO/blob/SHA/
   --explain           write one verdict line per candidate to stderr
   --version           print version and exit
 `
 
-var version = "0.1.0-repo-context"
+var version = "0.2.0-action"
 
 type options struct {
 	diffPath    string
@@ -62,6 +68,8 @@ type options struct {
 	offline     bool
 	explain     bool
 	repoContext string
+	format      string
+	linkBase    string
 }
 
 func main() {
@@ -93,6 +101,8 @@ func run(args []string) error {
 	offline := fs.Bool("offline", false, "never contact the registry")
 	explain := fs.Bool("explain", false, "write one verdict line per candidate to stderr")
 	repoContext := fs.String("repo-context", "", "captured repo listing (benchmark mode)")
+	format := fs.String("format", "json", "output format: json or markdown")
+	linkBase := fs.String("link-base", "", "base URL for file links in markdown output")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -103,7 +113,11 @@ func run(args []string) error {
 	}
 
 	opts := options{diffPath: *diffPath, repoRoot: *repoRoot, cacheDir: *cacheDir,
-		offline: *offline, explain: *explain, repoContext: *repoContext}
+		offline: *offline, explain: *explain, repoContext: *repoContext,
+		format: *format, linkBase: *linkBase}
+	if opts.format != "json" && opts.format != "markdown" {
+		return fmt.Errorf("--format must be json or markdown, got %q", opts.format)
+	}
 	if *noRepoContext {
 		opts.repoRoot = ""
 	}
@@ -114,7 +128,17 @@ func run(args []string) error {
 	}
 
 	out := bufio.NewWriter(os.Stdout)
-	if err := finding.Emit(out, findings); err != nil {
+	if opts.format == "markdown" {
+		// Silence is the product: with nothing to report we print nothing, so
+		// the caller posts no comment rather than an empty or reassuring one.
+		if body, ok := prcomment.Render(findings, prcomment.Options{
+			LinkBase: opts.linkBase, Version: version,
+		}); ok {
+			if _, err := out.WriteString(body); err != nil {
+				return fmt.Errorf("writing comment: %w", err)
+			}
+		}
+	} else if err := finding.Emit(out, findings); err != nil {
 		return fmt.Errorf("writing findings: %w", err)
 	}
 	if err := out.Flush(); err != nil {

@@ -154,6 +154,74 @@ R2.
 published figure must come from the fresh Phase 4 holdout — see
 `corpus/README.md`.
 
+## Use it on your repository
+
+Add one file, `.github/workflows/safecommit.yml`:
+
+```yaml
+name: SafeCommit
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  safecommit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: reevsryn/SafeCommit@v1
+```
+
+That is the whole setup. No account, no API key, no service to sign up for.
+
+**What it does.** On every pull request it reads the diff, resolves each added
+import and dependency, and posts a single comment listing only the ones ground
+truth says do not exist. If there is nothing to report it posts nothing — and
+deletes its own earlier comment once you have fixed the problem, so a stale
+warning never lingers on a green PR.
+
+**Why `actions/checkout` matters.** The checkout is what lets SafeCommit tell
+your own modules apart from missing ones. Without it the tool runs in a degraded
+mode and reports first-party imports as hallucinations — this is measured, not
+theoretical (`PHASE1-NOTES.md` R6/R7).
+
+| input | default | meaning |
+|---|---|---|
+| `fail-on-findings` | `true` | fail the check when something is reported; `false` to comment only |
+| `comment` | `true` | post and update the pull-request comment |
+| `github-token` | `github.token` | used to read the diff and post the comment |
+
+### What leaves your machine
+
+**Your source code is never uploaded.** The engine runs entirely on your own
+runner. The only outbound requests are package-existence lookups to
+`pypi.org`, and they carry **package names only** — never your diff, never your
+files, never your repository name. There is no SafeCommit server, no account,
+and no telemetry. `--offline` disables even the registry lookups, at the cost
+of reporting nothing it cannot verify from cache.
+
+That is a deliberate architectural choice, not a policy promise: findings are
+produced by deterministic resolution against a registry, so no model ever sees
+your code. See `project-safecommit-indexed-meteor.md` for the threat model.
+
+### Command line
+
+The same engine, without CI:
+
+```sh
+git diff origin/main... | safecommit scan --repo-root .
+```
+
+Exit codes: `0` nothing found, `1` findings, `2` error. Add `--format markdown`
+for a pull-request-shaped summary, or `--explain` to see the verdict and reason
+for every candidate it considered.
+
+> **Note:** this repository is currently private, so `uses: reevsryn/SafeCommit@v1`
+> resolves only for its owner. The snippet above is what a public release looks
+> like.
+
 ## Building the engine
 
 ```sh

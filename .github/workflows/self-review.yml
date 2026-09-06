@@ -1,0 +1,23 @@
+name: SafeCommit self-review
+
+# Dogfooding: SafeCommit reviews its own pull requests with the Action from
+# this same commit. If the Action is broken, the project's own PRs say so.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run SafeCommit on this PR
+        uses: ./
+        with:
+          # This repository is mostly Go; a finding here would almost certainly
+          # be a bug in SafeCommit rather than a hallucination in the PR. Comment,
+          # do not block.
+          fail-on-findings: "false"
