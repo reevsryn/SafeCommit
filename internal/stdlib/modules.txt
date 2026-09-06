@@ -1,16 +1,22 @@
 # Python stdlib top-level module names.
-# Generated from sys.stdlib_module_names | sys.builtin_module_names on
-# Python 3.13.7, plus modules that were
-# stdlib in earlier versions and still appear in real code (distutils, imp,
-# asynchat, ...). Suppressing a few extra names costs recall we do not
-# have (nobody hallucinates 'asynchat'); missing one costs a false positive.
-# Regenerate: see internal/stdlib/gen.md
+#
+# This is a UNION across Python versions, not a snapshot of one interpreter.
+# SafeCommit scans repositories targeting many Python versions, so a module
+# that is stdlib in ANY supported version must be suppressed here.
+#
+# Generated from: 3.13.7, 3.14.4, unioned with the previous list and
+# with modules removed from recent versions (distutils, imp, telnetlib, ...).
+#
+# Regeneration is ADDITIVE ONLY -- never drop a name. See gen.md.
+# Suppressing an extra name costs recall nobody needs; missing one costs a
+# false positive, which is the failure this project exists to avoid.
 __future__
 _abc
 _aix_support
 _android_support
 _apple_support
 _ast
+_ast_unparse
 _asyncio
 _bisect
 _blake2
@@ -42,6 +48,7 @@ _functools
 _gdbm
 _hashlib
 _heapq
+_hmac
 _imp
 _interpchannels
 _interpqueues
@@ -65,6 +72,7 @@ _pickle
 _posixshmem
 _posixsubprocess
 _py_abc
+_py_warnings
 _pydatetime
 _pydecimal
 _pyio
@@ -72,6 +80,7 @@ _pylong
 _pyrepl
 _queue
 _random
+_remote_debugging
 _scproxy
 _sha1
 _sha2
@@ -95,6 +104,7 @@ _threading_local
 _tkinter
 _tokenize
 _tracemalloc
+_types
 _typing
 _uuid
 _warnings
@@ -103,8 +113,10 @@ _weakrefset
 _winapi
 _wmi
 _zoneinfo
+_zstd
 abc
 aifc
+annotationlib
 antigravity
 argparse
 array
@@ -134,6 +146,7 @@ codeop
 collections
 colorsys
 compileall
+compression
 concurrent
 configparser
 contextlib

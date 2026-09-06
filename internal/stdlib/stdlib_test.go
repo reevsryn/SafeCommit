@@ -20,6 +20,18 @@ func TestHistoricalModulesStillSuppressed(t *testing.T) {
 	}
 }
 
+// Regression: the list was generated on Python 3.13 and went stale when 3.14
+// shipped, leaving these public modules unlisted. An unlisted stdlib module is
+// looked up on PyPI, 404s, and becomes a false positive against the standard
+// library itself. See internal/stdlib/gen.md.
+func TestPython314ModulesAreCovered(t *testing.T) {
+	for _, m := range []string{"annotationlib", "compression"} {
+		if !Is(m) {
+			t.Errorf("Is(%q) = false; stdlib list is stale for Python 3.14", m)
+		}
+	}
+}
+
 func TestNonStdlib(t *testing.T) {
 	for _, m := range []string{"requests", "numpy", "django", "reqursts", "nunpy"} {
 		if Is(m) {
