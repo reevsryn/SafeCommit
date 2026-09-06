@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .corpus import load_corpus
 from .model import Counts, Finding, Metrics, metrics_from_counts
-from .score import CaseResult, aggregate, match_case, parse_findings
+from .score import MATCH_FILE, CaseResult, aggregate, aggregate_kinds, match_case, parse_findings
 
 
 @dataclass
@@ -73,6 +73,11 @@ class CorpusResult:
     counts: Counts
     metrics: Metrics
     noise: int  # total findings emitted on clean cases (every one is a false positive)
+    # truth kind -> (hits, total). R3: a blended recall number can hide an
+    # entirely broken detection path.
+    kinds: dict = field(default_factory=dict)
+    # truths missed specifically because the finding carried no location (R2)
+    unlocated: int = 0
     case_results: list[CaseResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -80,19 +85,25 @@ class CorpusResult:
 @dataclass
 class EvalReport:
     tool: str
+    match: str = MATCH_FILE
     corpora: list[CorpusResult] = field(default_factory=list)
 
     @property
     def total(self) -> CorpusResult:
         counts = Counts()
-        num_cases = num_findings = noise = 0
+        num_cases = num_findings = noise = unlocated = 0
         errors: list[str] = []
+        kinds: dict = {}
         for c in self.corpora:
             counts = counts + c.counts
             num_cases += c.num_cases
             num_findings += c.num_findings
             noise += c.noise
+            unlocated += c.unlocated
             errors.extend(c.errors)
+            for k, (h, t) in c.kinds.items():
+                ph, pt = kinds.get(k, (0, 0))
+                kinds[k] = (ph + h, pt + t)
         return CorpusResult(
             name="TOTAL",
             num_cases=num_cases,
@@ -100,15 +111,20 @@ class EvalReport:
             counts=counts,
             metrics=metrics_from_counts(counts),
             noise=noise,
+            kinds=kinds,
+            unlocated=unlocated,
             errors=errors,
         )
 
 
 def evaluate(
-    tool_argv: list[str], corpus_dirs: list[str | Path], timeout: float = 60.0
+    tool_argv: list[str],
+    corpus_dirs: list[str | Path],
+    timeout: float = 60.0,
+    match: str = MATCH_FILE,
 ) -> EvalReport:
     """Run `tool_argv` over every case in every corpus and score the results."""
-    report = EvalReport(tool=" ".join(tool_argv))
+    report = EvalReport(tool=" ".join(tool_argv), match=match)
     for corpus_dir in corpus_dirs:
         cases = load_corpus(corpus_dir)
         case_results: list[CaseResult] = []
@@ -122,8 +138,9 @@ def evaluate(
             num_findings += len(run.findings)
             if case.is_clean:
                 noise += len(run.findings)
-            case_results.append(match_case(case.id, run.findings, case.truths))
+            case_results.append(match_case(case.id, run.findings, case.truths, match=match))
         counts = aggregate(case_results)
+        unlocated = sum(len(cr.unlocated_names) for cr in case_results)
         report.corpora.append(
             CorpusResult(
                 name=Path(corpus_dir).name,
@@ -132,6 +149,8 @@ def evaluate(
                 counts=counts,
                 metrics=metrics_from_counts(counts),
                 noise=noise,
+                kinds=aggregate_kinds(case_results),
+                unlocated=unlocated,
                 case_results=case_results,
                 errors=errors,
             )

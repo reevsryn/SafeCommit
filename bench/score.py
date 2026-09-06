@@ -1,17 +1,44 @@
 """Match findings against ground truth, and aggregate the counts.
 
-Matching granularity: ONE PACKAGE NAME = ONE UNIT, deduplicated per case and
-normalized per PEP 503. Rationale: a seeded truth is "package X is fake"; a tool
-says "package X doesn't exist". The natural key is the name. File/line are
-reported but not required to match in Phase 0 (the dummy tools don't do real
-line mapping). We can tighten to file+line later without touching this contract.
+# Matching granularity (tightened for publication -- PHASE1-NOTES.md R2)
+
+Phase 0 matched a finding to a truth by PACKAGE NAME alone. That was a
+documented simplification, and it had a concrete failure: in `seed-019` the
+hallucination is a bad pin in requirements.txt, while the *same name* also
+appears in a perfectly legitimate `from dateutil import parser`. A tool that
+flagged the legitimate import line was credited with a true positive for a
+truth it had not found.
+
+Matching is therefore now FILE-AWARE by default:
+
+    a finding matches a truth when the normalized names are equal AND
+    (the truth declares no file, OR the finding's file equals the truth's)
+
+A finding with the right name but the wrong -- or missing -- file no longer
+earns credit: the truth counts as a false negative and the finding as a false
+positive. That is deliberately strict. A reviewer cannot act on "something
+somewhere is wrong", and any tool worth benchmarking against reports a location.
+
+`--match name` restores the old, looser behaviour so the two can be compared;
+it must never be used for a published figure.
+
+# Per-kind breakdown (PHASE1-NOTES.md R3)
+
+Recall is also tracked per truth `kind` (import vs requirement), because those
+exercise different detector code paths and a blended number can hide one of
+them being entirely broken -- which is exactly what a blended 90.5% concealed
+at step 3, when manifest recall was actually 0/3.
 """
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .model import Counts, Finding, Truth, normalize_name
+
+MATCH_NAME = "name"
+MATCH_FILE = "file"
 
 
 def parse_findings(stdout: str) -> list[Finding]:
@@ -49,29 +76,72 @@ class CaseResult:
     tp_names: list[str] = field(default_factory=list)
     fp_names: list[str] = field(default_factory=list)
     fn_names: list[str] = field(default_factory=list)
+    # recall bookkeeping per truth kind: kind -> [hits, total]
+    kind_hits: dict[str, int] = field(default_factory=dict)
+    kind_totals: dict[str, int] = field(default_factory=dict)
+    # findings whose name matches a truth but that declare no file at all.
+    # Reported separately so "missed it" is distinguishable from "found it but
+    # could not say where".
+    unlocated_names: list[str] = field(default_factory=list)
 
 
-def match_case(case_id: str, findings: list[Finding], truths: list[Truth]) -> CaseResult:
-    """Match one case's findings against its truths using normalized names.
+def _locates(finding: Finding, truth: Truth, mode: str) -> bool:
+    """Does `finding` agree with `truth` about WHERE the problem is?"""
+    if mode == MATCH_NAME:
+        return True
+    if not truth.file:
+        return True  # nothing to disagree with
+    return bool(finding.file) and finding.file == truth.file
 
-    TP = names the tool flagged that are genuinely fake.
-    FP = names the tool flagged that are NOT in the truth set. On a clean case
-         the truth set is empty, so *every* flagged name is a false positive.
-    FN = fake names the tool missed.
+
+def match_case(
+    case_id: str,
+    findings: list[Finding],
+    truths: list[Truth],
+    match: str = MATCH_FILE,
+) -> CaseResult:
+    """Match one case's findings against its truths.
+
+    TP = a truth for which some finding agrees on both name and location.
+    FN = a truth no finding located.
+    FP = a distinct finding name that did not end up crediting any truth --
+         which now includes right-name/wrong-place findings.
     """
-    finding_norm = {normalize_name(f.name): f.name for f in findings}
-    truth_norm = {normalize_name(t.name): t.name for t in truths}
+    by_name: dict[str, list[Finding]] = defaultdict(list)
+    for f in findings:
+        by_name[normalize_name(f.name)].append(f)
 
-    tp_keys = finding_norm.keys() & truth_norm.keys()
-    fp_keys = finding_norm.keys() - truth_norm.keys()
-    fn_keys = truth_norm.keys() - finding_norm.keys()
+    tp_names: list[str] = []
+    fn_names: list[str] = []
+    unlocated: list[str] = []
+    kind_hits: dict[str, int] = defaultdict(int)
+    kind_totals: dict[str, int] = defaultdict(int)
+
+    for t in truths:
+        key = normalize_name(t.name)
+        kind = t.kind or "?"
+        kind_totals[kind] += 1
+        candidates = by_name.get(key, [])
+        if any(_locates(f, t, match) for f in candidates):
+            tp_names.append(t.name)
+            kind_hits[kind] += 1
+        else:
+            fn_names.append(t.name)
+            if candidates and not any(f.file for f in candidates):
+                unlocated.append(t.name)
+
+    credited = {normalize_name(n) for n in tp_names}
+    fp_names = sorted({f.name for f in findings if normalize_name(f.name) not in credited})
 
     return CaseResult(
         case_id=case_id,
-        counts=Counts(tp=len(tp_keys), fp=len(fp_keys), fn=len(fn_keys)),
-        tp_names=sorted(finding_norm[k] for k in tp_keys),
-        fp_names=sorted(finding_norm[k] for k in fp_keys),
-        fn_names=sorted(truth_norm[k] for k in fn_keys),
+        counts=Counts(tp=len(tp_names), fp=len(fp_names), fn=len(fn_names)),
+        tp_names=sorted(tp_names),
+        fp_names=fp_names,
+        fn_names=sorted(fn_names),
+        kind_hits=dict(kind_hits),
+        kind_totals=dict(kind_totals),
+        unlocated_names=sorted(unlocated),
     )
 
 
@@ -80,3 +150,15 @@ def aggregate(results: list[CaseResult]) -> Counts:
     for r in results:
         total = total + r.counts
     return total
+
+
+def aggregate_kinds(results: list[CaseResult]) -> dict[str, tuple[int, int]]:
+    """kind -> (hits, total) summed across cases."""
+    hits: dict[str, int] = defaultdict(int)
+    totals: dict[str, int] = defaultdict(int)
+    for r in results:
+        for k, v in r.kind_hits.items():
+            hits[k] += v
+        for k, v in r.kind_totals.items():
+            totals[k] += v
+    return {k: (hits.get(k, 0), totals[k]) for k in sorted(totals)}

@@ -50,7 +50,7 @@ flags:
   --version           print version and exit
 `
 
-var version = "0.0.5-phase1-step5"
+var version = "0.0.6-phase1-step6"
 
 type options struct {
 	diffPath string

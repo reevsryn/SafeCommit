@@ -8,7 +8,7 @@ Run from the repo root:  python3 -m unittest discover -t . -s tests -v
 import unittest
 
 from bench.model import Counts, Finding, Truth, metrics_from_counts, normalize_name
-from bench.score import aggregate, match_case, parse_findings
+from bench.score import aggregate, aggregate_kinds, match_case, parse_findings
 
 
 class TestNormalize(unittest.TestCase):
@@ -137,3 +137,80 @@ class TestAggregate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFileAwareMatching(unittest.TestCase):
+    """R2: a finding must agree with the truth about WHERE the problem is.
+
+    The motivating real case is seed-019: the hallucination is a bad pin in
+    requirements.txt, while the same name also appears in a perfectly
+    legitimate `from dateutil import parser`. Under name-only matching a tool
+    that flagged the legitimate import was credited with finding the bug.
+    """
+
+    def test_right_name_wrong_file_is_not_a_true_positive(self):
+        r = match_case(
+            "seed-019",
+            [Finding(name="dateutil", file="reports/weekly.py", line=2)],
+            [Truth(name="dateutil", file="requirements.txt", kind="requirement")],
+        )
+        self.assertEqual(r.counts.tp, 0, "wrong-file finding must not earn credit")
+        self.assertEqual(r.counts.fn, 1)
+        self.assertEqual(r.counts.fp, 1)
+        self.assertEqual(r.fn_names, ["dateutil"])
+
+    def test_right_name_right_file_is_a_true_positive(self):
+        r = match_case(
+            "seed-019",
+            [Finding(name="dateutil", file="requirements.txt", line=2)],
+            [Truth(name="dateutil", file="requirements.txt", kind="requirement")],
+        )
+        self.assertEqual((r.counts.tp, r.counts.fp, r.counts.fn), (1, 0, 0))
+
+    def test_finding_without_a_file_cannot_credit_a_located_truth(self):
+        r = match_case(
+            "c",
+            [Finding(name="reqursts")],  # named it, but said nothing about where
+            [Truth(name="reqursts", file="svc/api.py", kind="import")],
+        )
+        self.assertEqual(r.counts.tp, 0)
+        self.assertEqual(r.unlocated_names, ["reqursts"],
+                         "an unlocated finding should be reported distinctly from a miss")
+
+    def test_truth_without_a_file_matches_on_name_alone(self):
+        r = match_case(
+            "c",
+            [Finding(name="reqursts", file="anywhere.py")],
+            [Truth(name="reqursts")],  # no file declared -> nothing to disagree with
+        )
+        self.assertEqual(r.counts.tp, 1)
+
+    def test_name_mode_restores_the_loose_behaviour(self):
+        r = match_case(
+            "seed-019",
+            [Finding(name="dateutil", file="reports/weekly.py")],
+            [Truth(name="dateutil", file="requirements.txt", kind="requirement")],
+            match="name",
+        )
+        self.assertEqual(r.counts.tp, 1, "--match name must reproduce the old scoring")
+
+    def test_per_kind_recall_is_tracked(self):
+        r = match_case(
+            "mixed",
+            [Finding(name="nunpy", file="a.py")],
+            [
+                Truth(name="nunpy", file="a.py", kind="import"),
+                Truth(name="python-requests", file="requirements.txt", kind="requirement"),
+            ],
+        )
+        self.assertEqual(r.kind_hits.get("import"), 1)
+        self.assertEqual(r.kind_totals.get("import"), 1)
+        self.assertEqual(r.kind_hits.get("requirement", 0), 0)
+        self.assertEqual(r.kind_totals.get("requirement"), 1)
+
+    def test_aggregate_kinds_sums_across_cases(self):
+        a = match_case("a", [Finding(name="x", file="f.py")],
+                       [Truth(name="x", file="f.py", kind="import")])
+        b = match_case("b", [], [Truth(name="y", file="requirements.txt", kind="requirement")])
+        self.assertEqual(aggregate_kinds([a, b]),
+                         {"import": (1, 1), "requirement": (0, 1)})

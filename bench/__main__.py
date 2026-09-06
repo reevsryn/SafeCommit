@@ -21,7 +21,7 @@ from .runner import evaluate
 
 def cmd_eval(args: argparse.Namespace) -> int:
     tool_argv = shlex.split(args.tool)
-    report = evaluate(tool_argv, args.corpus, timeout=args.timeout)
+    report = evaluate(tool_argv, args.corpus, timeout=args.timeout, match=args.match)
     print(render_json(report) if args.json else render_text(report))
     if args.fail_on_noise and report.total.noise > 0:
         return 1
@@ -42,6 +42,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--corpus", action="append", required=True, help="corpus dir (repeatable)"
     )
     e.add_argument("--json", action="store_true", help="emit JSON instead of a table")
+    e.add_argument(
+        "--match",
+        choices=("file", "name"),
+        default="file",
+        help="how a finding is matched to a truth: 'file' (default) requires the "
+        "finding to agree with the truth's file; 'name' is the old loose "
+        "behaviour and must NOT be used for a published figure (R2)",
+    )
     e.add_argument("--timeout", type=float, default=60.0, help="per-case timeout (s)")
     e.add_argument(
         "--fail-on-noise",

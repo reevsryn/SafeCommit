@@ -211,3 +211,40 @@ is the exact capability the product exists to provide.
 does, alias gaps (R4) are the most likely cause and the gate is the intended
 fix. If it does not, the gate should never be built at all. Either way the
 decision will rest on measurement rather than anticipation.
+
+## R2 — RESOLVED (2026-09-06, step 6)
+
+`bench/score.py` now matches file-aware by default: a finding credits a truth
+only when the normalized names are equal **and** the finding agrees with the
+truth's file (a truth declaring no file still matches on name alone). A
+right-name/wrong-place finding now scores FP + FN instead of TP, which is
+exactly the distortion R2 was written to catch.
+
+`--match name` preserves the old loose behaviour for comparison and is labelled
+in the report as invalid for publication.
+
+Two supporting changes:
+- Findings that name a truth but carry **no file at all** are counted as misses
+  and reported separately (`unlocated`), so "did not find it" stays
+  distinguishable from "found it but could not say where".
+- The reference dummy tools now emit `file`, so they remain meaningful under
+  the stricter rule rather than silently scoring zero.
+
+**Result: the detector's figures did not move.** File-aware and name-only
+matching both give precision 100% / recall 100% on the development set, meaning
+every one of the 21 truths is located at the correct file rather than merely
+named. The distortion R2 identified was real at step 3 and had already been
+cured by the step-4 alias table; this change makes the guarantee structural
+instead of incidental.
+
+## Benchmark reproducibility (step 6)
+
+`corpus/registry-snapshot/` pins the PyPI verdicts the benchmark depends on
+(45 entries). A benchmark whose result depends on a live network call is not
+reproducible -- a reader re-running it later would be measuring a different
+oracle, not a different detector. `scripts/benchmark.sh` therefore runs offline
+against the pin, and a fresh clone reproduces the numbers exactly.
+
+Pinning the oracle is deliberately NOT the same as claiming the corpus is still
+valid. That question is answered independently and live by
+`python3 -m bench verify-seeded`, which bypasses every cache.

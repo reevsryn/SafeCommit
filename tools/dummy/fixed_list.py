@@ -46,18 +46,28 @@ def main() -> None:
     findings = []
     seen: set[str] = set()
 
+    path: str | None = None
+
     def emit(name: str) -> None:
         if norm(name) in fakes and norm(name) not in seen:
             seen.add(norm(name))
             findings.append(
                 {
                     "name": name,
+                    "file": path,
                     "kind": "import",
                     "message": f"package '{name}' not found on PyPI (did you mean ...?)",
                 }
             )
 
     for raw in sys.stdin.read().splitlines():
+        # Track the post-image path: scoring is file-aware (bench/score.py, R2).
+        if raw.startswith("+++ b/"):
+            path = raw[6:]
+            continue
+        if raw.startswith("+++ "):
+            path = None
+            continue
         if not ADDED.match(raw):
             continue
         content = raw[1:]

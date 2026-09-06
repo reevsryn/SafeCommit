@@ -15,9 +15,19 @@ FROM = re.compile(r"^\s*from\s+([a-zA-Z0-9_]+)")
 
 
 def main() -> None:
-    names: list[str] = []
+    findings: list[dict] = []
     seen: set[str] = set()
+    path: str | None = None
     for raw in sys.stdin.read().splitlines():
+        # Track the post-image path so findings carry a location. Scoring is
+        # file-aware (see bench/score.py, R2): a finding with no file cannot
+        # credit a truth that declares one.
+        if raw.startswith("+++ b/"):
+            path = raw[6:]
+            continue
+        if raw.startswith("+++ "):
+            path = None
+            continue
         if not ADDED.match(raw):
             continue
         content = raw[1:]  # strip the leading '+'
@@ -26,15 +36,14 @@ def main() -> None:
             name = m.group(1)
             if name not in seen:
                 seen.add(name)
-                names.append(name)
-    findings = [
-        {
-            "name": n,
-            "kind": "import",
-            "message": f"package '{n}' flagged (always-fire dummy)",
-        }
-        for n in names
-    ]
+                findings.append(
+                    {
+                        "name": name,
+                        "file": path,
+                        "kind": "import",
+                        "message": f"package '{name}' flagged (always-fire dummy)",
+                    }
+                )
     json.dump(findings, sys.stdout)
 
 

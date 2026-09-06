@@ -30,7 +30,7 @@ We build the measuring stick *before* any detector, because the whole thesis is
       [`corpus/README.md`](corpus/README.md). Re-verify anytime:
       `python3 -m bench verify-seeded`.
 
-**Phase 1 — the detector (in progress).** Engine in Go; target language Python.
+**Phase 1 — the detector (COMPLETE).** Engine in Go; target language Python.
 
 - [x] **Step 1 — engine skeleton + output contract + measured baseline.**
       `cmd/safecommit` reads a diff and reports nothing, on purpose: it
@@ -75,7 +75,18 @@ We build the measuring stick *before* any detector, because the whole thesis is
       data/fixture path *component* rather than a test root, so executed test
       files still report. **The hallucination-signal confidence gate was
       deliberately NOT built** — see below.
-- [ ] Step 6 — full benchmark run, recall split per detection path.
+- [x] **Step 6 — reproducible benchmark artifact + scorer tightening.**
+      `scripts/benchmark.sh` regenerates [`BENCHMARK.md`](BENCHMARK.md) from a
+      full run: results, per-path recall, verdict distribution, reference-tool
+      comparison and provenance (commit, versions, oracle). Runs **offline
+      against `corpus/registry-snapshot`, a committed pin of PyPI verdicts**, so
+      a fresh clone reproduces the numbers exactly with no network and no
+      credentials. Also closes **R2**: scoring is now file-aware — a finding
+      must agree with the truth's *file*, not merely its name — which
+      `PHASE1-NOTES.md` required before any figure could be published.
+
+**Phase 1 is complete.** See [`BENCHMARK.md`](BENCHMARK.md) for the current
+numbers and how to reproduce them.
 
 ## Current results (step 5, development set)
 
@@ -94,6 +105,9 @@ Recall **split by detection path** (R3 — a blended number would hide this):
 |---|---|
 | import (`internal/pyparse`) | **18/18 = 100%** |
 | dependency manifest (`internal/manifest`) | **3/3 = 100%** |
+
+Full artifact, with provenance and reproduction instructions:
+[`BENCHMARK.md`](BENCHMARK.md) (regenerate with `scripts/benchmark.sh`).
 
 ### Read this number with suspicion
 
