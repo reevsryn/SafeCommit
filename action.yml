@@ -1,0 +1,53 @@
+name: SafeCommit
+description: >-
+  Catch AI-hallucinated imports and fabricated dependencies in a pull request.
+  Reports only what ground truth proves does not exist.
+author: reevsryn
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  fail-on-findings:
+    description: Fail the check when SafeCommit reports something. Set false to comment only.
+    required: false
+    default: "true"
+  comment:
+    description: Post (and update) a pull-request comment with the findings.
+    required: false
+    default: "true"
+  github-token:
+    description: Token used to read the diff and post the comment.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  findings:
+    description: Number of findings reported.
+    value: ${{ steps.scan.outputs.findings }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.26"
+        cache-dependency-path: ${{ github.action_path }}/go.sum
+
+    - name: Build safecommit
+      shell: bash
+      run: |
+        cd "${{ github.action_path }}"
+        go build -o "${RUNNER_TEMP}/safecommit" ./cmd/safecommit
+        "${RUNNER_TEMP}/safecommit" --version
+
+    - name: Scan the pull request
+      id: scan
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        SAFECOMMIT_BIN: ${{ runner.temp }}/safecommit
+        SAFECOMMIT_COMMENT: ${{ inputs.comment }}
+        SAFECOMMIT_FAIL: ${{ inputs.fail-on-findings }}
+      run: bash "${{ github.action_path }}/scripts/action/review.sh"
