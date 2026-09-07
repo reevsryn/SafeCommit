@@ -330,3 +330,7 @@ verification (`CERTIFICATE_VERIFY_FAILED`). Point it at the system CA bundle:
   patterns; we do not use any private master list. See `corpus/README.md`.
 - **Reproducible.** The corpora and the scoring script are committed so anyone
   can rerun the numbers.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
