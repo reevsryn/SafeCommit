@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and release (e.g. v1.0.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Binaries are built NATIVELY on each target. tree-sitter needs CGO, and
+    # cross-compiling CGO requires a full cross toolchain per target -- using a
+    # matching runner is simpler and produces binaries linked against the same
+    # libc a user will actually run them on.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest   # the platform GitHub-hosted Actions run on
+            goos: linux
+            goarch: amd64
+          - runner: macos-latest    # Apple Silicon, for CLI users
+            goos: darwin
+            goarch: arm64
+          - runner: macos-13        # Intel Mac, for CLI users
+            goos: darwin
+            goarch: amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="safecommit_${TAG}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p "dist/${name}"
+          go build -trimpath -ldflags "-s -w -X main.version=${TAG}" \
+            -o "dist/${name}/safecommit" ./cmd/safecommit
+          cp README.md LICENSE "dist/${name}/" 2>/dev/null || cp README.md "dist/${name}/"
+          "dist/${name}/safecommit" --version
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          shasum -a 256 "dist/${name}.tar.gz" | sed "s| dist/| |" > "dist/${name}.tar.gz.sha256"
+          cat "dist/${name}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}_${{ matrix.goarch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Assemble checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          cat *.sha256 > checksums.txt
+          rm -f *.sha256
+          echo "--- checksums.txt ---"; cat checksums.txt
+          ls -la
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" artifacts/* \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag || \
+          gh release upload "$TAG" artifacts/* --clobber
+
+      - name: Move the major-version tag so `@v1` resolves
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          major="${TAG%%.*}"                  # v1.2.3 -> v1
+          [[ "$major" == v* ]] || { echo "unexpected tag $TAG"; exit 1; }
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$major" "${TAG}^{commit}"
+          git push -f origin "refs/tags/$major"
+          # The moving tag needs its OWN release carrying the same assets, so
+          # `uses: OWNER/REPO@v1` can find a binary to download.
+          gh release delete "$major" --yes --cleanup-tag=false 2>/dev/null || true
+          gh release create "$major" artifacts/* \
+            --title "$major (moving tag -> $TAG)" \
+            --notes "Rolling major-version tag. Currently points at **$TAG**. Pin an exact version if you need reproducibility." \
+            || gh release upload "$major" artifacts/* --clobber

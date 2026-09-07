@@ -29,17 +29,29 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Resolve safecommit binary
+      id: resolve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        SAFECOMMIT_REF: ${{ github.action_ref }}
+        SAFECOMMIT_ACTION_REPO: ${{ github.action_repository }}
+      run: bash "${{ github.action_path }}/scripts/action/resolve.sh"
+
     - name: Set up Go
+      if: steps.resolve.outputs.need_build == 'true'
       uses: actions/setup-go@v5
       with:
         go-version: "1.26"
         cache-dependency-path: ${{ github.action_path }}/go.sum
 
-    - name: Build safecommit
+    - name: Build safecommit from source
+      if: steps.resolve.outputs.need_build == 'true'
       shell: bash
       run: |
         cd "${{ github.action_path }}"
-        go build -o "${RUNNER_TEMP}/safecommit" ./cmd/safecommit
+        go build -ldflags "-X main.version=${{ github.action_ref || 'source' }}" \
+          -o "${RUNNER_TEMP}/safecommit" ./cmd/safecommit
         "${RUNNER_TEMP}/safecommit" --version
 
     - name: Scan the pull request

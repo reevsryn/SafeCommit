@@ -59,7 +59,13 @@ flags:
   --version           print version and exit
 `
 
-var version = "0.2.0-action"
+// version is stamped at release time with
+//
+//	-ldflags "-X main.version=v1.0.0"
+//
+// The default marks a build made straight from a working tree, so a binary
+// that reports "dev" is one whose provenance is unknown.
+var version = "dev"
 
 type options struct {
 	diffPath    string

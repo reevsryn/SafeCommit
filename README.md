@@ -176,6 +176,20 @@ jobs:
 
 That is the whole setup. No account, no API key, no service to sign up for.
 
+`@v1` is a rolling tag that follows the latest 1.x release. Pin an exact
+version — `@v1.0.0` — if you want a build that never changes under you.
+
+**How the binary gets there.** The Action downloads a prebuilt binary published
+with the release and **verifies its SHA-256 against the release's
+`checksums.txt` before running it**. If the release, the platform build, or the
+checksum is missing or does not match, it does not run the artifact — it builds
+from source instead and says so in the log. A tool whose pitch is "we only
+report what we can prove" should not fetch an unverified binary and execute it.
+
+Supported prebuilt platforms: `linux/amd64` (what GitHub-hosted runners use),
+`darwin/arm64` and `darwin/amd64` for local CLI use. Anything else builds from
+source automatically.
+
 **What it does.** On every pull request it reads the diff, resolves each added
 import and dependency, and posts a single comment listing only the ones ground
 truth says do not exist. If there is nothing to report it posts nothing — and
