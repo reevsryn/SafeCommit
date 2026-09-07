@@ -28,9 +28,12 @@ jobs:
           - runner: macos-latest    # Apple Silicon, for CLI users
             goos: darwin
             goarch: arm64
-          - runner: macos-13        # Intel Mac, for CLI users
-            goos: darwin
-            goarch: amd64
+          # No darwin/amd64 (Intel Mac). The macos-13 label no longer schedules
+          # -- a job sat queued for 18 hours and never started -- so including
+          # it means the release job, which needs every build, never runs at
+          # all. Intel Mac users fall back to building from source, which the
+          # Action does automatically and transparently. Restore this target
+          # only with a runner label that actually schedules.
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
