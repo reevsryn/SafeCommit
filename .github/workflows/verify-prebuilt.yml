@@ -1,0 +1,19 @@
+name: Verify prebuilt path
+
+# TEMPORARY. self-review.yml uses `uses: ./`, which always builds from source,
+# so the release-download-and-verify path has never run on a real runner. This
+# workflow pins the published tag to exercise it, and is deleted once proven.
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  prebuilt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: reevsryn/SafeCommit@v1
+        with:
+          fail-on-findings: "false"
