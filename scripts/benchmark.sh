@@ -18,7 +18,11 @@ if [[ "${1:-}" == "--live" ]]; then
 fi
 
 command -v go >/dev/null || { echo "go not found on PATH" >&2; exit 1; }
-go build -o bin/safecommit ./cmd/safecommit
+# Stamp the build from git so BENCHMARK.md's "tool version" is a real
+# provenance claim. An unstamped build reports "dev", which says nothing about
+# which code produced the numbers.
+STAMP=$(git describe --tags --always --dirty 2>/dev/null || echo unknown)
+go build -ldflags "-X main.version=${STAMP}" -o bin/safecommit ./cmd/safecommit
 
 TOOL="./bin/safecommit scan --no-repo-context --cache-dir corpus/registry-snapshot $OFFLINE"
 CORPORA="--corpus corpus/known-good --corpus corpus/seeded"
