@@ -32,6 +32,9 @@ mods |= {  # removed from recent versions, still present in real code
     "ossaudiodev", "pipes", "sndhdr", "spwd", "sunau", "telnetlib", "uu",
     "xdrlib", "audioop", "aifc", "mailcap", "msilib", "lib2to3", "typing_extensions",
     "imghdr", "_crypt", "_msi",
+    # NEWER than any interpreter installed where this was generated -- added when
+    # CI's 3.15 job named them (3.15.0: `profiling` is a public module).
+    "profiling", "_math_integer",
 }
 print("# Python stdlib top-level module names.")
 print(f"# Union across: {', '.join(versions)} + previous list + historical set.")
@@ -52,6 +55,28 @@ This decay is not hypothetical. The list was generated on Python 3.13.7. When
 `compression`). `tests/test_stdlib_list.py` now fails whenever the list is stale
 for the running interpreter — run the Python suite under each Python you
 support, and regenerate when it complains.
+
+## The extra set covers interpreters you do not have locally
+
+The union above can only see the Pythons installed on the machine that runs it,
+so the hand-maintained set in the recipe exists for everything else, in **both**
+directions:
+
+- **Older interpreters (removed modules).** `imghdr`, `_crypt` and `_msi` exist
+  in 3.12 and were removed in 3.13. A list generated from 3.13 and 3.14
+  silently omitted them, and `imghdr` is a public module real code imports.
+- **Newer interpreters (added modules).** `profiling` and `_math_integer` first
+  appear in 3.15. A list generated before 3.15 was installed could not know
+  them, and `import profiling` would 404 on PyPI and be reported as a
+  hallucinated dependency.
+
+Both gaps were found by CI's Python matrix, not by anyone's judgement: each
+failed `tests/test_stdlib_list.py` on an interpreter nobody had installed
+locally, and the failure message named the missing modules. So the workflow is:
+when that test fails, add the named modules to the recipe's extra set above and
+to `modules.txt`. `.github/workflows/weekly-checks.yml` also runs the suite on
+the newest Python, stable and prerelease, so the next release is noticed within
+a week even if nobody pushes a commit.
 
 ## Bias on purpose
 

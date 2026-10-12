@@ -61,6 +61,7 @@ _locale
 _lsprof
 _lzma
 _markupbase
+_math_integer
 _md5
 _msi
 _multibytecodec
@@ -247,6 +248,7 @@ posix
 posixpath
 pprint
 profile
+profiling
 pstats
 pty
 pwd
