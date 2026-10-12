@@ -1,0 +1,76 @@
+name: Weekly checks
+
+# Things that decay with TIME rather than with commits. CI only runs when
+# someone pushes, so without this nothing would notice them until a user did.
+#
+#   1. The seeded corpus is public. Every fake name in it is a ready-made
+#      slopsquat target, and the benchmark's recall figure is only valid while
+#      all of them are still unregistered on PyPI.
+#   2. internal/stdlib/modules.txt is built from the Pythons installed where it
+#      was generated. A new Python release adds stdlib modules, and an unlisted
+#      one becomes a false positive against the standard library.
+#
+# Caveat: GitHub may automatically disable scheduled workflows in a public
+# repository after ~60 days without repository activity. If the weekly run
+# stops appearing, re-enable it under Actions -> Weekly checks.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC, deliberately off the hour
+  workflow_dispatch:
+    inputs:
+      simulate-failure:
+        description: File a clearly-labelled simulated issue to prove the alert path works
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: weekly-checks
+  cancel-in-progress: false
+
+jobs:
+  seeded-names:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Every seeded name must still be absent from PyPI
+        # Bypasses every cache on purpose: a cached 404 is exactly what this
+        # check exists to distrust. Exits 1 if any name has been registered.
+        run: python -m bench verify-seeded
+
+  latest-python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        prerelease: [false, true]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+          allow-prereleases: ${{ matrix.prerelease }}
+      - run: python --version
+      - run: python -m unittest discover -t . -s tests -v
+
+  report:
+    needs: [seeded-names, latest-python]
+    if: ${{ always() && (needs.seeded-names.result == 'failure' || needs.latest-python.result == 'failure' || inputs.simulate-failure) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SEEDED: ${{ needs.seeded-names.result }}
+          PYLATEST: ${{ needs.latest-python.result }}
+          SIM: ${{ inputs.simulate-failure }}
+        run: bash scripts/ci/weekly-report.sh

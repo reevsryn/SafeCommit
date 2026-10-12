@@ -88,6 +88,32 @@ We build the measuring stick *before* any detector, because the whole thesis is
 **Phase 1 is complete.** See [`BENCHMARK.md`](BENCHMARK.md) for the current
 numbers and how to reproduce them.
 
+**Phase 2 — the GitHub Action and release (COMPLETE).** `v1.0.0` is published
+under an MIT license, with a rolling `v1` tag, checksum-verified prebuilt
+binaries for `linux/amd64` and `darwin/arm64`, and CI on Python 3.12–3.15.
+
+**Not built yet** — stated plainly so the claims above are not read as more than
+they are:
+
+- **Symbol-level detection (Phase 3).** Today SafeCommit catches a *package*
+  that does not exist. It cannot catch a real package with a fake *method*, such
+  as `requests.get_json()`. That is the part no incumbent does well, and the
+  reason this project exists.
+- **A head-to-head against an incumbent (Phase 4).** No comparison against
+  Semgrep or Socket has been run, so "quieter than X" is a design goal, not a
+  measured result.
+- **Recall on real LLM output.** The 100% recall is on test cases this project
+  wrote itself.
+
+### Things that decay, and what watches them
+
+The seeded corpus is public, which makes every fake name in it a ready-made
+squatting target, and the benchmark's recall figure is only valid while they all
+stay unregistered. `internal/stdlib/modules.txt` goes stale on every Python
+release. Neither is visible to CI, which only runs on pushes, so
+`.github/workflows/weekly-checks.yml` re-verifies both weekly and opens an issue
+if either has failed.
+
 ## Current results (step 5, development set)
 
 ```
@@ -231,10 +257,6 @@ git diff origin/main... | safecommit scan --repo-root .
 Exit codes: `0` nothing found, `1` findings, `2` error. Add `--format markdown`
 for a pull-request-shaped summary, or `--explain` to see the verdict and reason
 for every candidate it considered.
-
-> **Note:** this repository is currently private, so `uses: reevsryn/SafeCommit@v1`
-> resolves only for its owner. The snippet above is what a public release looks
-> like.
 
 ## Building the engine
 
