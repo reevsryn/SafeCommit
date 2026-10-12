@@ -32,6 +32,18 @@ func TestPython314ModulesAreCovered(t *testing.T) {
 	}
 }
 
+// Regression: Python 3.15 added `profiling`, and CI's 3.15 job was what noticed
+// -- the list is built from locally installed interpreters, none of which was
+// 3.15. `import profiling` would otherwise 404 on PyPI and be reported as a
+// hallucinated dependency.
+func TestPython315ModulesAreCovered(t *testing.T) {
+	for _, m := range []string{"profiling", "_math_integer"} {
+		if !Is(m) {
+			t.Errorf("Is(%q) = false; stdlib list is stale for Python 3.15", m)
+		}
+	}
+}
+
 func TestNonStdlib(t *testing.T) {
 	for _, m := range []string{"requests", "numpy", "django", "reqursts", "nunpy"} {
 		if Is(m) {
